@@ -911,6 +911,83 @@ td a {
   gap: 14px;
 }
 
+.decision-panel,
+.experiment-detail {
+  border: 1px solid #d9dee6;
+  border-radius: 8px;
+  padding: 18px;
+  background: #ffffff;
+}
+
+.decision-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.decision-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.decision-header h2,
+.experiment-detail h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.decision-panel label {
+  display: grid;
+  gap: 8px;
+  color: #344256;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.decision-panel textarea {
+  width: 100%;
+  min-height: 78px;
+  border: 1px solid #d8dee7;
+  border-radius: 8px;
+  padding: 12px;
+  resize: vertical;
+  background: #fbfcfd;
+  color: #1d2733;
+  line-height: 1.6;
+}
+
+.validation-summary {
+  border: 1px solid #dce3eb;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fbfcfd;
+  display: grid;
+  gap: 8px;
+}
+
+.validation-summary strong {
+  color: #263545;
+  font-size: 13px;
+}
+
+.validation-summary p {
+  margin: 0;
+  color: #526170;
+  line-height: 1.6;
+}
+
+.validation-summary span {
+  width: max-content;
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #526170;
+  background: #edf1f6;
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .gap-card {
   padding: 16px;
 }
@@ -926,6 +1003,31 @@ td a {
 .experiment-row h2 {
   font-size: 16px;
   line-height: 1.4;
+}
+
+.gap-kind {
+  width: max-content;
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #526170;
+  background: #edf1f6;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.gap-kind.true_gap {
+  color: #1f7a4d;
+  background: #e6f5ee;
+}
+
+.gap-kind.engineering_gap {
+  color: #95610a;
+  background: #fff2d6;
+}
+
+.gap-kind.pseudo_gap {
+  color: #a23b3b;
+  background: #fde8e8;
 }
 
 .gap-card dl {
@@ -967,6 +1069,27 @@ td a {
 .experiment-list {
   display: grid;
   gap: 12px;
+}
+
+.experiment-detail dl {
+  margin: 14px 0 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.experiment-detail dt {
+  color: #667789;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.experiment-detail dd {
+  margin: 4px 0 0;
+  color: #344256;
+  line-height: 1.6;
+  font-size: 13px;
 }
 
 .experiment-row {
@@ -1181,6 +1304,7 @@ td a {
   .workspace-body,
   .reader-layout,
   .paper-reader-grid,
+  .experiment-detail dl,
   .gap-board {
     grid-template-columns: 1fr;
   }
@@ -1210,6 +1334,7 @@ td a {
 
   .workspace-header,
   .paper-reader-header,
+  .decision-header,
   .search-control,
   .experiment-row {
     align-items: flex-start;

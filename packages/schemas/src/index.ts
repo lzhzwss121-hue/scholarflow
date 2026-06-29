@@ -126,6 +126,49 @@ export interface ApiPaperCardResponse {
   artifact: ApiArtifact;
 }
 
+export interface ApiResearchDecisionRequest {
+  goal?: string;
+}
+
+export interface ApiGapDecision {
+  id: string;
+  title: string;
+  kind: "true_gap" | "engineering_gap" | "pseudo_gap";
+  evidence: string;
+  weakness: string;
+  opportunity: string;
+  novelty_risk: "low" | "medium" | "high";
+  feasibility: "one-week" | "one-month" | "thesis-scale";
+}
+
+export interface ApiIdeaValidation {
+  idea: string;
+  why_not_incremental: string;
+  difference_from_existing_work: string;
+  novelty_risk: "low" | "medium" | "high";
+  feasibility: "one-week" | "one-month" | "thesis-scale";
+  key_risks: string[];
+}
+
+export interface ApiExperimentPlan {
+  claim: string;
+  dataset: string;
+  baseline: string;
+  metrics: string[];
+  ablations: string[];
+  resources: string;
+  timeline: string[];
+  success_criterion: string;
+  failure_criterion: string;
+}
+
+export interface ApiResearchDecisionResponse {
+  gaps: ApiGapDecision[];
+  validation: ApiIdeaValidation;
+  experiment: ApiExperimentPlan;
+  artifacts: ApiArtifact[];
+}
+
 export interface ApiAgentPlanRequest {
   project_id: string;
   task: string;

@@ -13,6 +13,8 @@ import type {
   ApiPaperCardResponse,
   ApiProject,
   ApiProjectCreate,
+  ApiResearchDecisionRequest,
+  ApiResearchDecisionResponse,
   ApiToolEvent,
 } from "@scholarflow/schemas";
 
@@ -63,6 +65,13 @@ export function searchProjectLiterature(projectId: string, payload: ApiLiteratur
 
 export function createProjectPaperCard(projectId: string, payload: ApiPaperCardCreateRequest) {
   return request<ApiPaperCardResponse>(`/projects/${projectId}/paper-cards`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function createResearchDecisions(projectId: string, payload: ApiResearchDecisionRequest = {}) {
+  return request<ApiResearchDecisionResponse>(`/projects/${projectId}/research-decisions`, {
     method: "POST",
     body: JSON.stringify(payload),
   });

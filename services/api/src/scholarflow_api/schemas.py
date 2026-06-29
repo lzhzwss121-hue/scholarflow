@@ -116,6 +116,49 @@ class PaperCardResponse(BaseModel):
     artifact: Artifact
 
 
+class ResearchDecisionRequest(BaseModel):
+    goal: str = Field(default="", max_length=1000)
+
+
+class GapDecision(BaseModel):
+    id: str
+    title: str
+    kind: Literal["true_gap", "engineering_gap", "pseudo_gap"]
+    evidence: str
+    weakness: str
+    opportunity: str
+    novelty_risk: Literal["low", "medium", "high"]
+    feasibility: Literal["one-week", "one-month", "thesis-scale"]
+
+
+class IdeaValidation(BaseModel):
+    idea: str
+    why_not_incremental: str
+    difference_from_existing_work: str
+    novelty_risk: Literal["low", "medium", "high"]
+    feasibility: Literal["one-week", "one-month", "thesis-scale"]
+    key_risks: list[str]
+
+
+class ExperimentPlan(BaseModel):
+    claim: str
+    dataset: str
+    baseline: str
+    metrics: list[str]
+    ablations: list[str]
+    resources: str
+    timeline: list[str]
+    success_criterion: str
+    failure_criterion: str
+
+
+class ResearchDecisionResponse(BaseModel):
+    gaps: list[GapDecision]
+    validation: IdeaValidation
+    experiment: ExperimentPlan
+    artifacts: list[Artifact]
+
+
 class AgentPlanRequest(BaseModel):
     project_id: str
     task: str = Field(min_length=1, max_length=1000)

@@ -291,6 +291,8 @@ scholarflow/
 
 目标：把论文卡片转成可执行研究计划。
 
+当前状态：complete。
+
 交付物：
 
 - Gap Board。

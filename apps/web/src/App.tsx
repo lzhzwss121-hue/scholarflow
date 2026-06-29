@@ -26,6 +26,7 @@ import {
   type ApiPaper,
   type ApiPaperCard,
   type ApiProject,
+  type ApiResearchDecisionResponse,
   type ApiToolEvent,
 } from "@scholarflow/schemas";
 import {
@@ -47,6 +48,7 @@ import {
   createAgentPlan,
   createProject,
   createProjectPaperCard,
+  createResearchDecisions,
   executeAgentRun,
   getArtifact,
   getHealth,
@@ -103,6 +105,11 @@ export function App() {
   const [paperCardInput, setPaperCardInput] = useState("");
   const [paperCardBusy, setPaperCardBusy] = useState(false);
   const [latestPaperCard, setLatestPaperCard] = useState<ApiPaperCard | null>(null);
+  const [decisionGoal, setDecisionGoal] = useState(
+    "基于当前 paper table 和 paper card，找出最值得做的一周最小实验方向。",
+  );
+  const [decisionBusy, setDecisionBusy] = useState(false);
+  const [researchDecision, setResearchDecision] = useState<ApiResearchDecisionResponse | null>(null);
 
   const activeArtifact = artifacts[activeView];
   const activeNavItem = useMemo(
@@ -341,6 +348,29 @@ export function App() {
     }
   }
 
+  async function handleCreateResearchDecision() {
+    if (!activeProject) {
+      setApiMessage("没有可写入的后端项目，请先创建或启动 API。");
+      return;
+    }
+
+    setDecisionBusy(true);
+    setApiMessage("正在生成 Gap / Novelty / Experiment Plan...");
+    try {
+      const result = await createResearchDecisions(activeProject.id, {
+        goal: decisionGoal,
+      });
+      setResearchDecision(result);
+      setLastSavedArtifact(result.artifacts[result.artifacts.length - 1] ?? null);
+      setApiMessage(`研究决策已生成：${result.gaps.length} gaps + experiment plan`);
+      await loadProjectResources(activeProject.id);
+    } catch (error) {
+      setApiMessage("生成研究决策失败，请确认已有 paper table 或 paper card。");
+    } finally {
+      setDecisionBusy(false);
+    }
+  }
+
   return (
     <div className="scholarflow-app">
       <ProjectNavigator
@@ -387,6 +417,8 @@ export function App() {
               apiMessage={apiMessage}
               apiStatus={apiStatus}
               artifactCount={persistedArtifactCount}
+              decisionBusy={decisionBusy}
+              decisionGoal={decisionGoal}
               literatureBusy={literatureBusy}
               literatureErrors={literatureErrors}
               literatureQuery={literatureQuery}
@@ -395,6 +427,8 @@ export function App() {
               onCreateAgentPlan={handleCreateAgentPlan}
               onExecuteAgentRun={handleExecuteAgentRun}
               onGeneratePaperCard={handleGeneratePaperCard}
+              onCreateResearchDecision={handleCreateResearchDecision}
+              onDecisionGoalChange={setDecisionGoal}
               onLiteratureQueryChange={setLiteratureQuery}
               onPaperCardInputChange={setPaperCardInput}
               onSearchLiterature={handleSearchLiterature}
@@ -403,6 +437,7 @@ export function App() {
               paperCardBusy={paperCardBusy}
               paperCardInput={paperCardInput}
               projectCount={projects.length}
+              researchDecision={researchDecision}
               selectedPaperId={selectedPaperId}
               latestPaperCard={latestPaperCard}
               view={activeView}
@@ -520,6 +555,8 @@ interface ActiveViewProps {
   apiMessage: string;
   apiStatus: ApiStatus;
   artifactCount: number;
+  decisionBusy: boolean;
+  decisionGoal: string;
   literatureBusy: boolean;
   literatureErrors: string[];
   literatureQuery: string;
@@ -527,6 +564,8 @@ interface ActiveViewProps {
   onAgentTaskChange: (task: string) => void;
   onCreateAgentPlan: () => void;
   onCreateProject: () => void;
+  onCreateResearchDecision: () => void;
+  onDecisionGoalChange: (goal: string) => void;
   onExecuteAgentRun: () => void;
   onGeneratePaperCard: () => void;
   onLiteratureQueryChange: (query: string) => void;
@@ -537,6 +576,7 @@ interface ActiveViewProps {
   paperCardBusy: boolean;
   paperCardInput: string;
   projectCount: number;
+  researchDecision: ApiResearchDecisionResponse | null;
   selectedPaperId: string;
   view: ViewId;
 }
@@ -549,6 +589,8 @@ function ActiveView({
   apiMessage,
   apiStatus,
   artifactCount,
+  decisionBusy,
+  decisionGoal,
   literatureBusy,
   literatureErrors,
   literatureQuery,
@@ -556,6 +598,8 @@ function ActiveView({
   onAgentTaskChange,
   onCreateAgentPlan,
   onCreateProject,
+  onCreateResearchDecision,
+  onDecisionGoalChange,
   onExecuteAgentRun,
   onGeneratePaperCard,
   onLiteratureQueryChange,
@@ -566,6 +610,7 @@ function ActiveView({
   paperCardBusy,
   paperCardInput,
   projectCount,
+  researchDecision,
   selectedPaperId,
   view,
 }: ActiveViewProps) {
@@ -599,9 +644,27 @@ function ActiveView({
         />
       );
     case "gap-board":
-      return <GapBoardView />;
+      return (
+        <GapBoardView
+          apiStatus={apiStatus}
+          decision={researchDecision}
+          goal={decisionGoal}
+          isGenerating={decisionBusy}
+          onGenerate={onCreateResearchDecision}
+          onGoalChange={onDecisionGoalChange}
+        />
+      );
     case "experiment-planner":
-      return <ExperimentPlannerView />;
+      return (
+        <ExperimentPlannerView
+          apiStatus={apiStatus}
+          decision={researchDecision}
+          goal={decisionGoal}
+          isGenerating={decisionBusy}
+          onGenerate={onCreateResearchDecision}
+          onGoalChange={onDecisionGoalChange}
+        />
+      );
     case "dashboard":
     default:
       return (
@@ -1032,44 +1095,187 @@ function PaperReaderView({
   );
 }
 
-function GapBoardView() {
+function GapBoardView({
+  apiStatus,
+  decision,
+  goal,
+  isGenerating,
+  onGenerate,
+  onGoalChange,
+}: {
+  apiStatus: ApiStatus;
+  decision: ApiResearchDecisionResponse | null;
+  goal: string;
+  isGenerating: boolean;
+  onGenerate: () => void;
+  onGoalChange: (goal: string) => void;
+}) {
+  const gaps = decision?.gaps ?? gapItems.map((gap, index) => ({
+    id: `mock_${index}`,
+    title: gap.title,
+    kind: index === 0 ? "true_gap" : index === 1 ? "engineering_gap" : "pseudo_gap",
+    evidence: "静态示例，生成后会替换为基于 paper table / paper card 的证据。",
+    weakness: gap.weakness,
+    opportunity: gap.opportunity,
+    novelty_risk: gap.risk,
+    feasibility: index === 0 ? "one-week" : index === 1 ? "one-week" : "one-month",
+  }));
+
   return (
-    <div className="gap-board">
-      {gapItems.map((gap) => (
-        <article className="gap-card" key={gap.title}>
-          <div className="gap-card-header">
-            <h2>{gap.title}</h2>
-            <span className={`risk ${gap.risk}`}>{gap.risk}</span>
+    <div className="view-stack">
+      <section className="decision-panel" aria-label="research decision generator">
+        <div className="decision-header">
+          <div>
+            <p className="section-kicker">Research Decision</p>
+            <h2>Gap / Novelty / Experiment Plan</h2>
           </div>
-          <dl>
-            <div>
-              <dt>Weakness</dt>
-              <dd>{gap.weakness}</dd>
+          <button
+            className="secondary-command"
+            disabled={apiStatus !== "online" || isGenerating}
+            type="button"
+            onClick={onGenerate}
+          >
+            <GitBranch size={17} />
+            {isGenerating ? "生成中" : "生成研究决策"}
+          </button>
+        </div>
+        <label>
+          决策目标
+          <textarea value={goal} onChange={(event) => onGoalChange(event.target.value)} />
+        </label>
+        {decision ? (
+          <div className="validation-summary">
+            <strong>Idea Validation</strong>
+            <p>{decision.validation.idea}</p>
+            <span className={`risk ${decision.validation.novelty_risk}`}>{decision.validation.novelty_risk}</span>
+            <span>{decision.validation.feasibility}</span>
+          </div>
+        ) : null}
+      </section>
+
+      <div className="gap-board">
+        {gaps.map((gap) => (
+          <article className="gap-card" key={gap.id}>
+            <div className="gap-card-header">
+              <h2>{gap.title}</h2>
+              <span className={`risk ${gap.novelty_risk}`}>{gap.novelty_risk}</span>
             </div>
-            <div>
-              <dt>Opportunity</dt>
-              <dd>{gap.opportunity}</dd>
-            </div>
-          </dl>
-        </article>
-      ))}
+            <div className={`gap-kind ${gap.kind}`}>{gap.kind}</div>
+            <dl>
+              <div>
+                <dt>Evidence</dt>
+                <dd>{gap.evidence}</dd>
+              </div>
+              <div>
+                <dt>Weakness</dt>
+                <dd>{gap.weakness}</dd>
+              </div>
+              <div>
+                <dt>Opportunity</dt>
+                <dd>{gap.opportunity}</dd>
+              </div>
+              <div>
+                <dt>Feasibility</dt>
+                <dd>{gap.feasibility}</dd>
+              </div>
+            </dl>
+          </article>
+        ))}
+      </div>
     </div>
   );
 }
 
-function ExperimentPlannerView() {
+function ExperimentPlannerView({
+  apiStatus,
+  decision,
+  goal,
+  isGenerating,
+  onGenerate,
+  onGoalChange,
+}: {
+  apiStatus: ApiStatus;
+  decision: ApiResearchDecisionResponse | null;
+  goal: string;
+  isGenerating: boolean;
+  onGenerate: () => void;
+  onGoalChange: (goal: string) => void;
+}) {
+  const plan = decision?.experiment;
+
   return (
-    <div className="experiment-list">
-      {experiments.map((item) => (
-        <section className="experiment-row" key={item.week}>
-          <div className="experiment-date">{item.week}</div>
+    <div className="view-stack">
+      <section className="decision-panel" aria-label="experiment plan generator">
+        <div className="decision-header">
           <div>
-            <h2>{item.goal}</h2>
-            <p>{item.deliverable}</p>
+            <p className="section-kicker">Experiment Plan</p>
+            <h2>{plan ? "One-week Minimal Experiment" : "从 gap 生成实验计划"}</h2>
           </div>
-          <span>{item.cost}</span>
+          <button
+            className="secondary-command"
+            disabled={apiStatus !== "online" || isGenerating}
+            type="button"
+            onClick={onGenerate}
+          >
+            <FlaskConical size={17} />
+            {isGenerating ? "生成中" : "生成实验计划"}
+          </button>
+        </div>
+        <label>
+          实验目标
+          <textarea value={goal} onChange={(event) => onGoalChange(event.target.value)} />
+        </label>
+      </section>
+
+      {plan ? (
+        <section className="experiment-detail">
+          <h2>{plan.claim}</h2>
+          <dl>
+            <div>
+              <dt>Dataset</dt>
+              <dd>{plan.dataset}</dd>
+            </div>
+            <div>
+              <dt>Baseline</dt>
+              <dd>{plan.baseline}</dd>
+            </div>
+            <div>
+              <dt>Metrics</dt>
+              <dd>{plan.metrics.join(", ")}</dd>
+            </div>
+            <div>
+              <dt>Ablations</dt>
+              <dd>{plan.ablations.join(" / ")}</dd>
+            </div>
+            <div>
+              <dt>Resources</dt>
+              <dd>{plan.resources}</dd>
+            </div>
+          </dl>
         </section>
-      ))}
+
+      ) : null}
+
+      <div className="experiment-list">
+        {(plan
+          ? plan.timeline.map((step, index) => ({
+              week: `Step ${index + 1}`,
+              goal: step,
+              deliverable: index === plan.timeline.length - 1 ? plan.success_criterion : plan.claim,
+              cost: index === 0 ? plan.resources : "tracked",
+            }))
+          : experiments
+        ).map((item) => (
+          <section className="experiment-row" key={item.week}>
+            <div className="experiment-date">{item.week}</div>
+            <div>
+              <h2>{item.goal}</h2>
+              <p>{item.deliverable}</p>
+            </div>
+            <span>{item.cost}</span>
+          </section>
+        ))}
+      </div>
     </div>
   );
 }

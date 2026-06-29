@@ -24,6 +24,13 @@ from scholarflow_api.paper_card import (
     render_card_json,
     render_card_markdown,
 )
+from scholarflow_api.research_decisions import (
+    generate_research_decisions,
+    render_decision_json,
+    render_experiment_markdown,
+    render_gap_board_markdown,
+    render_validation_markdown,
+)
 from scholarflow_api.schemas import (
     AgentExecuteRequest,
     AgentExecuteResponse,
@@ -40,6 +47,8 @@ from scholarflow_api.schemas import (
     PaperCardResponse,
     Project,
     ProjectCreate,
+    ResearchDecisionRequest,
+    ResearchDecisionResponse,
     Session,
     ToolEvent,
 )
@@ -348,6 +357,85 @@ def create_project_paper_card(project_id: str, payload: PaperCardCreateRequest) 
             created_at=now,
         ),
         artifact=Artifact.model_validate(artifact),
+    )
+
+
+@app.post("/projects/{project_id}/research-decisions", response_model=ResearchDecisionResponse, status_code=201)
+def create_project_research_decisions(project_id: str, payload: ResearchDecisionRequest) -> ResearchDecisionResponse:
+    now = utc_now()
+    with get_connection() as connection:
+        project = fetch_project_dict(connection, project_id)
+        session_id = ensure_active_session(connection, project, now)
+        papers = fetch_project_paper_dicts(connection, project_id)
+        paper_cards = fetch_project_paper_card_dicts(connection, project_id)
+        bundle = generate_research_decisions(project, papers, paper_cards, payload.goal)
+        bundle_json = render_decision_json(bundle)
+        artifacts = [
+            insert_artifact_row(
+                connection=connection,
+                project_id=project_id,
+                title="gap_board.md",
+                kind="markdown",
+                content_markdown=render_gap_board_markdown(bundle),
+                content_json=bundle_json,
+                diff="+ Generated gap board\n+ Classified true/engineering/pseudo gaps",
+                now=now,
+            ),
+            insert_artifact_row(
+                connection=connection,
+                project_id=project_id,
+                title="idea_validation_report.md",
+                kind="markdown",
+                content_markdown=render_validation_markdown(bundle),
+                content_json=bundle_json,
+                diff="+ Added novelty risk\n+ Added differentiation from existing work",
+                now=now,
+            ),
+            insert_artifact_row(
+                connection=connection,
+                project_id=project_id,
+                title="experiment_plan.md",
+                kind="markdown",
+                content_markdown=render_experiment_markdown(bundle),
+                content_json=bundle_json,
+                diff="+ Added baseline/dataset/metric/ablation/resource plan",
+                now=now,
+            ),
+        ]
+        insert_tool_event(
+            connection,
+            session_id,
+            "gap.generate",
+            "done",
+            f"已生成 {len(bundle.gaps)} 个 gap，并区分 true / engineering / pseudo gap。",
+            now,
+        )
+        insert_tool_event(
+            connection,
+            session_id,
+            "novelty.validate",
+            "done",
+            f"已生成 novelty risk={bundle.validation.novelty_risk} 的 idea validation report。",
+            now,
+        )
+        insert_tool_event(
+            connection,
+            session_id,
+            "experiment.plan",
+            "done",
+            "已生成包含 baseline、dataset、metric、ablation、resource estimate 的实验计划。",
+            now,
+        )
+        connection.execute(
+            "UPDATE projects SET stage = ?, updated_at = ? WHERE id = ?",
+            ("experiment-planning", now, project_id),
+        )
+
+    return ResearchDecisionResponse(
+        gaps=[gap.to_dict() for gap in bundle.gaps],
+        validation=bundle.validation.to_dict(),
+        experiment=bundle.experiment.to_dict(),
+        artifacts=[Artifact.model_validate(artifact) for artifact in artifacts],
     )
 
 
@@ -689,6 +777,33 @@ def fetch_paper_dict(connection, project_id: str, paper_id: str) -> dict:
     if paper is None:
         raise HTTPException(status_code=404, detail="Paper not found")
     return paper
+
+
+def fetch_project_paper_dicts(connection, project_id: str) -> list[dict]:
+    rows = connection.execute(
+        """
+        SELECT * FROM papers
+        WHERE project_id = ?
+        ORDER BY
+            CASE priority WHEN 'High' THEN 0 WHEN 'Medium' THEN 1 ELSE 2 END,
+            relevance_score DESC,
+            year DESC
+        """,
+        (project_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def fetch_project_paper_card_dicts(connection, project_id: str) -> list[dict]:
+    rows = connection.execute(
+        """
+        SELECT * FROM paper_cards
+        WHERE project_id = ?
+        ORDER BY created_at DESC, rowid DESC
+        """,
+        (project_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def build_paper_card_source(connection, project_id: str, payload: PaperCardCreateRequest) -> dict:

@@ -1,6 +1,6 @@
 # ScholarFlow Architecture
 
-This document describes the target architecture and the current Phase 7 Deep Paper Card workflow.
+This document describes the target architecture and the current Phase 8 research decision workflow.
 
 ## Product Shape
 
@@ -41,11 +41,11 @@ examples/
   workflows/
 ```
 
-Current Phase 7 entry points:
+Current Phase 8 entry points:
 
 - `apps/web`: React research workspace with API-aware project, timeline, paper, and artifact state.
 - `apps/cli`: Node CLI with workspace initialization and Web/API service management.
-- `services/api`: FastAPI app with SQLite persistence, the first minimal agent loop, literature retrieval adapters, and single-paper card generation.
+- `services/api`: FastAPI app with SQLite persistence, the first minimal agent loop, literature retrieval adapters, single-paper card generation, and research decision generation.
 - `packages/schemas`: shared TypeScript API contracts.
 
 ## Web UI
@@ -59,7 +59,7 @@ Planned layout:
 - Artifact Preview: paper tables, paper cards, gap boards, experiment plans, diffs.
 - Tool Timeline: retrieval queries, filters, model calls, artifact writes, errors.
 
-The Phase 7 implementation reads and writes local API data for projects, papers, artifacts, sessions, tool events, agent runs, and paper cards. It can retrieve paper candidates from arXiv/OpenAlex, then generate a single-paper 12-section Deep Paper Card from metadata, abstract, and optional pasted text. It intentionally does not download PDFs or batch-read papers yet.
+The Phase 8 implementation reads and writes local API data for projects, papers, artifacts, sessions, tool events, agent runs, and paper cards. It can retrieve paper candidates from arXiv/OpenAlex, generate a single-paper 12-section Deep Paper Card, and turn those assets into a Gap Board, Idea Validation Report, and Experiment Plan. It intentionally does not download PDFs, batch-read papers, or run training jobs yet.
 
 The UI is Chinese-first. Technical terms such as Agent Loop, Artifact, Timeline, Gap, Claim, Baseline, and Ablation can remain in English when useful.
 
@@ -98,6 +98,7 @@ Current API capabilities:
 - Generate and execute minimal agent plans.
 - Retrieve and persist ranked paper tables from arXiv/OpenAlex.
 - Generate and persist single-paper Deep Paper Cards through `POST /projects/{project_id}/paper-cards`.
+- Generate research decision artifacts through `POST /projects/{project_id}/research-decisions`.
 
 ## CLI
 
@@ -178,7 +179,7 @@ Initial tool categories:
 - Gap analysis.
 - Novelty checking.
 - Minimal reproduction planning.
-- Experiment planning.
+- Experiment planning: Phase 8 implements deterministic artifact generation for baseline, dataset, metrics, ablations, resource estimates, success criteria, and failure criteria.
 - Artifact save and diff.
 
 Every tool should return structured data where possible.
@@ -208,7 +209,7 @@ Expected behavior:
 - Preserve search queries and retrieval sources.
 - Avoid inventing citations, datasets, metrics, or experimental results.
 
-The Phase 6 paper table artifact preserves expanded queries, source API names, source URLs, relevance reasons, and retrieval warnings. Phase 7 paper-card artifacts preserve the 12 sections, weakest assumption, minimal reproduction, counterexample, and follow-up idea in structured JSON.
+The Phase 6 paper table artifact preserves expanded queries, source API names, source URLs, relevance reasons, and retrieval warnings. Phase 7 paper-card artifacts preserve the 12 sections, weakest assumption, minimal reproduction, counterexample, and follow-up idea in structured JSON. Phase 8 decision artifacts preserve true/engineering/pseudo gap labels, novelty risk, feasibility, and experiment plans.
 
 ## Local Data Policy
 

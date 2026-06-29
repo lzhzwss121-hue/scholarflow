@@ -133,6 +133,8 @@ Planned deliverables:
 - One-week minimal reproduction plan.
 - Experiment planning artifact.
 
+Status: complete.
+
 ## Phase 9: Open-Source Release Polish
 
 Goal: prepare ScholarFlow for public use and contribution.
