@@ -1,5 +1,7 @@
 # ScholarFlow
 
+[English](./README.md) | [简体中文](./README.zh-CN.md)
+
 ScholarFlow is a Chinese-first AI research workflow agent for students and researchers who need to turn a vague research direction into traceable research assets: paper tables, deep paper cards, gap analysis, novelty checks, reproduction plans, experiment plans, and writing-ready evidence.
 
 ScholarFlow is not a paper search demo. The goal is to build a local-first research workspace that helps users answer a more practical question:
