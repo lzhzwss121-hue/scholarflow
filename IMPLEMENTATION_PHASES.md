@@ -322,6 +322,8 @@ scholarflow/
 
 目标：把 ScholarFlow 做成可以公开展示的开源项目。
 
+当前状态：complete。
+
 交付物：
 
 - 完整 README。
@@ -342,6 +344,13 @@ scholarflow/
 - 不承诺云服务。
 - 不做付费系统。
 - 不做实验室多人协作。
+
+完成说明：
+
+- README 已同步 v0.1.0 public preview 状态。
+- 示例项目使用公开安全的 synthetic artifacts，不包含真实用户数据。
+- GitHub Issue/PR 模板、CI、Security Policy 和 release notes 已补齐。
+- 截图资产放在 `docs/assets/scholarflow-dashboard.png`。
 
 ## 阶段推进规则
 

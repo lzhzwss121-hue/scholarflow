@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Typecheck, build, and API smoke test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Check TypeScript workspaces
+        run: npm run check
+
+      - name: Build web and schema packages
+        run: npm run build
+
+      - name: Check CLI entry
+        run: npm run version:cli
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install API dependencies
+        run: python -m pip install -r services/api/requirements.txt
+
+      - name: Compile API package
+        run: python -m compileall services/api/src/scholarflow_api
+
+      - name: API health smoke test
+        env:
+          PYTHONPATH: services/api/src
+          SCHOLARFLOW_DB_PATH: /tmp/scholarflow-ci.sqlite3
+        run: python -m scholarflow_api.healthcheck

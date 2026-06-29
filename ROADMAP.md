@@ -148,3 +148,5 @@ Planned deliverables:
 - Pull request template.
 - Security policy.
 - First public release tag.
+
+Status: complete for the v0.1.0 public preview assets. The repository now includes CI, templates, a security policy, release notes, and a synthetic example workflow. A Git tag can be created after the user confirms the final v0.1.0 release point.

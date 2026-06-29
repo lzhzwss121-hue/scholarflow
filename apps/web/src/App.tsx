@@ -386,7 +386,7 @@ export function App() {
       <main className="agent-workspace">
         <header className="workspace-header">
           <div>
-            <p className="phase-label">Phase 5 / Minimal Agent Core</p>
+            <p className="phase-label">v0.1.0 / Open-Source Preview</p>
             <h1>{viewTitles[activeView]}</h1>
           </div>
           <div className="toolbar" aria-label="workspace actions">
@@ -718,8 +718,8 @@ function DashboardView({
           <h2>{activeProject?.title ?? "从 VLM hallucination benchmark 找到可验证研究 gap"}</h2>
         </div>
         <p>
-          当前阶段已经接入最小 Agent Loop。系统会先保存 Research Plan，等待确认后执行 mock tools，
-          并把每个工具调用写入 session timeline。
+          当前版本已经贯通 Research Plan、文献检索、Deep Paper Card、Gap Board 和 Experiment Plan。
+          系统会把关键工具调用写入 session timeline，并把研究输出保存为 artifact。
         </p>
       </section>
 

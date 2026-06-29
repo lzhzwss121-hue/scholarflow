@@ -8,9 +8,9 @@ ScholarFlow is not a paper search demo. The goal is to build a local-first resea
 
 ## Current Status
 
-This repository is in Phase 8: Gap / Novelty / Experiment Plan.
+This repository is in Phase 9: Open-Source Release Polish. It is ready to be used as a v0.1.0 public preview and resume project reference.
 
-The current codebase includes a React research workspace, a FastAPI service backed by SQLite, a Node CLI for local workspace and service management, a minimal research agent loop, real arXiv/OpenAlex literature retrieval, single-paper Deep Paper Card generation, research gap/novelty/experiment planning, and a shared schema package. It does not include real model API calls, PDF downloading, automatic training, batch paper reading, or automatic paper writing yet.
+The current codebase includes a React research workspace, a FastAPI service backed by SQLite, a Node CLI for local workspace and service management, a minimal research agent loop, real arXiv/OpenAlex literature retrieval, single-paper Deep Paper Card generation, research gap/novelty/experiment planning, release documentation, GitHub templates, and a shared schema package. It does not include live model API calls, PDF downloading, automatic training, batch paper reading, or automatic paper writing yet.
 
 See [IMPLEMENTATION_PHASES.md](./IMPLEMENTATION_PHASES.md) for the staged build plan.
 
@@ -91,6 +91,14 @@ Check the API health handler without starting a server:
 
 ```bash
 npm run health:api
+```
+
+Run the local verification suite used by CI:
+
+```bash
+npm run check
+npm run build
+python3 -m compileall services/api/src/scholarflow_api
 ```
 
 ## Target Users
@@ -181,6 +189,23 @@ The Gap Board and Experiment Planner pages can generate the first decision bundl
 - Generate an experiment plan with baseline, dataset, metrics, ablations, resources, success criteria, and failure criteria.
 - Save `gap_board.md`, `idea_validation_report.md`, and `experiment_plan.md` artifacts.
 
+## Screenshot
+
+The public release screenshot is stored at [docs/assets/scholarflow-dashboard.png](./docs/assets/scholarflow-dashboard.png).
+
+## Example Workflow
+
+A public-safe synthetic example is available in [examples/workflows/phase8-vlm-hallucination](./examples/workflows/phase8-vlm-hallucination). It shows the expected shapes of:
+
+- Project brief.
+- Paper Table.
+- Deep Paper Card.
+- Gap Board.
+- Idea Validation Report.
+- Experiment Plan.
+
+The example files are not real paper recommendations and should be replaced with fresh retrieval results before research use.
+
 ## Current CLI
 
 Phase 4 provides the local command entry:
@@ -258,7 +283,7 @@ Phase 6 provides a real paper-table workflow:
 - SQLite persistence for structured paper rows.
 - Markdown and JSON paper-table artifact output.
 
-The current retrieval flow does not download PDFs, build citation graphs, or generate deep paper cards. Those are later phases.
+The current retrieval flow does not download PDFs or build citation graphs. Deep Paper Cards are generated from metadata, abstracts, and optional user-pasted content in the Paper Reader workflow.
 
 ## Design Principles
 
@@ -332,6 +357,18 @@ ScholarFlow will handle API keys, local papers, notes, experiment results, and p
 - Local papers, PDFs, databases, logs, vector stores, and user workspaces are ignored by Git.
 - Public examples should use synthetic or openly licensed data.
 - Research artifacts should preserve source links and avoid unsupported claims.
+
+See [SECURITY.md](./SECURITY.md) for the current security policy.
+
+## Open-Source Release
+
+The v0.1.0 release polish includes:
+
+- GitHub Actions CI for TypeScript checks, web build, CLI smoke test, API compile, and API health smoke test.
+- GitHub Issue templates and pull request template.
+- Security policy.
+- Public-safe example workflow.
+- Release notes in [docs/release-notes/v0.1.0.md](./docs/release-notes/v0.1.0.md).
 
 ## License
 

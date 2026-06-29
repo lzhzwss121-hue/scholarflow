@@ -1,6 +1,6 @@
 # ScholarFlow Architecture
 
-This document describes the target architecture and the current Phase 8 research decision workflow.
+This document describes the target architecture and the current v0.1.0 public preview.
 
 ## Product Shape
 
@@ -41,12 +41,14 @@ examples/
   workflows/
 ```
 
-Current Phase 8 entry points:
+Current v0.1.0 entry points:
 
 - `apps/web`: React research workspace with API-aware project, timeline, paper, and artifact state.
 - `apps/cli`: Node CLI with workspace initialization and Web/API service management.
 - `services/api`: FastAPI app with SQLite persistence, the first minimal agent loop, literature retrieval adapters, single-paper card generation, and research decision generation.
 - `packages/schemas`: shared TypeScript API contracts.
+- `.github`: CI, Issue templates, and pull request template for open-source contribution.
+- `examples/workflows`: public-safe example artifacts.
 
 ## Web UI
 
@@ -59,7 +61,7 @@ Planned layout:
 - Artifact Preview: paper tables, paper cards, gap boards, experiment plans, diffs.
 - Tool Timeline: retrieval queries, filters, model calls, artifact writes, errors.
 
-The Phase 8 implementation reads and writes local API data for projects, papers, artifacts, sessions, tool events, agent runs, and paper cards. It can retrieve paper candidates from arXiv/OpenAlex, generate a single-paper 12-section Deep Paper Card, and turn those assets into a Gap Board, Idea Validation Report, and Experiment Plan. It intentionally does not download PDFs, batch-read papers, or run training jobs yet.
+The v0.1.0 implementation reads and writes local API data for projects, papers, artifacts, sessions, tool events, agent runs, and paper cards. It can retrieve paper candidates from arXiv/OpenAlex, generate a single-paper 12-section Deep Paper Card, and turn those assets into a Gap Board, Idea Validation Report, and Experiment Plan. It intentionally does not download PDFs, batch-read papers, or run training jobs yet.
 
 The UI is Chinese-first. Technical terms such as Agent Loop, Artifact, Timeline, Gap, Claim, Baseline, and Ablation can remain in English when useful.
 
@@ -209,7 +211,7 @@ Expected behavior:
 - Preserve search queries and retrieval sources.
 - Avoid inventing citations, datasets, metrics, or experimental results.
 
-The Phase 6 paper table artifact preserves expanded queries, source API names, source URLs, relevance reasons, and retrieval warnings. Phase 7 paper-card artifacts preserve the 12 sections, weakest assumption, minimal reproduction, counterexample, and follow-up idea in structured JSON. Phase 8 decision artifacts preserve true/engineering/pseudo gap labels, novelty risk, feasibility, and experiment plans.
+The Phase 6 paper table artifact preserves expanded queries, source API names, source URLs, relevance reasons, and retrieval warnings. Phase 7 paper-card artifacts preserve the 12 sections, weakest assumption, minimal reproduction, counterexample, and follow-up idea in structured JSON. Phase 8 decision artifacts preserve true/engineering/pseudo gap labels, novelty risk, feasibility, and experiment plans. Phase 9 adds public release documentation, contribution templates, CI, release notes, and synthetic example artifacts.
 
 ## Local Data Policy
 

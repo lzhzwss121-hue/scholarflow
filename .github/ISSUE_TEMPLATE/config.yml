@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Roadmap
+    url: https://github.com/lzhzwss121-hue/scholarflow/blob/main/ROADMAP.md
+    about: Check the staged implementation plan before proposing broad scope changes.
