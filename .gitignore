@@ -1,0 +1,69 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Dependencies
+node_modules/
+.pnpm-store/
+.yarn/
+vendor/
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+
+# Build output
+dist/
+build/
+coverage/
+.next/
+.turbo/
+.vite/
+*.tsbuildinfo
+
+# Logs and runtime state
+logs/
+*.log
+*.pid
+*.sock
+.DS_Store
+
+# Databases and vector stores
+*.db
+*.sqlite
+*.sqlite3
+services/.data/
+services/api/.data/
+chroma/
+qdrant/
+faiss/
+vector_store/
+
+# Local research data
+papers/
+pdfs/
+datasets/
+experiments/
+outputs/
+artifacts/
+workspace/
+.scholarflow/
+
+# Large or private research files
+*.pdf
+*.docx
+*.pptx
+*.xlsx
+*.csv
+*.tsv
+*.jsonl
+
+# IDE
+.idea/
+.vscode/
