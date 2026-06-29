@@ -120,7 +120,7 @@ def init_db() -> None:
                 project_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 task TEXT NOT NULL,
-                provider TEXT NOT NULL DEFAULT 'deepseek',
+                provider TEXT NOT NULL DEFAULT 'openrouter',
                 mode TEXT NOT NULL DEFAULT 'plan',
                 status TEXT NOT NULL DEFAULT 'planned',
                 plan_json TEXT NOT NULL DEFAULT '{}',

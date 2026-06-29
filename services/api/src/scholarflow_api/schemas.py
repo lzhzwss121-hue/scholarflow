@@ -162,7 +162,7 @@ class ResearchDecisionResponse(BaseModel):
 class AgentPlanRequest(BaseModel):
     project_id: str
     task: str = Field(min_length=1, max_length=1000)
-    provider: str = "deepseek"
+    provider: str = "openrouter"
 
 
 class AgentExecuteRequest(BaseModel):

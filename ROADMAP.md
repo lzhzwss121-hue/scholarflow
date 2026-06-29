@@ -85,7 +85,8 @@ Goal: implement the first working research agent loop.
 Planned deliverables:
 
 - Model provider abstraction.
-- DeepSeek provider.
+- OpenRouter provider using the Ddo-style `minimax/minimax-m2.5` model setup.
+- Optional DeepSeek fallback provider.
 - Tool registry.
 - Minimal research tools.
 - Research Plan Mode.

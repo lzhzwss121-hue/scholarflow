@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import json
 import os
+import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Protocol
 
 
 AgentStepStatus = str
+DEFAULT_OPENROUTER_MODEL = "minimax/minimax-m2.5"
+DEFAULT_OPENROUTER_RAG_MODEL = "qwen/qwen3-embedding-8b"
+DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_OPENROUTER_APP_URL = "https://github.com/lzhzwss121-hue/scholarflow"
+DEFAULT_OPENROUTER_APP_TITLE = "ScholarFlow"
 
 
 @dataclass
@@ -50,9 +58,119 @@ class DeepSeekProvider:
         self.fast_model = os.getenv("DEEPSEEK_FAST_MODEL", "deepseek-v4-flash")
 
     def create_plan(self, task: str, project: dict[str, Any]) -> AgentPlanDraft:
-        # Phase 5 keeps execution deterministic and local-first. The provider
-        # object is the integration boundary for a later real DeepSeek call.
+        # Keep DeepSeek available as an optional provider without making it the default path.
         return build_default_plan(task, project, provider=f"{self.name}:{self.model}")
+
+
+class OpenRouterProvider:
+    name = "openrouter"
+
+    def __init__(self) -> None:
+        self.model = os.getenv("OPENROUTER_MODEL") or os.getenv("DDO_LLM_MODEL") or DEFAULT_OPENROUTER_MODEL
+        self.fast_model = os.getenv("OPENROUTER_FAST_MODEL", self.model)
+        self.rag_model = (
+            os.getenv("OPENROUTER_RAG_MODEL") or os.getenv("DDO_LLM_RAG_MODEL") or DEFAULT_OPENROUTER_RAG_MODEL
+        )
+        self.base_url = os.getenv("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL).rstrip("/")
+        self.api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("DDO_OPENROUTER_API_KEY") or ""
+        self.app_url = os.getenv("OPENROUTER_APP_URL", DEFAULT_OPENROUTER_APP_URL)
+        self.app_title = os.getenv("OPENROUTER_APP_TITLE", DEFAULT_OPENROUTER_APP_TITLE)
+        self.timeout_seconds = _parse_timeout(os.getenv("OPENROUTER_TIMEOUT_SECONDS", "40"))
+
+    def create_plan(self, task: str, project: dict[str, Any]) -> AgentPlanDraft:
+        provider_label = f"{self.name}:{self.model}"
+        if not self.api_key:
+            return build_fallback_plan(
+                task,
+                project,
+                provider_label,
+                "未检测到 OPENROUTER_API_KEY，已使用本地确定性计划作为 fallback。",
+            )
+
+        try:
+            payload = self._create_chat_payload(task, project)
+            response = self._post_chat_completion(payload)
+            content = response["choices"][0]["message"]["content"]
+            actual_model = response.get("model") or self.model
+            return build_plan_from_model_content(
+                task,
+                project,
+                content,
+                provider=f"{self.name}:{actual_model}",
+            )
+        except (KeyError, TypeError, ValueError, urllib.error.URLError, TimeoutError) as error:
+            return build_fallback_plan(
+                task,
+                project,
+                provider_label,
+                f"OpenRouter 调用失败（{error.__class__.__name__}），已使用本地确定性计划作为 fallback。",
+            )
+
+    def _create_chat_payload(self, task: str, project: dict[str, Any]) -> dict[str, Any]:
+        project_context = {
+            "title": project.get("title", ""),
+            "description": project.get("description", ""),
+            "keyword": project.get("keyword", ""),
+            "field": project.get("field", ""),
+            "language": project.get("language", "zh-CN"),
+            "workflow": project.get("workflow", ""),
+        }
+        return {
+            "model": self.model,
+            "temperature": 0.2,
+            "max_tokens": 900,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are ScholarFlow's planning model for AI research workflows. "
+                        "Return strict JSON only. Do not invent papers, citations, datasets, "
+                        "metrics, or experiment results."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "task": task,
+                            "project": project_context,
+                            "allowed_tools": [
+                                "create_plan",
+                                "search_mock_papers",
+                                "save_artifact",
+                                "update_timeline",
+                            ],
+                            "required_json_shape": {
+                                "focus": "short research focus in Chinese",
+                                "rationale": "why this plan should run first in Chinese",
+                                "step_details": {
+                                    "create_plan": "detail for the planning step",
+                                    "search_mock_papers": "detail for paper candidate step",
+                                    "save_artifact": "detail for artifact saving step",
+                                    "update_timeline": "detail for timeline step",
+                                },
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+        }
+
+    def _post_chat_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": self.app_url,
+                "X-Title": self.app_title,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            return json.loads(response.read().decode("utf-8"))
 
 
 class LocalHeuristicProvider:
@@ -104,10 +222,18 @@ class ToolRegistry:
 
 
 def get_model_provider(provider_name: str | None = None) -> ModelProvider:
-    selected = (provider_name or os.getenv("SCHOLARFLOW_MODEL_PROVIDER") or "deepseek").lower()
-    if selected == "local":
+    selected = (provider_name or os.getenv("SCHOLARFLOW_MODEL_PROVIDER") or "openrouter").lower()
+    if selected.startswith("local") or selected.startswith("heuristic"):
         return LocalHeuristicProvider()
-    return DeepSeekProvider()
+    if selected.startswith("deepseek"):
+        return DeepSeekProvider()
+    return OpenRouterProvider()
+
+
+def build_fallback_plan(task: str, project: dict[str, Any], provider: str, note: str) -> AgentPlanDraft:
+    draft = build_default_plan(task, project, provider=f"{provider}:local-fallback")
+    draft.rationale = f"{draft.rationale} {note}"
+    return draft
 
 
 def build_default_plan(task: str, project: dict[str, Any], provider: str) -> AgentPlanDraft:
@@ -145,6 +271,61 @@ def build_default_plan(task: str, project: dict[str, Any], provider: str) -> Age
             ),
         ],
     )
+
+
+def build_plan_from_model_content(
+    task: str,
+    project: dict[str, Any],
+    content: str,
+    provider: str,
+) -> AgentPlanDraft:
+    model_json = parse_json_object(content)
+    draft = build_default_plan(task, project, provider=provider)
+    rationale = str(model_json.get("rationale") or "").strip()
+    focus = str(model_json.get("focus") or "").strip()
+    if rationale:
+        draft.rationale = rationale[:700]
+    elif focus:
+        draft.rationale = f"先把任务收敛到“{focus}”，再生成可确认、可追踪的科研执行计划。"
+
+    step_details = model_json.get("step_details")
+    if isinstance(step_details, dict):
+        for step in draft.steps:
+            detail = step_details.get(step.tool)
+            if isinstance(detail, str) and detail.strip():
+                step.detail = detail.strip()[:360]
+    return draft
+
+
+def parse_json_object(content: str) -> dict[str, Any]:
+    text = content.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    if not text.startswith("{"):
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise ValueError("OpenRouter response did not contain a JSON object")
+        text = text[start : end + 1]
+
+    parsed = json.loads(text)
+    if not isinstance(parsed, dict):
+        raise ValueError("OpenRouter response JSON must be an object")
+    return parsed
+
+
+def _parse_timeout(value: str) -> float:
+    try:
+        timeout = float(value)
+    except ValueError:
+        return 40.0
+    return max(5.0, min(timeout, 120.0))
 
 
 def infer_research_focus(task: str, project: dict[str, Any]) -> str:

@@ -250,7 +250,7 @@ export function App() {
       const plan = await createAgentPlan({
         project_id: activeProject.id,
         task: agentTask,
-        provider: "deepseek",
+        provider: "openrouter",
       });
       setAgentPlan(plan);
       setLastSavedArtifact(plan.artifact);

@@ -146,17 +146,18 @@ ScholarFlow should borrow the following ideas from Claude Code-like systems:
 - Sub-Agents: literature, reading, skeptic, novelty, and experiment roles can work on separate subtasks.
 - MCP-Style Integrations: Zotero, GitHub, Hugging Face, Papers with Code, and local file tools can be added without rewriting the core loop.
 
-Current Phase 5 implementation:
+Current model-provider implementation:
 
 - `ModelProvider` abstraction.
-- `DeepSeekProvider` integration boundary using the configured DeepSeek model name.
+- `OpenRouterProvider` as the default provider, using `OPENROUTER_MODEL=minimax/minimax-m2.5` unless overridden.
+- `DeepSeekProvider` as an optional fallback provider.
 - `ToolRegistry`.
 - `agent_runs` table.
 - `POST /agent/plan`.
 - `POST /agent/runs/{run_id}/execute`.
 - Minimal tools: `create_plan`, `search_mock_papers`, `save_artifact`, `update_timeline`.
 
-The current provider path is deterministic and local-first. `DeepSeekProvider` is the provider boundary, not a live external model call in Phase 5.
+When `OPENROUTER_API_KEY` is available, Research Plan Mode calls the OpenRouter OpenAI-compatible chat completions API. Without a key or after an API failure, ScholarFlow falls back to the deterministic local planner so local development and CI remain stable.
 
 ## Model Provider Strategy
 
@@ -164,10 +165,10 @@ The implementation should define a provider abstraction before binding to a spec
 
 Preferred default:
 
-- `deepseek-v4-pro`: planning, deep paper reading, novelty checking, follow-up idea generation.
-- `deepseek-v4-flash`: query expansion, classification, extraction, short summaries.
+- `minimax/minimax-m2.5`: default planning model, aligned with the Ddo project's OpenRouter setup.
+- `qwen/qwen3-embedding-8b`: configured RAG embedding model alias for future evidence retrieval workflows.
 
-Future providers should be swappable through configuration. Phase 5 stores the provider name on each `agent_run`; live external model calls are intentionally deferred.
+Providers remain swappable through configuration. ScholarFlow stores the provider name on each `agent_run` so artifacts can show whether a plan came from OpenRouter, DeepSeek, or local fallback.
 
 ## Research Tools
 

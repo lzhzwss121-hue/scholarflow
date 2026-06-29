@@ -192,7 +192,8 @@ scholarflow/
 交付物：
 
 - `ModelProvider` 抽象。
-- `DeepSeekProvider`。
+- `OpenRouterProvider`，默认使用 Ddo 同款 `minimax/minimax-m2.5` OpenRouter 模型配置。
+- 可选 `DeepSeekProvider` fallback。
 - `ToolRegistry`。
 - 最小工具：
   - `create_plan`
