@@ -61,12 +61,10 @@ export OPENROUTER_API_KEY=your_openrouter_api_key
 export OPENROUTER_MODEL=minimax/minimax-m2.5
 ```
 
-这套配置参考 Ddo 项目的模型设置。ScholarFlow 也支持 Ddo 风格环境变量：
+可选配置未来检索工作流使用的 embedding 模型：
 
 ```bash
-export DDO_OPENROUTER_API_KEY=your_openrouter_api_key
-export DDO_LLM_MODEL=minimax/minimax-m2.5
-export DDO_LLM_RAG_MODEL=qwen/qwen3-embedding-8b
+export OPENROUTER_RAG_MODEL=qwen/qwen3-embedding-8b
 ```
 
 初始化本地 ScholarFlow 工作区：

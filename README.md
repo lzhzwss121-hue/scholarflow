@@ -61,12 +61,10 @@ export OPENROUTER_API_KEY=your_openrouter_api_key
 export OPENROUTER_MODEL=minimax/minimax-m2.5
 ```
 
-This follows the model setup used by the Ddo project. ScholarFlow also supports Ddo-compatible aliases:
+Optional embedding model configuration for future retrieval workflows:
 
 ```bash
-export DDO_OPENROUTER_API_KEY=your_openrouter_api_key
-export DDO_LLM_MODEL=minimax/minimax-m2.5
-export DDO_LLM_RAG_MODEL=qwen/qwen3-embedding-8b
+export OPENROUTER_RAG_MODEL=qwen/qwen3-embedding-8b
 ```
 
 Initialize the local ScholarFlow workspace:
