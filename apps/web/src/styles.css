@@ -763,6 +763,68 @@ td a {
   gap: 16px;
 }
 
+.reader-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.paper-reader-controls {
+  border: 1px solid #d9dee6;
+  border-radius: 8px;
+  padding: 18px;
+  background: #ffffff;
+  display: grid;
+  gap: 14px;
+}
+
+.paper-reader-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.paper-reader-header h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.paper-reader-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.2fr);
+  gap: 12px;
+}
+
+.paper-reader-grid label {
+  display: grid;
+  gap: 8px;
+  color: #344256;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.paper-reader-grid select,
+.paper-reader-grid textarea {
+  width: 100%;
+  border: 1px solid #d8dee7;
+  border-radius: 8px;
+  background: #fbfcfd;
+  color: #1d2733;
+}
+
+.paper-reader-grid select {
+  min-height: 38px;
+  padding: 0 10px;
+}
+
+.paper-reader-grid textarea {
+  min-height: 112px;
+  padding: 12px;
+  resize: vertical;
+  line-height: 1.6;
+}
+
 .paper-summary {
   padding: 20px;
 }
@@ -807,6 +869,40 @@ td a {
   color: #344256;
   font-size: 13px;
   font-weight: 700;
+}
+
+.paper-card-section {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 0;
+  border-bottom: 1px solid #e4e8ee;
+  padding: 14px 14px 14px 0;
+}
+
+.paper-card-section:last-child {
+  border-bottom: 0;
+}
+
+.paper-card-section > span {
+  color: #7a8797;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.paper-card-section h3 {
+  margin: 0;
+  color: #263545;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.paper-card-section p {
+  margin: 8px 0 0;
+  color: #344256;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
 }
 
 .gap-board {
@@ -1084,6 +1180,7 @@ td a {
   .scholarflow-app,
   .workspace-body,
   .reader-layout,
+  .paper-reader-grid,
   .gap-board {
     grid-template-columns: 1fr;
   }
@@ -1112,6 +1209,7 @@ td a {
   }
 
   .workspace-header,
+  .paper-reader-header,
   .search-control,
   .experiment-row {
     align-items: flex-start;

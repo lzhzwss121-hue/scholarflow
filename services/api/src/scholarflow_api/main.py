@@ -18,6 +18,12 @@ from scholarflow_api.agent_core import (
 )
 from scholarflow_api.database import get_connection, init_db, new_id, row_to_dict, seed_papers, utc_now
 from scholarflow_api.literature import render_paper_table_json, render_paper_table_markdown, search_literature
+from scholarflow_api.paper_card import (
+    generate_deep_paper_card,
+    paper_slug,
+    render_card_json,
+    render_card_markdown,
+)
 from scholarflow_api.schemas import (
     AgentExecuteRequest,
     AgentExecuteResponse,
@@ -29,6 +35,9 @@ from scholarflow_api.schemas import (
     LiteratureSearchRequest,
     LiteratureSearchResponse,
     Paper,
+    PaperCard,
+    PaperCardCreateRequest,
+    PaperCardResponse,
     Project,
     ProjectCreate,
     Session,
@@ -265,6 +274,80 @@ def search_project_literature(project_id: str, payload: LiteratureSearchRequest)
         papers=[Paper.model_validate(dict(row)) for row in rows],
         artifact=Artifact.model_validate(artifact),
         errors=result.errors,
+    )
+
+
+@app.post("/projects/{project_id}/paper-cards", response_model=PaperCardResponse, status_code=201)
+def create_project_paper_card(project_id: str, payload: PaperCardCreateRequest) -> PaperCardResponse:
+    now = utc_now()
+    with get_connection() as connection:
+        project = fetch_project_dict(connection, project_id)
+        session_id = ensure_active_session(connection, project, now)
+        paper = build_paper_card_source(connection, project_id, payload)
+        card = generate_deep_paper_card(paper, payload.paper_text)
+        artifact = insert_artifact_row(
+            connection=connection,
+            project_id=project_id,
+            title=f"paper_card_{paper_slug(card.paper_title)}.md",
+            kind="markdown",
+            content_markdown=render_card_markdown(card, paper),
+            content_json=render_card_json(card, paper),
+            diff="+ Generated 12-section Deep Paper Card\n+ Saved structured JSON for downstream gap analysis",
+            now=now,
+        )
+        card_id = new_id("paper_card")
+        connection.execute(
+            """
+            INSERT INTO paper_cards (
+                id, project_id, paper_id, artifact_id, sections_json, weakest_assumption,
+                minimal_reproduction, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                card_id,
+                project_id,
+                payload.paper_id,
+                artifact["id"],
+                json.dumps([section.to_dict() for section in card.sections], ensure_ascii=False, indent=2),
+                card.weakest_assumption,
+                card.minimal_reproduction,
+                now,
+            ),
+        )
+        insert_tool_event(
+            connection,
+            session_id,
+            "paper_card.generate",
+            "done",
+            f"已生成 12 段 Deep Paper Card: {card.paper_title}",
+            now,
+        )
+        insert_tool_event(
+            connection,
+            session_id,
+            "artifact.save",
+            "done",
+            f"已保存 paper card artifact: {artifact['title']}",
+            now,
+        )
+        connection.execute(
+            "UPDATE projects SET stage = ?, updated_at = ? WHERE id = ?",
+            ("paper-card", now, project_id),
+        )
+
+    return PaperCardResponse(
+        card=PaperCard(
+            id=card_id,
+            project_id=project_id,
+            paper_id=payload.paper_id,
+            artifact_id=artifact["id"],
+            sections=[section.to_dict() for section in card.sections],
+            weakest_assumption=card.weakest_assumption,
+            minimal_reproduction=card.minimal_reproduction,
+            created_at=now,
+        ),
+        artifact=Artifact.model_validate(artifact),
     )
 
 
@@ -595,6 +678,48 @@ def fetch_artifact_dict(connection, artifact_id: str | None) -> dict:
     if artifact is None:
         raise HTTPException(status_code=404, detail="Artifact not found")
     return artifact
+
+
+def fetch_paper_dict(connection, project_id: str, paper_id: str) -> dict:
+    row = connection.execute(
+        "SELECT * FROM papers WHERE id = ? AND project_id = ?",
+        (paper_id, project_id),
+    ).fetchone()
+    paper = row_to_dict(row)
+    if paper is None:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    return paper
+
+
+def build_paper_card_source(connection, project_id: str, payload: PaperCardCreateRequest) -> dict:
+    if payload.paper_id:
+        paper = fetch_paper_dict(connection, project_id, payload.paper_id)
+        if payload.title:
+            paper["title"] = payload.title
+        if payload.abstract:
+            paper["abstract"] = payload.abstract
+        return paper
+
+    title = payload.title.strip() or "User Provided Paper"
+    if not payload.abstract and not payload.paper_text:
+        raise HTTPException(status_code=400, detail="paper_id, abstract, or paper_text is required")
+    return {
+        "id": None,
+        "project_id": project_id,
+        "title": title,
+        "authors": "user provided",
+        "abstract": payload.abstract,
+        "year": "",
+        "type": "user_input",
+        "venue": "pasted content",
+        "source": "user",
+        "url": "",
+        "relation": "用户提供内容生成的 Deep Paper Card。",
+        "priority": "High",
+        "code": "unknown",
+        "relevance_score": 1.0,
+        "created_at": "",
+    }
 
 
 def ensure_active_session(connection, project: dict, now: str) -> str:

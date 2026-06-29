@@ -29,6 +29,7 @@ export interface TimelineEvent {
 }
 
 export interface PaperRow {
+  id: string;
   title: string;
   authors: string;
   abstract: string;
@@ -135,6 +136,7 @@ export const timelineEvents: TimelineEvent[] = [
 
 export const papers: PaperRow[] = [
   {
+    id: "paper_object_hallucination",
     title: "Evaluating Object Hallucination in Large Vision-Language Models",
     authors: "unknown",
     abstract: "Evaluates object hallucination in large vision-language models.",
@@ -149,6 +151,7 @@ export const papers: PaperRow[] = [
     relevanceScore: 1.5,
   },
   {
+    id: "paper_faithful_vqa",
     title: "Faithful Visual Question Answering Requires Grounded Evidence",
     authors: "unknown",
     abstract: "Separates answer correctness from grounded visual evidence.",
@@ -163,6 +166,7 @@ export const papers: PaperRow[] = [
     relevanceScore: 1.4,
   },
   {
+    id: "paper_benchmark_bias",
     title: "Benchmark Bias in Multimodal Foundation Model Evaluation",
     authors: "unknown",
     abstract: "Analyzes benchmark shortcuts and distribution bias.",
@@ -177,6 +181,7 @@ export const papers: PaperRow[] = [
     relevanceScore: 1.3,
   },
   {
+    id: "paper_trustworthy_vlm_survey",
     title: "A Survey of Trustworthy Vision-Language Models",
     authors: "unknown",
     abstract: "Surveys trustworthy vision-language model research.",

@@ -9,6 +9,8 @@ import type {
   ApiLiteratureSearchRequest,
   ApiLiteratureSearchResponse,
   ApiPaper,
+  ApiPaperCardCreateRequest,
+  ApiPaperCardResponse,
   ApiProject,
   ApiProjectCreate,
   ApiToolEvent,
@@ -54,6 +56,13 @@ export function listProjectPapers(projectId: string) {
 
 export function searchProjectLiterature(projectId: string, payload: ApiLiteratureSearchRequest) {
   return request<ApiLiteratureSearchResponse>(`/projects/${projectId}/literature/search`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function createProjectPaperCard(projectId: string, payload: ApiPaperCardCreateRequest) {
+  return request<ApiPaperCardResponse>(`/projects/${projectId}/paper-cards`, {
     method: "POST",
     body: JSON.stringify(payload),
   });

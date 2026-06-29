@@ -24,6 +24,7 @@ import {
   type ApiAgentPlanStep,
   type ApiArtifact,
   type ApiPaper,
+  type ApiPaperCard,
   type ApiProject,
   type ApiToolEvent,
 } from "@scholarflow/schemas";
@@ -45,6 +46,7 @@ import {
 import {
   createAgentPlan,
   createProject,
+  createProjectPaperCard,
   executeAgentRun,
   getArtifact,
   getHealth,
@@ -97,6 +99,10 @@ export function App() {
   const [literatureQuery, setLiteratureQuery] = useState("VLM hallucination benchmark");
   const [literatureBusy, setLiteratureBusy] = useState(false);
   const [literatureErrors, setLiteratureErrors] = useState<string[]>([]);
+  const [selectedPaperId, setSelectedPaperId] = useState("");
+  const [paperCardInput, setPaperCardInput] = useState("");
+  const [paperCardBusy, setPaperCardBusy] = useState(false);
+  const [latestPaperCard, setLatestPaperCard] = useState<ApiPaperCard | null>(null);
 
   const activeArtifact = artifacts[activeView];
   const activeNavItem = useMemo(
@@ -147,6 +153,16 @@ export function App() {
       setLiteratureQuery(activeProject.keyword);
     }
   }, [activeProject?.keyword]);
+
+  useEffect(() => {
+    if (!paperRows.length) {
+      setSelectedPaperId("");
+      return;
+    }
+    if (!paperRows.some((paper) => paper.id === selectedPaperId)) {
+      setSelectedPaperId(paperRows[0].id);
+    }
+  }, [paperRows, selectedPaperId]);
 
   async function loadProjectResources(projectId: string, cancelled = false) {
     const [apiPapers, apiTimeline, apiArtifacts] = await Promise.all([
@@ -293,6 +309,38 @@ export function App() {
     }
   }
 
+  async function handleGeneratePaperCard() {
+    if (!activeProject) {
+      setApiMessage("没有可写入的后端项目，请先创建或启动 API。");
+      return;
+    }
+
+    const selectedPaper = paperRows.find((paper) => paper.id === selectedPaperId) ?? paperRows[0];
+    if (!selectedPaper && !paperCardInput.trim()) {
+      setApiMessage("请先选择一篇论文，或粘贴摘要/正文片段。");
+      return;
+    }
+
+    setPaperCardBusy(true);
+    setApiMessage("正在生成 12 段 Deep Paper Card...");
+    try {
+      const result = await createProjectPaperCard(activeProject.id, {
+        paper_id: selectedPaper?.id,
+        title: selectedPaper?.title,
+        abstract: selectedPaper?.abstract,
+        paper_text: paperCardInput,
+      });
+      setLatestPaperCard(result.card);
+      setLastSavedArtifact(result.artifact);
+      setApiMessage(`Deep Paper Card 已生成，artifact: ${result.artifact.id}`);
+      await loadProjectResources(activeProject.id);
+    } catch (error) {
+      setApiMessage("生成 Deep Paper Card 失败，请确认论文属于当前项目，或粘贴足够的摘要/正文。");
+    } finally {
+      setPaperCardBusy(false);
+    }
+  }
+
   return (
     <div className="scholarflow-app">
       <ProjectNavigator
@@ -346,10 +394,17 @@ export function App() {
               onCreateProject={handleCreateProject}
               onCreateAgentPlan={handleCreateAgentPlan}
               onExecuteAgentRun={handleExecuteAgentRun}
+              onGeneratePaperCard={handleGeneratePaperCard}
               onLiteratureQueryChange={setLiteratureQuery}
+              onPaperCardInputChange={setPaperCardInput}
               onSearchLiterature={handleSearchLiterature}
+              onSelectedPaperChange={setSelectedPaperId}
               paperRows={paperRows}
+              paperCardBusy={paperCardBusy}
+              paperCardInput={paperCardInput}
               projectCount={projects.length}
+              selectedPaperId={selectedPaperId}
+              latestPaperCard={latestPaperCard}
               view={activeView}
             />
           </div>
@@ -468,14 +523,21 @@ interface ActiveViewProps {
   literatureBusy: boolean;
   literatureErrors: string[];
   literatureQuery: string;
+  latestPaperCard: ApiPaperCard | null;
   onAgentTaskChange: (task: string) => void;
   onCreateAgentPlan: () => void;
   onCreateProject: () => void;
   onExecuteAgentRun: () => void;
+  onGeneratePaperCard: () => void;
   onLiteratureQueryChange: (query: string) => void;
+  onPaperCardInputChange: (value: string) => void;
   onSearchLiterature: () => void;
+  onSelectedPaperChange: (paperId: string) => void;
   paperRows: PaperRow[];
+  paperCardBusy: boolean;
+  paperCardInput: string;
   projectCount: number;
+  selectedPaperId: string;
   view: ViewId;
 }
 
@@ -490,14 +552,21 @@ function ActiveView({
   literatureBusy,
   literatureErrors,
   literatureQuery,
+  latestPaperCard,
   onAgentTaskChange,
   onCreateAgentPlan,
   onCreateProject,
   onExecuteAgentRun,
+  onGeneratePaperCard,
   onLiteratureQueryChange,
+  onPaperCardInputChange,
   onSearchLiterature,
+  onSelectedPaperChange,
   paperRows,
+  paperCardBusy,
+  paperCardInput,
   projectCount,
+  selectedPaperId,
   view,
 }: ActiveViewProps) {
   switch (view) {
@@ -516,7 +585,19 @@ function ActiveView({
         />
       );
     case "paper-reader":
-      return <PaperReaderView />;
+      return (
+        <PaperReaderView
+          apiStatus={apiStatus}
+          card={latestPaperCard}
+          isGenerating={paperCardBusy}
+          onGenerate={onGeneratePaperCard}
+          onInputChange={onPaperCardInputChange}
+          onSelectedPaperChange={onSelectedPaperChange}
+          papers={paperRows}
+          selectedPaperId={selectedPaperId}
+          supplementalInput={paperCardInput}
+        />
+      );
     case "gap-board":
       return <GapBoardView />;
     case "experiment-planner":
@@ -832,7 +913,27 @@ function PaperTableView({
   );
 }
 
-function PaperReaderView() {
+function PaperReaderView({
+  apiStatus,
+  card,
+  isGenerating,
+  onGenerate,
+  onInputChange,
+  onSelectedPaperChange,
+  papers,
+  selectedPaperId,
+  supplementalInput,
+}: {
+  apiStatus: ApiStatus;
+  card: ApiPaperCard | null;
+  isGenerating: boolean;
+  onGenerate: () => void;
+  onInputChange: (value: string) => void;
+  onSelectedPaperChange: (paperId: string) => void;
+  papers: PaperRow[];
+  selectedPaperId: string;
+  supplementalInput: string;
+}) {
   const sections = [
     "研究问题与背景",
     "已有研究与不足",
@@ -847,30 +948,86 @@ function PaperReaderView() {
     "反例设计",
     "非增量 follow-up idea",
   ];
+  const selectedPaper = papers.find((paper) => paper.id === selectedPaperId) ?? papers[0];
 
   return (
-    <div className="reader-layout">
-      <section className="paper-summary">
-        <p className="section-kicker">Selected Paper</p>
-        <h2>Faithful Visual Question Answering Requires Grounded Evidence</h2>
-        <p>
-          当前阅读重点是把 answer correctness 和 evidence faithfulness 拆开，
-          判断模型是否真的使用了图像证据，而不是依赖语言先验或 benchmark shortcut。
-        </p>
+    <div className="reader-stack">
+      <section className="paper-reader-controls">
+        <div className="paper-reader-header">
+          <div>
+            <p className="section-kicker">Deep Paper Card</p>
+            <h2>{selectedPaper?.title ?? "选择一篇论文生成 12 段精读卡片"}</h2>
+          </div>
+          <button
+            className="secondary-command"
+            disabled={apiStatus !== "online" || isGenerating || (!selectedPaper && supplementalInput.trim().length === 0)}
+            type="button"
+            onClick={onGenerate}
+          >
+            <BrainCircuit size={17} />
+            {isGenerating ? "生成中" : "生成 Paper Card"}
+          </button>
+        </div>
+
+        <div className="paper-reader-grid">
+          <label>
+            选择论文
+            <select value={selectedPaperId} onChange={(event) => onSelectedPaperChange(event.target.value)}>
+              {papers.map((paper) => (
+                <option key={paper.id} value={paper.id}>
+                  {paper.title}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            补充摘要 / 正文片段
+            <textarea
+              placeholder="可选：粘贴 abstract、method 或 experiment 片段。当前阶段不会下载 PDF。"
+              value={supplementalInput}
+              onChange={(event) => onInputChange(event.target.value)}
+            />
+          </label>
+        </div>
+
         <div className="quote-block">
           <AlertTriangle size={18} />
-          <span>最脆弱假设：人工证据标签足以代表模型真实视觉依据。</span>
+          <span>Phase 7 输出结构化 paper card；不会编造完整 PDF 细节，缺失信息会明确标记为基于有限输入的推断。</span>
         </div>
       </section>
 
-      <section className="protocol-list" aria-label="deep paper card sections">
-        {sections.map((section, index) => (
-          <div className="protocol-row" key={section}>
-            <span>{String(index + 1).padStart(2, "0")}</span>
-            <p>{section}</p>
-          </div>
-        ))}
-      </section>
+      <div className="reader-layout">
+        <section className="paper-summary">
+          <p className="section-kicker">Selected Paper</p>
+          <h2>{selectedPaper?.title ?? "No paper selected"}</h2>
+          <p>{selectedPaper?.abstract || selectedPaper?.relation || "先在 Paper Table 检索或选择论文。"}</p>
+          {card ? (
+            <div className="quote-block">
+              <AlertTriangle size={18} />
+              <span>{card.weakest_assumption}</span>
+            </div>
+          ) : null}
+        </section>
+
+        <section className="protocol-list" aria-label="deep paper card sections">
+          {card
+            ? card.sections.map((section, index) => (
+                <article className="paper-card-section" key={section.id}>
+                  <span>{String(index + 1).padStart(2, "0")}</span>
+                  <div>
+                    <h3>{section.title}</h3>
+                    <p>{section.content}</p>
+                  </div>
+                </article>
+              ))
+            : sections.map((section, index) => (
+                <div className="protocol-row" key={section}>
+                  <span>{String(index + 1).padStart(2, "0")}</span>
+                  <p>{section}</p>
+                </div>
+              ))}
+        </section>
+      </div>
     </div>
   );
 }
@@ -1039,6 +1196,7 @@ function ArtifactPreview({ activeTab, apiStatus, artifact, lastSavedArtifact, on
 
 function toPaperRow(paper: ApiPaper): PaperRow {
   return {
+    id: paper.id,
     title: paper.title,
     authors: paper.authors,
     abstract: paper.abstract,

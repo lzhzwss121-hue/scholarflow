@@ -97,6 +97,35 @@ export interface ApiLiteratureSearchResponse {
   errors: string[];
 }
 
+export interface ApiPaperCardCreateRequest {
+  paper_id?: string | null;
+  title?: string;
+  abstract?: string;
+  paper_text?: string;
+}
+
+export interface ApiPaperCardSection {
+  id: string;
+  title: string;
+  content: string;
+}
+
+export interface ApiPaperCard {
+  id: string;
+  project_id: string;
+  paper_id: string | null;
+  artifact_id: string | null;
+  sections: ApiPaperCardSection[];
+  weakest_assumption: string;
+  minimal_reproduction: string;
+  created_at: string;
+}
+
+export interface ApiPaperCardResponse {
+  card: ApiPaperCard;
+  artifact: ApiArtifact;
+}
+
 export interface ApiAgentPlanRequest {
   project_id: string;
   task: string;

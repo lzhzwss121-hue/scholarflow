@@ -8,9 +8,9 @@ ScholarFlow is not a paper search demo. The goal is to build a local-first resea
 
 ## Current Status
 
-This repository is in Phase 6: literature retrieval MVP.
+This repository is in Phase 7: Deep Paper Card.
 
-The current codebase includes a React research workspace, a FastAPI service backed by SQLite, a Node CLI for local workspace and service management, a minimal research agent loop, real arXiv/OpenAlex literature retrieval, and a shared schema package. It does not include real model API calls or deep paper card generation yet.
+The current codebase includes a React research workspace, a FastAPI service backed by SQLite, a Node CLI for local workspace and service management, a minimal research agent loop, real arXiv/OpenAlex literature retrieval, single-paper Deep Paper Card generation, and a shared schema package. It does not include real model API calls, PDF downloading, batch paper reading, or automatic paper writing yet.
 
 See [IMPLEMENTATION_PHASES.md](./IMPLEMENTATION_PHASES.md) for the staged build plan.
 
@@ -166,6 +166,14 @@ The Paper Table page can run the first real literature retrieval flow:
 - Save a structured `paper_table.md` artifact.
 - Persist paper metadata to SQLite.
 
+The Paper Reader page can generate the first 12-section Deep Paper Card:
+
+- Select a retrieved paper.
+- Optionally paste an abstract, method, or experiment excerpt.
+- Generate the fixed 12-part paper-reading artifact.
+- Save Markdown and JSON outputs to SQLite.
+- Preserve weakest assumption and one-week reproduction fields for later gap analysis.
+
 ## Current CLI
 
 Phase 4 provides the local command entry:
@@ -194,7 +202,7 @@ The CLI creates this local workspace shape:
 
 ## Current API
 
-Phase 3, Phase 5, and Phase 6 provide these local API endpoints:
+Phase 3, Phase 5, Phase 6, and Phase 7 provide these local API endpoints:
 
 ```text
 GET  /health
@@ -211,6 +219,7 @@ GET  /projects/{project_id}/timeline
 POST /agent/plan
 POST /agent/runs/{run_id}/execute
 POST /projects/{project_id}/literature/search
+POST /projects/{project_id}/paper-cards
 ```
 
 The default development SQLite database path is `services/api/.data/scholarflow.sqlite3`, and it is ignored by Git. When launched by the CLI, the database path is `<workspace>/cache/scholarflow.sqlite3`.
@@ -285,6 +294,8 @@ ScholarFlow's paper-reading workflow is built around a 12-part deep paper card:
 12. Non-incremental follow-up idea.
 
 For the full protocol, see [docs/deep-paper-card.md](./docs/deep-paper-card.md).
+
+Phase 7 implements this protocol as a single-paper workflow. The current generator is deterministic and local-first: it uses title, metadata, abstract, and optional user-pasted text. It does not claim to read a full PDF unless the user provides that text, and it does not fabricate formulas or experimental numbers.
 
 ## Model Strategy
 

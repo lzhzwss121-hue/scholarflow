@@ -251,6 +251,8 @@ scholarflow/
 
 目标：实现你的 12 步论文分析协议。
 
+当前状态：complete。
+
 交付物：
 
 - `deep-paper-reading` skill。

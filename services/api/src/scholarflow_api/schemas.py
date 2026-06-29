@@ -87,6 +87,35 @@ class LiteratureSearchResponse(BaseModel):
     errors: list[str]
 
 
+class PaperCardCreateRequest(BaseModel):
+    paper_id: str | None = None
+    title: str = ""
+    abstract: str = ""
+    paper_text: str = Field(default="", max_length=50000)
+
+
+class PaperCardSection(BaseModel):
+    id: str
+    title: str
+    content: str
+
+
+class PaperCard(BaseModel):
+    id: str
+    project_id: str
+    paper_id: str | None
+    artifact_id: str | None
+    sections: list[PaperCardSection]
+    weakest_assumption: str
+    minimal_reproduction: str
+    created_at: str
+
+
+class PaperCardResponse(BaseModel):
+    card: PaperCard
+    artifact: Artifact
+
+
 class AgentPlanRequest(BaseModel):
     project_id: str
     task: str = Field(min_length=1, max_length=1000)

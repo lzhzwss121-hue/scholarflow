@@ -119,6 +119,8 @@ Planned deliverables:
 - Citation-aware output.
 - JSON and Markdown paper card artifacts.
 
+Status: complete.
+
 ## Phase 8: Gap, Novelty, And Experiment Planning
 
 Goal: move from reading papers to making research decisions.
