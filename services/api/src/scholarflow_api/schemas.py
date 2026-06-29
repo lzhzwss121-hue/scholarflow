@@ -68,6 +68,59 @@ class Artifact(BaseModel):
     updated_at: str
 
 
+class AgentPlanRequest(BaseModel):
+    project_id: str
+    task: str = Field(min_length=1, max_length=1000)
+    provider: str = "deepseek"
+
+
+class AgentExecuteRequest(BaseModel):
+    confirmed: bool = True
+
+
+class AgentPlanStep(BaseModel):
+    id: str
+    title: str
+    detail: str
+    tool: str
+    status: Literal["done", "running", "queued"]
+
+
+class AgentRun(BaseModel):
+    id: str
+    project_id: str
+    session_id: str
+    task: str
+    provider: str
+    mode: str
+    status: Literal["planned", "running", "completed"]
+    plan_json: str
+    plan_artifact_id: str | None
+    result_artifact_id: str | None
+    created_at: str
+    updated_at: str
+
+
+class AgentPlanResponse(BaseModel):
+    run_id: str
+    project_id: str
+    session_id: str
+    task: str
+    provider: str
+    status: Literal["planned", "running", "completed"]
+    rationale: str
+    steps: list[AgentPlanStep]
+    artifact: Artifact
+
+
+class AgentExecuteResponse(BaseModel):
+    run_id: str
+    status: Literal["completed"]
+    artifact: Artifact
+    papers: list[dict[str, str]]
+    steps: list[AgentPlanStep]
+
+
 class Session(BaseModel):
     id: str
     project_id: str
@@ -85,4 +138,3 @@ class ToolEvent(BaseModel):
     status: Literal["done", "running", "queued"]
     summary: str
     created_at: str
-

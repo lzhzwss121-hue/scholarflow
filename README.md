@@ -8,9 +8,9 @@ ScholarFlow is not a paper search demo. The goal is to build a local-first resea
 
 ## Current Status
 
-This repository is in Phase 3: backend API and SQLite data model.
+This repository is in Phase 5: minimal agent core.
 
-The current codebase includes a React research workspace, a FastAPI service backed by SQLite, a Node CLI entry, and a shared schema package. It does not include model API calls, real paper retrieval, or agent auto-execution yet.
+The current codebase includes a React research workspace, a FastAPI service backed by SQLite, a Node CLI for local workspace and service management, a minimal research agent loop, and a shared schema package. It does not include real model API calls, real paper retrieval, or deep paper card generation yet.
 
 See [IMPLEMENTATION_PHASES.md](./IMPLEMENTATION_PHASES.md) for the staged build plan.
 
@@ -36,13 +36,38 @@ source .venv/bin/activate
 python -m pip install -r services/api/requirements.txt
 ```
 
-Initialize the SQLite workspace:
+Initialize the local ScholarFlow workspace:
+
+```bash
+npm --workspace @scholarflow/cli run start -- init
+```
+
+Start the Web UI and API together:
+
+```bash
+npm --workspace @scholarflow/cli run start -- start
+```
+
+Check or stop local services:
+
+```bash
+npm --workspace @scholarflow/cli run start -- status
+npm --workspace @scholarflow/cli run start -- stop
+```
+
+The default local workspace is `~/.scholarflow`. To use another location:
+
+```bash
+SCHOLARFLOW_WORKSPACE=/path/to/workspace npm --workspace @scholarflow/cli run start -- init
+```
+
+For backend-only development, initialize the SQLite database directly:
 
 ```bash
 npm run db:init
 ```
 
-Run the web app:
+For manual development, run the web app:
 
 ```bash
 npm run dev:web
@@ -105,7 +130,7 @@ Keyword / vague idea
 - Experiment planning, ablation design, result interpretation, and writing support.
 - Local workspace for long-term research assets.
 - Web UI inspired by coding agents: plan checklist, tool timeline, artifact preview, and artifact diffs.
-- Optional CLI for local project initialization and service startup.
+- CLI for local project initialization and service startup.
 
 ## Current Web Workspace
 
@@ -124,9 +149,44 @@ The current web app provides a Claude Code-style research workspace:
 
 When the API is running, the web app reads projects, papers, artifacts, and session timeline events from SQLite. If the API is not running, it falls back to static mock content.
 
+The Dashboard also includes the first Research Plan Mode:
+
+- Enter a research task.
+- Generate a persisted plan artifact.
+- Confirm execution.
+- Run mock tools through the backend Tool Registry.
+- Save the result artifact.
+- Refresh the visible timeline from SQLite.
+
+## Current CLI
+
+Phase 4 provides the local command entry:
+
+```text
+scholarflow init
+scholarflow start
+scholarflow status
+scholarflow stop
+```
+
+The CLI creates this local workspace shape:
+
+```text
+~/.scholarflow/
+  config.yaml
+  projects/
+  artifacts/
+  logs/
+  cache/
+    scholarflow.sqlite3
+    services.json
+```
+
+`start` launches both the FastAPI service and Vite web app, writes service logs under `logs/`, and stores process state under `cache/services.json`. The API database path is injected through `SCHOLARFLOW_DB_PATH`, so local data stays outside Git by default.
+
 ## Current API
 
-Phase 3 provides these local API endpoints:
+Phase 3 and Phase 5 provide these local API endpoints:
 
 ```text
 GET  /health
@@ -140,9 +200,25 @@ GET  /artifacts/{artifact_id}
 GET  /projects/{project_id}/sessions
 GET  /sessions/{session_id}/timeline
 GET  /projects/{project_id}/timeline
+POST /agent/plan
+POST /agent/runs/{run_id}/execute
 ```
 
-The default SQLite database path is `services/api/.data/scholarflow.sqlite3`, and it is ignored by Git.
+The default development SQLite database path is `services/api/.data/scholarflow.sqlite3`, and it is ignored by Git. When launched by the CLI, the database path is `<workspace>/cache/scholarflow.sqlite3`.
+
+## Current Agent Core
+
+Phase 5 provides the first minimal agent loop:
+
+- `ModelProvider` abstraction.
+- `DeepSeekProvider` integration boundary using `DEEPSEEK_MODEL`, defaulting to `deepseek-v4-pro`.
+- `ToolRegistry`.
+- `create_plan`.
+- `search_mock_papers`.
+- `save_artifact`.
+- `update_timeline`.
+
+The current agent is deterministic and local-first. It does not call the DeepSeek API yet; the provider boundary exists so the later real model integration can replace the local planner without changing the workflow API.
 
 ## Design Principles
 

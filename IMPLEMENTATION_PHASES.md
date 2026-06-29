@@ -153,6 +153,8 @@ scholarflow/
 
 目标：实现 Ddo 风格的本地启动和工作区管理。
 
+当前状态：complete。
+
 交付物：
 
 - `scholarflow init`
@@ -184,6 +186,8 @@ scholarflow/
 ## Phase 5: Agent Core 最小循环
 
 目标：实现 Claude Code 式最小 Agent Loop，但先只支持少量科研工具。
+
+当前状态：complete。
 
 交付物：
 
@@ -344,4 +348,3 @@ scholarflow/
 5. 是否进入下一阶段？
 
 如果任一问题答案不清楚，不进入下一阶段。
-

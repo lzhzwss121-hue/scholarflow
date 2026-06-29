@@ -110,6 +110,25 @@ def init_db() -> None:
                 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS agent_runs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                task TEXT NOT NULL,
+                provider TEXT NOT NULL DEFAULT 'deepseek',
+                mode TEXT NOT NULL DEFAULT 'plan',
+                status TEXT NOT NULL DEFAULT 'planned',
+                plan_json TEXT NOT NULL DEFAULT '{}',
+                plan_artifact_id TEXT,
+                result_artifact_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY (plan_artifact_id) REFERENCES artifacts(id) ON DELETE SET NULL,
+                FOREIGN KEY (result_artifact_id) REFERENCES artifacts(id) ON DELETE SET NULL
+            );
+
             CREATE TABLE IF NOT EXISTS tool_events (
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
@@ -124,6 +143,8 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_papers_project_id ON papers(project_id);
             CREATE INDEX IF NOT EXISTS idx_artifacts_project_id ON artifacts(project_id);
             CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id);
+            CREATE INDEX IF NOT EXISTS idx_agent_runs_project_id ON agent_runs(project_id);
+            CREATE INDEX IF NOT EXISTS idx_agent_runs_session_id ON agent_runs(session_id);
             CREATE INDEX IF NOT EXISTS idx_tool_events_session_id ON tool_events(session_id);
             """
         )

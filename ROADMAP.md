@@ -76,6 +76,8 @@ Planned deliverables:
 - `scholarflow status`.
 - Default local workspace under `~/.scholarflow`.
 
+Status: complete.
+
 ## Phase 5: Minimal Agent Core
 
 Goal: implement the first working research agent loop.
@@ -88,6 +90,8 @@ Planned deliverables:
 - Minimal research tools.
 - Research Plan Mode.
 - Tool timeline persistence.
+
+Status: complete.
 
 ## Phase 6: Literature Retrieval MVP
 

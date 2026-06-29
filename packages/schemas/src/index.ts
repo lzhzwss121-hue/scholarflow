@@ -78,6 +78,44 @@ export interface ApiArtifactCreate {
   diff?: string;
 }
 
+export interface ApiAgentPlanRequest {
+  project_id: string;
+  task: string;
+  provider?: string;
+}
+
+export interface ApiAgentExecuteRequest {
+  confirmed?: boolean;
+}
+
+export interface ApiAgentPlanStep {
+  id: string;
+  title: string;
+  detail: string;
+  tool: string;
+  status: "done" | "running" | "queued";
+}
+
+export interface ApiAgentPlanResponse {
+  run_id: string;
+  project_id: string;
+  session_id: string;
+  task: string;
+  provider: string;
+  status: "planned" | "running" | "completed";
+  rationale: string;
+  steps: ApiAgentPlanStep[];
+  artifact: ApiArtifact;
+}
+
+export interface ApiAgentExecuteResponse {
+  run_id: string;
+  status: "completed";
+  artifact: ApiArtifact;
+  papers: Array<Record<string, string>>;
+  steps: ApiAgentPlanStep[];
+}
+
 export interface ApiSession {
   id: string;
   project_id: string;

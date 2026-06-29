@@ -1,4 +1,8 @@
 import type {
+  ApiAgentExecuteRequest,
+  ApiAgentExecuteResponse,
+  ApiAgentPlanRequest,
+  ApiAgentPlanResponse,
   ApiArtifact,
   ApiArtifactCreate,
   ApiHealth,
@@ -8,7 +12,7 @@ import type {
   ApiToolEvent,
 } from "@scholarflow/schemas";
 
-const API_BASE_URL = "http://127.0.0.1:8000";
+const API_BASE_URL = import.meta.env.VITE_SCHOLARFLOW_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -65,3 +69,16 @@ export function getProjectTimeline(projectId: string) {
   return request<ApiToolEvent[]>(`/projects/${projectId}/timeline`);
 }
 
+export function createAgentPlan(payload: ApiAgentPlanRequest) {
+  return request<ApiAgentPlanResponse>("/agent/plan", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function executeAgentRun(runId: string, payload: ApiAgentExecuteRequest = { confirmed: true }) {
+  return request<ApiAgentExecuteResponse>(`/agent/runs/${runId}/execute`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}

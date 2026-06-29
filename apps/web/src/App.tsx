@@ -18,7 +18,15 @@ import {
   Table2,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { SCHOLARFLOW_VERSION, type ApiArtifact, type ApiPaper, type ApiProject, type ApiToolEvent } from "@scholarflow/schemas";
+import {
+  SCHOLARFLOW_VERSION,
+  type ApiAgentPlanResponse,
+  type ApiAgentPlanStep,
+  type ApiArtifact,
+  type ApiPaper,
+  type ApiProject,
+  type ApiToolEvent,
+} from "@scholarflow/schemas";
 import {
   artifacts,
   experiments,
@@ -29,12 +37,15 @@ import {
   timelineEvents as fallbackTimelineEvents,
   type ArtifactContent,
   type PaperRow,
+  type PlanStep,
   type PlanStatus,
   type TimelineEvent,
   type ViewId,
 } from "./mockData";
 import {
+  createAgentPlan,
   createProject,
+  executeAgentRun,
   getArtifact,
   getHealth,
   getProjectTimeline,
@@ -77,12 +88,18 @@ export function App() {
   const [timelineRows, setTimelineRows] = useState<TimelineEvent[]>(fallbackTimelineEvents);
   const [persistedArtifactCount, setPersistedArtifactCount] = useState(0);
   const [lastSavedArtifact, setLastSavedArtifact] = useState<ApiArtifact | null>(null);
+  const [agentTask, setAgentTask] = useState(
+    "请基于 VLM hallucination benchmark 方向，生成一个从文献表到可验证 gap 的最小科研任务计划。",
+  );
+  const [agentPlan, setAgentPlan] = useState<ApiAgentPlanResponse | null>(null);
+  const [agentBusy, setAgentBusy] = useState(false);
 
   const activeArtifact = artifacts[activeView];
   const activeNavItem = useMemo(
     () => navItems.find((item) => item.id === activeView),
     [activeView],
   );
+  const checklistSteps = agentPlan ? agentPlan.steps.map(toPlanStep) : planSteps;
 
   useEffect(() => {
     let cancelled = false;
@@ -188,6 +205,57 @@ export function App() {
     }
   }
 
+  async function handleCreateAgentPlan() {
+    if (!activeProject) {
+      setApiMessage("没有可运行的项目，请先创建项目或启动 API。");
+      return;
+    }
+
+    setAgentBusy(true);
+    setApiMessage("正在生成 Research Plan...");
+    try {
+      const plan = await createAgentPlan({
+        project_id: activeProject.id,
+        task: agentTask,
+        provider: "deepseek",
+      });
+      setAgentPlan(plan);
+      setLastSavedArtifact(plan.artifact);
+      setApiMessage(`Research Plan 已生成，run: ${plan.run_id}`);
+      await loadProjectResources(activeProject.id);
+    } catch (error) {
+      setApiMessage("生成 Research Plan 失败，请确认 API 与 SQLite 工作区可用。");
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  async function handleExecuteAgentRun() {
+    if (!agentPlan) {
+      setApiMessage("请先生成 Research Plan。");
+      return;
+    }
+
+    setAgentBusy(true);
+    setApiMessage("正在执行已确认的 Agent Plan...");
+    try {
+      const result = await executeAgentRun(agentPlan.run_id, { confirmed: true });
+      setAgentPlan({
+        ...agentPlan,
+        status: result.status,
+        steps: result.steps,
+        artifact: result.artifact,
+      });
+      setLastSavedArtifact(result.artifact);
+      setApiMessage(`Agent Run 已完成，artifact: ${result.artifact.id}`);
+      await loadProjectResources(agentPlan.project_id);
+    } catch (error) {
+      setApiMessage("执行 Agent Run 失败，请查看 API 日志。");
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
   return (
     <div className="scholarflow-app">
       <ProjectNavigator
@@ -203,7 +271,7 @@ export function App() {
       <main className="agent-workspace">
         <header className="workspace-header">
           <div>
-            <p className="phase-label">Phase 3 / API + SQLite Workspace</p>
+            <p className="phase-label">Phase 5 / Minimal Agent Core</p>
             <h1>{viewTitles[activeView]}</h1>
           </div>
           <div className="toolbar" aria-label="workspace actions">
@@ -228,17 +296,23 @@ export function App() {
           <div className="primary-view">
             <ActiveView
               activeProject={activeProject}
+              agentBusy={agentBusy}
+              agentPlan={agentPlan}
+              agentTask={agentTask}
               apiMessage={apiMessage}
               apiStatus={apiStatus}
               artifactCount={persistedArtifactCount}
+              onAgentTaskChange={setAgentTask}
               onCreateProject={handleCreateProject}
+              onCreateAgentPlan={handleCreateAgentPlan}
+              onExecuteAgentRun={handleExecuteAgentRun}
               paperRows={paperRows}
               projectCount={projects.length}
               view={activeView}
             />
           </div>
           <aside className="agent-rail" aria-label="agent progress">
-            <PlanChecklist />
+            <PlanChecklist steps={checklistSteps} />
             <ToolTimeline events={timelineRows} />
           </aside>
         </section>
@@ -343,10 +417,16 @@ function ProjectNavigator({
 
 interface ActiveViewProps {
   activeProject: ApiProject | null;
+  agentBusy: boolean;
+  agentPlan: ApiAgentPlanResponse | null;
+  agentTask: string;
   apiMessage: string;
   apiStatus: ApiStatus;
   artifactCount: number;
+  onAgentTaskChange: (task: string) => void;
+  onCreateAgentPlan: () => void;
   onCreateProject: () => void;
+  onExecuteAgentRun: () => void;
   paperRows: PaperRow[];
   projectCount: number;
   view: ViewId;
@@ -354,10 +434,16 @@ interface ActiveViewProps {
 
 function ActiveView({
   activeProject,
+  agentBusy,
+  agentPlan,
+  agentTask,
   apiMessage,
   apiStatus,
   artifactCount,
+  onAgentTaskChange,
+  onCreateAgentPlan,
   onCreateProject,
+  onExecuteAgentRun,
   paperRows,
   projectCount,
   view,
@@ -378,8 +464,14 @@ function ActiveView({
       return (
         <DashboardView
           activeProject={activeProject}
+          agentBusy={agentBusy}
+          agentPlan={agentPlan}
+          agentTask={agentTask}
           apiStatus={apiStatus}
           artifactCount={artifactCount}
+          onAgentTaskChange={onAgentTaskChange}
+          onCreateAgentPlan={onCreateAgentPlan}
+          onExecuteAgentRun={onExecuteAgentRun}
           paperCount={paperRows.length}
           projectCount={projectCount}
         />
@@ -389,14 +481,26 @@ function ActiveView({
 
 function DashboardView({
   activeProject,
+  agentBusy,
+  agentPlan,
+  agentTask,
   apiStatus,
   artifactCount,
+  onAgentTaskChange,
+  onCreateAgentPlan,
+  onExecuteAgentRun,
   paperCount,
   projectCount,
 }: {
   activeProject: ApiProject | null;
+  agentBusy: boolean;
+  agentPlan: ApiAgentPlanResponse | null;
+  agentTask: string;
   apiStatus: ApiStatus;
   artifactCount: number;
+  onAgentTaskChange: (task: string) => void;
+  onCreateAgentPlan: () => void;
+  onExecuteAgentRun: () => void;
   paperCount: number;
   projectCount: number;
 }) {
@@ -408,10 +512,20 @@ function DashboardView({
           <h2>{activeProject?.title ?? "从 VLM hallucination benchmark 找到可验证研究 gap"}</h2>
         </div>
         <p>
-          当前阶段已经接入本地 FastAPI 与 SQLite。项目、artifact 和 session timeline
-          可以被保存和回读，但仍不执行真实论文检索或 Agent 自动任务。
+          当前阶段已经接入最小 Agent Loop。系统会先保存 Research Plan，等待确认后执行 mock tools，
+          并把每个工具调用写入 session timeline。
         </p>
       </section>
+
+      <AgentRunPanel
+        agentBusy={agentBusy}
+        agentPlan={agentPlan}
+        agentTask={agentTask}
+        apiStatus={apiStatus}
+        onAgentTaskChange={onAgentTaskChange}
+        onCreateAgentPlan={onCreateAgentPlan}
+        onExecuteAgentRun={onExecuteAgentRun}
+      />
 
       <section className="metric-grid" aria-label="research status">
         <Metric label="后端状态" value={apiStatus === "online" ? "ON" : "OFF"} detail="FastAPI + SQLite" />
@@ -421,7 +535,7 @@ function DashboardView({
       </section>
 
       <section className="workflow-strip" aria-label="research workflow">
-        {["Project", "Papers", "Artifacts", "Sessions", "Timeline", "Web Sync"].map((item, index) => (
+        {["Project", "Plan", "Tools", "Artifacts", "Timeline", "Confirm"].map((item, index) => (
           <div className="workflow-node" key={item}>
             <span>{index + 1}</span>
             {item}
@@ -429,6 +543,76 @@ function DashboardView({
         ))}
       </section>
     </div>
+  );
+}
+
+function AgentRunPanel({
+  agentBusy,
+  agentPlan,
+  agentTask,
+  apiStatus,
+  onAgentTaskChange,
+  onCreateAgentPlan,
+  onExecuteAgentRun,
+}: {
+  agentBusy: boolean;
+  agentPlan: ApiAgentPlanResponse | null;
+  agentTask: string;
+  apiStatus: ApiStatus;
+  onAgentTaskChange: (task: string) => void;
+  onCreateAgentPlan: () => void;
+  onExecuteAgentRun: () => void;
+}) {
+  const canExecute = Boolean(agentPlan && agentPlan.status !== "completed" && !agentBusy && apiStatus === "online");
+
+  return (
+    <section className="agent-run-panel" aria-label="agent plan mode">
+      <div className="agent-run-header">
+        <div>
+          <p className="section-kicker">Research Plan Mode</p>
+          <h2>{agentPlan ? `Run ${agentPlan.run_id}` : "Agent Task"}</h2>
+        </div>
+        <span className={`run-status ${agentPlan?.status ?? "idle"}`}>{agentPlan?.status ?? "idle"}</span>
+      </div>
+
+      <label className="agent-task-field">
+        任务
+        <textarea value={agentTask} onChange={(event) => onAgentTaskChange(event.target.value)} />
+      </label>
+
+      <div className="agent-action-row">
+        <button
+          className="secondary-command"
+          disabled={agentBusy || apiStatus !== "online" || agentTask.trim().length === 0}
+          type="button"
+          onClick={onCreateAgentPlan}
+        >
+          <BrainCircuit size={17} />
+          生成计划
+        </button>
+        <button className="secondary-command" disabled={!canExecute} type="button" onClick={onExecuteAgentRun}>
+          <Play size={17} />
+          确认执行
+        </button>
+      </div>
+
+      {agentPlan ? (
+        <div className="agent-plan-box">
+          <p>{agentPlan.rationale}</p>
+          <div className="agent-plan-list">
+            {agentPlan.steps.map((step) => (
+              <div className="agent-plan-row" key={step.id}>
+                <StatusIcon status={toPlanStatus(step.status)} />
+                <div>
+                  <strong>{step.title}</strong>
+                  <span>{step.tool}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -618,15 +802,17 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
   );
 }
 
-function PlanChecklist() {
+function PlanChecklist({ steps }: { steps: PlanStep[] }) {
   return (
     <section className="side-panel" aria-label="plan checklist">
       <div className="panel-heading">
         <h2>Plan Checklist</h2>
-        <span>{planSteps.filter((step) => step.status === "done").length}/5</span>
+        <span>
+          {steps.filter((step) => step.status === "done").length}/{steps.length}
+        </span>
       </div>
       <div className="plan-list">
-        {planSteps.map((step) => (
+        {steps.map((step) => (
           <div className="plan-step" key={step.id}>
             <StatusIcon status={step.status} />
             <div>
@@ -684,14 +870,22 @@ interface ArtifactPreviewProps {
 }
 
 function ArtifactPreview({ activeTab, apiStatus, artifact, lastSavedArtifact, onTabChange }: ArtifactPreviewProps) {
-  const content = artifact[activeTab];
+  const previewArtifact = lastSavedArtifact
+    ? {
+        title: lastSavedArtifact.title,
+        markdown: lastSavedArtifact.content_markdown,
+        json: lastSavedArtifact.content_json,
+        diff: lastSavedArtifact.diff,
+      }
+    : artifact;
+  const content = previewArtifact[activeTab];
 
   return (
     <aside className="artifact-preview" aria-label="artifact preview">
       <div className="artifact-header">
         <div>
           <p className="section-kicker">Artifact Preview</p>
-          <h2>{artifact.title}</h2>
+          <h2>{previewArtifact.title}</h2>
         </div>
       </div>
 
@@ -737,4 +931,23 @@ function toTimelineEvent(event: ApiToolEvent): TimelineEvent {
     status: event.status,
     summary: event.summary,
   };
+}
+
+function toPlanStep(step: ApiAgentPlanStep): PlanStep {
+  return {
+    id: step.id,
+    title: step.title,
+    detail: step.detail,
+    status: toPlanStatus(step.status),
+  };
+}
+
+function toPlanStatus(status: ApiAgentPlanStep["status"]): PlanStatus {
+  if (status === "done") {
+    return "done";
+  }
+  if (status === "running") {
+    return "active";
+  }
+  return "queued";
 }

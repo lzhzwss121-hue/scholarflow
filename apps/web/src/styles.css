@@ -339,6 +339,7 @@ button {
 }
 
 .brief-panel,
+.agent-run-panel,
 .form-panel,
 .table-shell,
 .paper-summary,
@@ -366,6 +367,123 @@ button {
   margin: 12px 0 0;
   color: #526170;
   line-height: 1.7;
+}
+
+.agent-run-panel {
+  padding: 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.agent-run-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.agent-run-header h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.run-status {
+  min-width: 72px;
+  border-radius: 999px;
+  padding: 5px 9px;
+  text-align: center;
+  color: #526170;
+  background: #edf1f6;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.run-status.planned {
+  color: #95610a;
+  background: #fff2d6;
+}
+
+.run-status.running {
+  color: #1f6f8b;
+  background: #e4f4f8;
+}
+
+.run-status.completed {
+  color: #1f7a4d;
+  background: #e6f5ee;
+}
+
+.agent-task-field {
+  display: grid;
+  gap: 8px;
+  color: #344256;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.agent-task-field textarea {
+  width: 100%;
+  min-height: 96px;
+  border: 1px solid #d8dee7;
+  border-radius: 8px;
+  padding: 12px;
+  resize: vertical;
+  background: #fbfcfd;
+  color: #1d2733;
+  line-height: 1.6;
+}
+
+.agent-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.agent-plan-box {
+  border: 1px solid #dce3eb;
+  border-radius: 8px;
+  padding: 14px;
+  background: #fbfcfd;
+}
+
+.agent-plan-box > p {
+  margin: 0 0 12px;
+  color: #526170;
+  line-height: 1.6;
+}
+
+.agent-plan-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.agent-plan-row {
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.agent-plan-row strong,
+.agent-plan-row span {
+  display: block;
+}
+
+.agent-plan-row strong {
+  color: #263545;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.agent-plan-row span {
+  margin-top: 3px;
+  color: #667789;
+  font-size: 12px;
+  word-break: break-word;
 }
 
 .metric-grid {
@@ -886,6 +1004,7 @@ td {
   }
 
   .metric-grid,
+  .agent-plan-list,
   .workflow-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -918,6 +1037,7 @@ td {
 
   .nav-list,
   .metric-grid,
+  .agent-plan-list,
   .workflow-strip,
   .form-grid,
   .api-action-row {

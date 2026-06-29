@@ -1,6 +1,6 @@
 # ScholarFlow Architecture
 
-This document describes the target architecture and the current Phase 3 API-backed workspace.
+This document describes the target architecture and the current Phase 5 minimal agent core.
 
 ## Product Shape
 
@@ -28,10 +28,10 @@ React Web UI
 
 ```text
 apps/
-  web/              React + Vite research workspace skeleton
-  cli/              Local command entry skeleton
+  web/              React + Vite research workspace
+  cli/              Local command entry
 services/
-  api/              FastAPI service skeleton
+  api/              FastAPI service
 packages/
   schemas/          Shared TypeScript/Python-compatible contracts
 docs/
@@ -41,11 +41,11 @@ examples/
   workflows/
 ```
 
-Current Phase 3 entry points:
+Current Phase 5 entry points:
 
 - `apps/web`: React research workspace with API-aware project, timeline, paper, and artifact state.
-- `apps/cli`: Node CLI entry with `--version` and `status`.
-- `services/api`: FastAPI app with SQLite persistence.
+- `apps/cli`: Node CLI with workspace initialization and Web/API service management.
+- `services/api`: FastAPI app with SQLite persistence and the first minimal agent loop.
 - `packages/schemas`: shared TypeScript API contracts.
 
 ## Web UI
@@ -59,7 +59,7 @@ Planned layout:
 - Artifact Preview: paper tables, paper cards, gap boards, experiment plans, diffs.
 - Tool Timeline: retrieval queries, filters, model calls, artifact writes, errors.
 
-The Phase 3 implementation reads and writes local API data for projects, papers, artifacts, sessions, and tool events. It intentionally does not call a model provider or a real paper retrieval API.
+The Phase 5 implementation reads and writes local API data for projects, papers, artifacts, sessions, tool events, and agent runs. It intentionally does not call a real paper retrieval API or generate deep paper cards yet.
 
 The UI is Chinese-first. Technical terms such as Agent Loop, Artifact, Timeline, Gap, Claim, Baseline, and Ablation can remain in English when useful.
 
@@ -98,7 +98,7 @@ Current API capabilities:
 
 ## CLI
 
-The CLI should make local usage simple:
+The CLI makes local usage simple:
 
 ```text
 scholarflow init
@@ -109,7 +109,22 @@ scholarflow ask "VLM hallucination benchmark"
 scholarflow plan "我想做多模态可信评测方向"
 ```
 
-The CLI is not the core product logic. It starts services, manages local configuration, and provides a lightweight command surface.
+Phase 4 implements the first four commands only. The CLI is not the core product logic. It starts services, manages local configuration, and provides a lightweight command surface.
+
+Default local workspace:
+
+```text
+~/.scholarflow/
+  config.yaml
+  projects/
+  artifacts/
+  logs/
+  cache/
+    scholarflow.sqlite3
+    services.json
+```
+
+The CLI launches the API with `SCHOLARFLOW_DB_PATH=<workspace>/cache/scholarflow.sqlite3` and launches the Web UI with `VITE_SCHOLARFLOW_API_BASE_URL` pointing to the selected API host and port. Service logs are written to the workspace `logs/` directory.
 
 ## Agent Core
 
@@ -125,6 +140,18 @@ ScholarFlow should borrow the following ideas from Claude Code-like systems:
 - Sub-Agents: literature, reading, skeptic, novelty, and experiment roles can work on separate subtasks.
 - MCP-Style Integrations: Zotero, GitHub, Hugging Face, Papers with Code, and local file tools can be added without rewriting the core loop.
 
+Current Phase 5 implementation:
+
+- `ModelProvider` abstraction.
+- `DeepSeekProvider` integration boundary using the configured DeepSeek model name.
+- `ToolRegistry`.
+- `agent_runs` table.
+- `POST /agent/plan`.
+- `POST /agent/runs/{run_id}/execute`.
+- Minimal tools: `create_plan`, `search_mock_papers`, `save_artifact`, `update_timeline`.
+
+The current provider path is deterministic and local-first. `DeepSeekProvider` is the provider boundary, not a live external model call in Phase 5.
+
 ## Model Provider Strategy
 
 The implementation should define a provider abstraction before binding to a specific model.
@@ -134,7 +161,7 @@ Preferred default:
 - `deepseek-v4-pro`: planning, deep paper reading, novelty checking, follow-up idea generation.
 - `deepseek-v4-flash`: query expansion, classification, extraction, short summaries.
 
-Future providers should be swappable through configuration.
+Future providers should be swappable through configuration. Phase 5 stores the provider name on each `agent_run`; live external model calls are intentionally deferred.
 
 ## Research Tools
 
@@ -163,6 +190,7 @@ Planned entities:
 - PaperCard: structured deep analysis for one paper.
 - Session: one agent run or conversation.
 - ToolEvent: one visible tool call or system action.
+- AgentRun: one plan-and-confirm execution unit.
 - ExperimentPlan: proposed reproduction or ablation plan.
 
 ## Evidence And Integrity
