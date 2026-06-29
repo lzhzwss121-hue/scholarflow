@@ -2,6 +2,7 @@ export type ViewId =
   | "dashboard"
   | "new-project"
   | "paper-table"
+  | "direction-review"
   | "paper-reader"
   | "gap-board"
   | "experiment-planner";
@@ -69,6 +70,7 @@ export const navItems: NavItem[] = [
   { id: "dashboard", label: "Dashboard" },
   { id: "new-project", label: "New Project" },
   { id: "paper-table", label: "Paper Table", count: 18 },
+  { id: "direction-review", label: "方向精读", count: 10 },
   { id: "paper-reader", label: "Paper Reader", count: 3 },
   { id: "gap-board", label: "Gap Board", count: 5 },
   { id: "experiment-planner", label: "Experiment Planner", count: 2 },
@@ -272,6 +274,15 @@ export const artifacts: Record<ViewId, ArtifactContent> = {
       '{\n  "rows": 18,\n  "filters": ["recent", "code_available", "task_relevance"],\n  "top_priority": 3\n}',
     diff:
       "+ Added code availability column\n+ Added relation-to-user-direction column",
+  },
+  "direction-review": {
+    title: "direction_review_round_1.md",
+    markdown:
+      "# Direction Review Round 1\n\n方向：VLM hallucination benchmark\n\n- 近三年 10 篇高相关论文\n- 每篇保存摘要中文翻译与 12 条精读内容\n- 推荐 3 篇用户亲自精读\n- 生成方向级总结",
+    json:
+      '{\n  "round": 1,\n  "papers": 10,\n  "max_rounds": 3,\n  "total_limit": 30\n}',
+    diff:
+      "+ Added ten-paper direction review workflow\n+ Added interactive paper cards",
   },
   "paper-reader": {
     title: "paper_card.md",

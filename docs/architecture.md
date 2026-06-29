@@ -45,7 +45,7 @@ Current v0.1.0 entry points:
 
 - `apps/web`: React research workspace with API-aware project, timeline, paper, and artifact state.
 - `apps/cli`: Node CLI with workspace initialization and Web/API service management.
-- `services/api`: FastAPI app with SQLite persistence, the first minimal agent loop, literature retrieval adapters, single-paper card generation, and research decision generation.
+- `services/api`: FastAPI app with SQLite persistence, the first minimal agent loop, literature retrieval adapters, direction-level paper review, single-paper card generation, and research decision generation.
 - `packages/schemas`: shared TypeScript API contracts.
 - `.github`: CI, Issue templates, and pull request template for open-source contribution.
 - `examples/workflows`: public-safe example artifacts.
@@ -61,7 +61,7 @@ Planned layout:
 - Artifact Preview: paper tables, paper cards, gap boards, experiment plans, diffs.
 - Tool Timeline: retrieval queries, filters, model calls, artifact writes, errors.
 
-The v0.1.0 implementation reads and writes local API data for projects, papers, artifacts, sessions, tool events, agent runs, and paper cards. It can retrieve paper candidates from arXiv/OpenAlex, generate a single-paper 12-section Deep Paper Card, and turn those assets into a Gap Board, Idea Validation Report, and Experiment Plan. It intentionally does not download PDFs, batch-read papers, or run training jobs yet.
+The v0.1.0 implementation reads and writes local API data for projects, papers, artifacts, sessions, tool events, agent runs, and paper cards. It can retrieve paper candidates from arXiv/OpenAlex, run a direction-level review over 10 recent high-relevance papers per round, generate 12-section Deep Paper Cards, and turn those assets into a Gap Board, Idea Validation Report, and Experiment Plan. It intentionally does not download PDFs, parse full-paper PDFs in bulk, or run training jobs yet.
 
 The UI is Chinese-first. Technical terms such as Agent Loop, Artifact, Timeline, Gap, Claim, Baseline, and Ablation can remain in English when useful.
 
@@ -100,6 +100,7 @@ Current API capabilities:
 - Generate and execute minimal agent plans.
 - Retrieve and persist ranked paper tables from arXiv/OpenAlex.
 - Generate and persist single-paper Deep Paper Cards through `POST /projects/{project_id}/paper-cards`.
+- Generate direction reviews through `POST /projects/{project_id}/direction-reviews`, with 10 papers per round and three rounds maximum.
 - Generate research decision artifacts through `POST /projects/{project_id}/research-decisions`.
 
 ## CLI
@@ -165,7 +166,7 @@ The implementation should define a provider abstraction before binding to a spec
 
 Preferred default:
 
-- `minimax/minimax-m2.5`: default planning model, aligned with the Ddo project's OpenRouter setup.
+- `minimax/minimax-m2.5`: default planning model through OpenRouter.
 - `qwen/qwen3-embedding-8b`: configured RAG embedding model alias for future evidence retrieval workflows.
 
 Providers remain swappable through configuration. ScholarFlow stores the provider name on each `agent_run` so artifacts can show whether a plan came from OpenRouter, DeepSeek, or local fallback.
@@ -179,6 +180,7 @@ Initial tool categories:
 - Paper metadata normalization.
 - PDF parsing.
 - Paper card generation: Phase 7 implements deterministic single-paper card generation with Markdown and JSON artifacts.
+- Direction review: Phase 10 implements a 10-paper-per-round reading workflow with cumulative direction summaries and top-3 personal reading recommendations.
 - Gap analysis.
 - Novelty checking.
 - Minimal reproduction planning.
@@ -212,7 +214,7 @@ Expected behavior:
 - Preserve search queries and retrieval sources.
 - Avoid inventing citations, datasets, metrics, or experimental results.
 
-The Phase 6 paper table artifact preserves expanded queries, source API names, source URLs, relevance reasons, and retrieval warnings. Phase 7 paper-card artifacts preserve the 12 sections, weakest assumption, minimal reproduction, counterexample, and follow-up idea in structured JSON. Phase 8 decision artifacts preserve true/engineering/pseudo gap labels, novelty risk, feasibility, and experiment plans. Phase 9 adds public release documentation, contribution templates, CI, release notes, and synthetic example artifacts.
+The Phase 6 paper table artifact preserves expanded queries, source API names, source URLs, relevance reasons, and retrieval warnings. Phase 7 paper-card artifacts preserve the 12 sections, weakest assumption, minimal reproduction, counterexample, and follow-up idea in structured JSON. Phase 8 decision artifacts preserve true/engineering/pseudo gap labels, novelty risk, feasibility, and experiment plans. Phase 9 adds public release documentation, contribution templates, CI, release notes, and synthetic example artifacts. Phase 10 direction-review artifacts preserve the scope, selected papers, abstract Chinese reading entry, 12-section card content, direction summary, and top-3 self-reading recommendation.
 
 ## Local Data Policy
 

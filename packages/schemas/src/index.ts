@@ -6,6 +6,7 @@ export type ResearchStage =
   | "api"
   | "agent-loop"
   | "literature-retrieval"
+  | "direction-review"
   | "paper-card"
   | "experiment-planning";
 
@@ -124,6 +125,46 @@ export interface ApiPaperCard {
 export interface ApiPaperCardResponse {
   card: ApiPaperCard;
   artifact: ApiArtifact;
+}
+
+export interface ApiDirectionReviewRequest {
+  direction: string;
+  round?: number;
+}
+
+export interface ApiDirectionScope {
+  direction: string;
+  round: number;
+  year_range: string;
+  included_scope: string;
+  excluded_scope: string;
+  subtopics: string[];
+  queries: string[];
+}
+
+export interface ApiDirectionPaperReading {
+  paper: ApiPaper;
+  abstract_translation: string;
+  sections: ApiPaperCardSection[];
+  weakest_assumption: string;
+  minimal_reproduction: string;
+  counterexample: string;
+  follow_up_idea: string;
+  why_selected: string;
+  venue_signal: string;
+  self_read_priority: boolean;
+}
+
+export interface ApiDirectionReviewResponse {
+  direction: string;
+  round: number;
+  total_read_count: number;
+  scope: ApiDirectionScope;
+  papers: ApiDirectionPaperReading[];
+  recommended_paper_ids: string[];
+  direction_summary: string;
+  artifacts: ApiArtifact[];
+  errors: string[];
 }
 
 export interface ApiResearchDecisionRequest {

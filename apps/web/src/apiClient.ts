@@ -5,6 +5,8 @@ import type {
   ApiAgentPlanResponse,
   ApiArtifact,
   ApiArtifactCreate,
+  ApiDirectionReviewRequest,
+  ApiDirectionReviewResponse,
   ApiHealth,
   ApiLiteratureSearchRequest,
   ApiLiteratureSearchResponse,
@@ -65,6 +67,13 @@ export function searchProjectLiterature(projectId: string, payload: ApiLiteratur
 
 export function createProjectPaperCard(projectId: string, payload: ApiPaperCardCreateRequest) {
   return request<ApiPaperCardResponse>(`/projects/${projectId}/paper-cards`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function createDirectionReview(projectId: string, payload: ApiDirectionReviewRequest) {
+  return request<ApiDirectionReviewResponse>(`/projects/${projectId}/direction-reviews`, {
     method: "POST",
     body: JSON.stringify(payload),
   });

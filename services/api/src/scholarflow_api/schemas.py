@@ -116,6 +116,46 @@ class PaperCardResponse(BaseModel):
     artifact: Artifact
 
 
+class DirectionReviewRequest(BaseModel):
+    direction: str = Field(min_length=1, max_length=500)
+    round: int = Field(default=1, ge=1, le=3)
+
+
+class DirectionScope(BaseModel):
+    direction: str
+    round: int
+    year_range: str
+    included_scope: str
+    excluded_scope: str
+    subtopics: list[str]
+    queries: list[str]
+
+
+class DirectionPaperReading(BaseModel):
+    paper: Paper
+    abstract_translation: str
+    sections: list[PaperCardSection]
+    weakest_assumption: str
+    minimal_reproduction: str
+    counterexample: str
+    follow_up_idea: str
+    why_selected: str
+    venue_signal: str
+    self_read_priority: bool
+
+
+class DirectionReviewResponse(BaseModel):
+    direction: str
+    round: int
+    total_read_count: int
+    scope: DirectionScope
+    papers: list[DirectionPaperReading]
+    recommended_paper_ids: list[str]
+    direction_summary: str
+    artifacts: list[Artifact]
+    errors: list[str]
+
+
 class ResearchDecisionRequest(BaseModel):
     goal: str = Field(default="", max_length=1000)
 

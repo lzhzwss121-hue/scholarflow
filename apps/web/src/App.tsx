@@ -23,6 +23,8 @@ import {
   type ApiAgentPlanResponse,
   type ApiAgentPlanStep,
   type ApiArtifact,
+  type ApiDirectionPaperReading,
+  type ApiDirectionReviewResponse,
   type ApiPaper,
   type ApiPaperCard,
   type ApiProject,
@@ -46,6 +48,7 @@ import {
 } from "./mockData";
 import {
   createAgentPlan,
+  createDirectionReview,
   createProject,
   createProjectPaperCard,
   createResearchDecisions,
@@ -68,6 +71,7 @@ const navIcons: Record<ViewId, LucideIcon> = {
   dashboard: LayoutDashboard,
   "new-project": Plus,
   "paper-table": Table2,
+  "direction-review": FileText,
   "paper-reader": BookOpen,
   "gap-board": GitBranch,
   "experiment-planner": FlaskConical,
@@ -77,6 +81,7 @@ const viewTitles: Record<ViewId, string> = {
   dashboard: "项目总览",
   "new-project": "新建科研项目",
   "paper-table": "论文表格",
+  "direction-review": "方向精读",
   "paper-reader": "论文精读",
   "gap-board": "Gap Board",
   "experiment-planner": "实验计划",
@@ -101,6 +106,11 @@ export function App() {
   const [literatureQuery, setLiteratureQuery] = useState("VLM hallucination benchmark");
   const [literatureBusy, setLiteratureBusy] = useState(false);
   const [literatureErrors, setLiteratureErrors] = useState<string[]>([]);
+  const [directionInput, setDirectionInput] = useState("VLM hallucination benchmark");
+  const [directionRound, setDirectionRound] = useState(1);
+  const [directionBusy, setDirectionBusy] = useState(false);
+  const [directionReview, setDirectionReview] = useState<ApiDirectionReviewResponse | null>(null);
+  const [selectedDirectionPaperId, setSelectedDirectionPaperId] = useState("");
   const [selectedPaperId, setSelectedPaperId] = useState("");
   const [paperCardInput, setPaperCardInput] = useState("");
   const [paperCardBusy, setPaperCardBusy] = useState(false);
@@ -158,8 +168,11 @@ export function App() {
   useEffect(() => {
     if (activeProject?.keyword) {
       setLiteratureQuery(activeProject.keyword);
+      setDirectionInput(activeProject.keyword);
     }
-  }, [activeProject?.keyword]);
+    setDirectionReview(null);
+    setSelectedDirectionPaperId("");
+  }, [activeProject?.id, activeProject?.keyword]);
 
   useEffect(() => {
     if (!paperRows.length) {
@@ -348,6 +361,31 @@ export function App() {
     }
   }
 
+  async function handleCreateDirectionReview() {
+    if (!activeProject) {
+      setApiMessage("没有可写入的后端项目，请先创建或启动 API。");
+      return;
+    }
+
+    setDirectionBusy(true);
+    setApiMessage(`正在执行第 ${directionRound} 轮方向精读：近三年 10 篇高相关论文...`);
+    try {
+      const result = await createDirectionReview(activeProject.id, {
+        direction: directionInput,
+        round: directionRound,
+      });
+      setDirectionReview(result);
+      setSelectedDirectionPaperId("");
+      setLastSavedArtifact(result.artifacts[0] ?? null);
+      setApiMessage(`方向精读完成：第 ${result.round} 轮，累计 ${result.total_read_count} 篇。`);
+      await loadProjectResources(activeProject.id);
+    } catch (error) {
+      setApiMessage("方向精读失败，请检查网络、检索源可用性或 API 日志。");
+    } finally {
+      setDirectionBusy(false);
+    }
+  }
+
   async function handleCreateResearchDecision() {
     if (!activeProject) {
       setApiMessage("没有可写入的后端项目，请先创建或启动 API。");
@@ -419,25 +457,34 @@ export function App() {
               artifactCount={persistedArtifactCount}
               decisionBusy={decisionBusy}
               decisionGoal={decisionGoal}
+              directionBusy={directionBusy}
+              directionInput={directionInput}
+              directionReview={directionReview}
+              directionRound={directionRound}
               literatureBusy={literatureBusy}
               literatureErrors={literatureErrors}
               literatureQuery={literatureQuery}
               onAgentTaskChange={setAgentTask}
               onCreateProject={handleCreateProject}
               onCreateAgentPlan={handleCreateAgentPlan}
+              onCreateDirectionReview={handleCreateDirectionReview}
               onExecuteAgentRun={handleExecuteAgentRun}
               onGeneratePaperCard={handleGeneratePaperCard}
               onCreateResearchDecision={handleCreateResearchDecision}
               onDecisionGoalChange={setDecisionGoal}
+              onDirectionInputChange={setDirectionInput}
+              onDirectionRoundChange={setDirectionRound}
               onLiteratureQueryChange={setLiteratureQuery}
               onPaperCardInputChange={setPaperCardInput}
               onSearchLiterature={handleSearchLiterature}
+              onSelectedDirectionPaperChange={setSelectedDirectionPaperId}
               onSelectedPaperChange={setSelectedPaperId}
               paperRows={paperRows}
               paperCardBusy={paperCardBusy}
               paperCardInput={paperCardInput}
               projectCount={projects.length}
               researchDecision={researchDecision}
+              selectedDirectionPaperId={selectedDirectionPaperId}
               selectedPaperId={selectedPaperId}
               latestPaperCard={latestPaperCard}
               view={activeView}
@@ -557,26 +604,35 @@ interface ActiveViewProps {
   artifactCount: number;
   decisionBusy: boolean;
   decisionGoal: string;
+  directionBusy: boolean;
+  directionInput: string;
+  directionReview: ApiDirectionReviewResponse | null;
+  directionRound: number;
   literatureBusy: boolean;
   literatureErrors: string[];
   literatureQuery: string;
   latestPaperCard: ApiPaperCard | null;
   onAgentTaskChange: (task: string) => void;
   onCreateAgentPlan: () => void;
+  onCreateDirectionReview: () => void;
   onCreateProject: () => void;
   onCreateResearchDecision: () => void;
   onDecisionGoalChange: (goal: string) => void;
+  onDirectionInputChange: (direction: string) => void;
+  onDirectionRoundChange: (round: number) => void;
   onExecuteAgentRun: () => void;
   onGeneratePaperCard: () => void;
   onLiteratureQueryChange: (query: string) => void;
   onPaperCardInputChange: (value: string) => void;
   onSearchLiterature: () => void;
+  onSelectedDirectionPaperChange: (paperId: string) => void;
   onSelectedPaperChange: (paperId: string) => void;
   paperRows: PaperRow[];
   paperCardBusy: boolean;
   paperCardInput: string;
   projectCount: number;
   researchDecision: ApiResearchDecisionResponse | null;
+  selectedDirectionPaperId: string;
   selectedPaperId: string;
   view: ViewId;
 }
@@ -591,26 +647,35 @@ function ActiveView({
   artifactCount,
   decisionBusy,
   decisionGoal,
+  directionBusy,
+  directionInput,
+  directionReview,
+  directionRound,
   literatureBusy,
   literatureErrors,
   literatureQuery,
   latestPaperCard,
   onAgentTaskChange,
   onCreateAgentPlan,
+  onCreateDirectionReview,
   onCreateProject,
   onCreateResearchDecision,
   onDecisionGoalChange,
+  onDirectionInputChange,
+  onDirectionRoundChange,
   onExecuteAgentRun,
   onGeneratePaperCard,
   onLiteratureQueryChange,
   onPaperCardInputChange,
   onSearchLiterature,
+  onSelectedDirectionPaperChange,
   onSelectedPaperChange,
   paperRows,
   paperCardBusy,
   paperCardInput,
   projectCount,
   researchDecision,
+  selectedDirectionPaperId,
   selectedPaperId,
   view,
 }: ActiveViewProps) {
@@ -641,6 +706,21 @@ function ActiveView({
           papers={paperRows}
           selectedPaperId={selectedPaperId}
           supplementalInput={paperCardInput}
+        />
+      );
+    case "direction-review":
+      return (
+        <DirectionReviewView
+          apiStatus={apiStatus}
+          direction={directionInput}
+          isGenerating={directionBusy}
+          onDirectionChange={onDirectionInputChange}
+          onGenerate={onCreateDirectionReview}
+          onRoundChange={onDirectionRoundChange}
+          onSelectedPaperChange={onSelectedDirectionPaperChange}
+          review={directionReview}
+          round={directionRound}
+          selectedPaperId={selectedDirectionPaperId}
         />
       );
     case "gap-board":
@@ -973,6 +1053,245 @@ function PaperTableView({
         </table>
       </section>
     </div>
+  );
+}
+
+function DirectionReviewView({
+  apiStatus,
+  direction,
+  isGenerating,
+  onDirectionChange,
+  onGenerate,
+  onRoundChange,
+  onSelectedPaperChange,
+  review,
+  round,
+  selectedPaperId,
+}: {
+  apiStatus: ApiStatus;
+  direction: string;
+  isGenerating: boolean;
+  onDirectionChange: (direction: string) => void;
+  onGenerate: () => void;
+  onRoundChange: (round: number) => void;
+  onSelectedPaperChange: (paperId: string) => void;
+  review: ApiDirectionReviewResponse | null;
+  round: number;
+  selectedPaperId: string;
+}) {
+  const selectedReading = review?.papers.find((reading) => reading.paper.id === selectedPaperId) ?? null;
+  const recommendedReadings =
+    review?.papers.filter((reading) => review.recommended_paper_ids.includes(reading.paper.id) || reading.self_read_priority) ??
+    [];
+  const canGenerate = apiStatus === "online" && !isGenerating && direction.trim().length > 0;
+
+  return (
+    <div className="direction-review-stack">
+      <section className="direction-review-controls" aria-label="direction review controls">
+        <div className="direction-control-header">
+          <div>
+            <p className="section-kicker">Direction Review</p>
+            <h2>方向级三轮论文精读</h2>
+          </div>
+          <button className="secondary-command" disabled={!canGenerate} type="button" onClick={onGenerate}>
+            <BrainCircuit size={17} />
+            {isGenerating ? "生成中" : `生成第 ${round} 轮`}
+          </button>
+        </div>
+
+        <div className="direction-control-grid">
+          <label>
+            研究方向
+            <textarea
+              placeholder="例如：VLM hallucination benchmark / multimodal evidence faithfulness"
+              value={direction}
+              onChange={(event) => onDirectionChange(event.target.value)}
+            />
+          </label>
+          <label>
+            阅读轮次
+            <select value={round} onChange={(event) => onRoundChange(Number(event.target.value))}>
+              <option value={1}>第 1 轮：10 篇</option>
+              <option value={2}>第 2 轮：累计 20 篇</option>
+              <option value={3}>第 3 轮：累计 30 篇上限</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="direction-chip-row">
+          <span>近三年</span>
+          <span>每轮 10 篇</span>
+          <span>顶会/顶刊优先</span>
+          <span>点击卡片查看细节</span>
+        </div>
+      </section>
+
+      {review ? (
+        <>
+          <section className="direction-summary-panel" aria-label="direction summary">
+            <div className="direction-summary-header">
+              <div>
+                <p className="section-kicker">Cumulative Understanding</p>
+                <h2>{review.direction}</h2>
+              </div>
+              <div className="direction-stat-grid">
+                <span>Round {review.round}</span>
+                <span>{review.total_read_count} papers</span>
+                <span>{review.scope.year_range}</span>
+              </div>
+            </div>
+            <p>{review.direction_summary}</p>
+            <div className="direction-scope-grid">
+              <div>
+                <strong>纳入范围</strong>
+                <span>{review.scope.included_scope}</span>
+              </div>
+              <div>
+                <strong>排除范围</strong>
+                <span>{review.scope.excluded_scope}</span>
+              </div>
+            </div>
+            <div className="direction-chip-row">
+              {review.scope.subtopics.map((subtopic) => (
+                <span key={subtopic}>{subtopic}</span>
+              ))}
+            </div>
+            {review.errors.length ? (
+              <div className="retrieval-errors">
+                <strong>检索警告</strong>
+                <p>{review.errors.slice(0, 2).join(" / ")}</p>
+              </div>
+            ) : null}
+          </section>
+
+          <section className="recommendation-panel" aria-label="recommended papers">
+            <div>
+              <p className="section-kicker">Personal Deep Reading</p>
+              <h2>最值得用户本人精读的 3 篇</h2>
+            </div>
+            <div className="recommendation-list">
+              {recommendedReadings.slice(0, 3).map((reading, index) => (
+                <button
+                  className="recommendation-item"
+                  key={reading.paper.id}
+                  type="button"
+                  onClick={() => onSelectedPaperChange(reading.paper.id)}
+                >
+                  <span>{index + 1}</span>
+                  <div>
+                    <strong>{reading.paper.title}</strong>
+                    <small>{reading.why_selected}</small>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <div className="direction-reader-layout">
+            <section className="direction-paper-grid" aria-label="direction paper cards">
+              {review.papers.map((reading, index) => {
+                const isActive = selectedPaperId === reading.paper.id;
+                return (
+                  <button
+                    className={isActive ? "direction-paper-card active" : "direction-paper-card"}
+                    key={reading.paper.id}
+                    type="button"
+                    onClick={() => onSelectedPaperChange(reading.paper.id)}
+                  >
+                    <div className="direction-paper-card-header">
+                      <span>{String(index + 1).padStart(2, "0")}</span>
+                      {reading.self_read_priority ? <strong>推荐精读</strong> : null}
+                    </div>
+                    <h3>{reading.paper.title}</h3>
+                    <p>{reading.why_selected}</p>
+                    <div className="direction-paper-meta">
+                      <span>{reading.paper.year || "year unknown"}</span>
+                      <span>{reading.paper.venue || reading.paper.source || "source unknown"}</span>
+                    </div>
+                    <small>{reading.venue_signal}</small>
+                  </button>
+                );
+              })}
+            </section>
+
+            {selectedReading ? (
+              <DirectionPaperDetail reading={selectedReading} />
+            ) : (
+              <section className="direction-detail empty" aria-label="paper detail placeholder">
+                <BookOpen size={20} />
+                <h2>选择一张论文卡片</h2>
+                <p>摘要中文内容和 12 条精读结果会在这里显示，列表页不会直接铺开长文本。</p>
+              </section>
+            )}
+          </div>
+        </>
+      ) : (
+        <section className="direction-empty-state">
+          <BookOpen size={22} />
+          <div>
+            <h2>输入一个研究方向后开始第一轮</h2>
+            <p>
+              ScholarFlow 会为该方向检索近三年高相关候选论文，选择 10 篇进行结构化精读，并输出方向总结和 3
+              篇最值得亲自精读的论文。
+            </p>
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }) {
+  return (
+    <section className="direction-detail" aria-label="selected paper detail">
+      <div className="direction-detail-header">
+        <div>
+          <p className="section-kicker">Selected Paper Detail</p>
+          <h2>{reading.paper.title}</h2>
+        </div>
+        {reading.paper.url ? (
+          <a href={reading.paper.url} rel="noreferrer" target="_blank">
+            open paper
+          </a>
+        ) : null}
+      </div>
+
+      <article className="direction-abstract">
+        <h3>摘要中文内容</h3>
+        <p>{reading.abstract_translation}</p>
+      </article>
+
+      <div className="direction-key-findings">
+        <div>
+          <strong>最脆弱假设</strong>
+          <span>{reading.weakest_assumption}</span>
+        </div>
+        <div>
+          <strong>一周最小复现</strong>
+          <span>{reading.minimal_reproduction}</span>
+        </div>
+        <div>
+          <strong>反例设计</strong>
+          <span>{reading.counterexample}</span>
+        </div>
+        <div>
+          <strong>Follow-up Idea</strong>
+          <span>{reading.follow_up_idea}</span>
+        </div>
+      </div>
+
+      <div className="direction-section-list">
+        {reading.sections.map((section, index) => (
+          <article className="direction-detail-section" key={section.id}>
+            <span>{String(index + 1).padStart(2, "0")}</span>
+            <div>
+              <h3>{section.title}</h3>
+              <p>{section.content}</p>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 

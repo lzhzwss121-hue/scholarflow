@@ -7,6 +7,7 @@ ScholarFlow is a Chinese-first AI research workflow agent for students and resea
 The project is designed for workflows such as:
 
 - Finding and organizing papers for an AI research direction.
+- Running a direction review: 10 recent high-relevance papers per round, up to 30 papers across three rounds.
 - Producing structured paper tables and deep paper-reading notes.
 - Identifying real research gaps instead of vague topic ideas.
 - Planning one-week reproduction experiments.
@@ -21,8 +22,9 @@ ScholarFlow focuses on the research process after a user gives a keyword or roug
 Keyword / rough idea
   -> understand the research direction
   -> retrieve and rank papers
+  -> select 10 recent high-relevance papers for each review round
   -> generate a structured paper table
-  -> create deep paper cards
+  -> create interactive deep paper cards
   -> analyze gaps and novelty risk
   -> plan a minimal reproduction
   -> design an experiment plan

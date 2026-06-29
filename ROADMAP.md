@@ -85,7 +85,7 @@ Goal: implement the first working research agent loop.
 Planned deliverables:
 
 - Model provider abstraction.
-- OpenRouter provider using the Ddo-style `minimax/minimax-m2.5` model setup.
+- OpenRouter provider using the `minimax/minimax-m2.5` model setup.
 - Optional DeepSeek fallback provider.
 - Tool registry.
 - Minimal research tools.
@@ -151,3 +151,19 @@ Planned deliverables:
 - First public release tag.
 
 Status: complete for the v0.1.0 public preview assets. The repository now includes CI, templates, a security policy, release notes, and a synthetic example workflow. A Git tag can be created after the user confirms the final v0.1.0 release point.
+
+## Phase 10: Direction Review Workflow
+
+Goal: turn a user-provided research direction into a multi-round reading workflow.
+
+Planned deliverables:
+
+- Direction Review API endpoint.
+- React view for direction-level paper cards.
+- 10 recent high-relevance papers per round.
+- Three rounds maximum, with cumulative 30-paper coverage.
+- Cumulative direction summary after each round.
+- Top-3 personal deep-reading recommendations.
+- Click-to-expand paper cards for abstract Chinese reading entry and the 12-section protocol.
+
+Status: complete for metadata-and-abstract based review. Full-PDF batch parsing remains future work.

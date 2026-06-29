@@ -151,7 +151,7 @@ scholarflow/
 
 ## Phase 4: CLI 启动与本地工作区
 
-目标：实现 Ddo 风格的本地启动和工作区管理。
+目标：实现本地启动和工作区管理。
 
 当前状态：complete。
 
@@ -192,7 +192,7 @@ scholarflow/
 交付物：
 
 - `ModelProvider` 抽象。
-- `OpenRouterProvider`，默认使用 Ddo 同款 `minimax/minimax-m2.5` OpenRouter 模型配置。
+- `OpenRouterProvider`，默认使用 `minimax/minimax-m2.5` OpenRouter 模型配置。
 - 可选 `DeepSeekProvider` fallback。
 - `ToolRegistry`。
 - 最小工具：
@@ -285,7 +285,7 @@ scholarflow/
 
 不得提前做：
 
-- 不做批量 20 篇精读。
+- 本阶段不做批量精读；方向级多论文精读作为后续独立阶段处理。
 - 不做自动论文写作。
 
 ## Phase 8: Gap / Novelty / Experiment Plan
@@ -352,6 +352,40 @@ scholarflow/
 - 示例项目使用公开安全的 synthetic artifacts，不包含真实用户数据。
 - GitHub Issue/PR 模板、CI、Security Policy 和 release notes 已补齐。
 - 截图资产放在 `docs/assets/scholarflow-dashboard.png`。
+
+## Phase 10: 方向级三轮论文精读
+
+目标：根据用户给出的研究方向，每轮筛选并精读近三年高相关论文 10 篇，最多三轮累计 30 篇。
+
+当前状态：complete。
+
+交付物：
+
+- Direction Review API。
+- Direction Review React 页面。
+- 每轮 10 篇论文卡片。
+- 每篇论文保存：
+  - 摘要中文内容
+  - 12 条精读协议内容
+  - 最脆弱假设
+  - 一周最小复现实验
+  - 反例设计
+  - follow-up idea
+- 每轮方向级总结。
+- 用户本人最值得精读的 3 篇论文推荐。
+
+验收标准：
+
+- 摘要中文内容和 12 条精读内容不直接铺在论文列表里。
+- 用户点击论文卡片后才能查看该论文详情。
+- 第 2、3 轮会避开已读论文，并用累计阅读数量生成方向理解。
+- 顶会/顶刊优先作为检索排序信号，但不伪造 venue 结论。
+
+当前边界：
+
+- 仍以 arXiv/OpenAlex 元数据和摘要为主要输入。
+- 尚未实现 PDF 全文批量下载、解析和逐段证据引用。
+- 顶会/顶刊过滤是启发式 venue/source 信号，需要后续接入更严格的 venue metadata。
 
 ## 阶段推进规则
 

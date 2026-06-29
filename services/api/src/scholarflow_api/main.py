@@ -17,6 +17,13 @@ from scholarflow_api.agent_core import (
     render_plan_markdown,
 )
 from scholarflow_api.database import get_connection, init_db, new_id, row_to_dict, seed_papers, utc_now
+from scholarflow_api.direction_review import (
+    build_direction_readings,
+    build_direction_review_bundle,
+    render_direction_review_json,
+    render_direction_review_markdown,
+    retrieve_direction_candidates,
+)
 from scholarflow_api.literature import render_paper_table_json, render_paper_table_markdown, search_literature
 from scholarflow_api.paper_card import (
     generate_deep_paper_card,
@@ -38,6 +45,10 @@ from scholarflow_api.schemas import (
     AgentPlanResponse,
     Artifact,
     ArtifactCreate,
+    DirectionPaperReading,
+    DirectionReviewRequest,
+    DirectionReviewResponse,
+    DirectionScope,
     HealthResponse,
     LiteratureSearchRequest,
     LiteratureSearchResponse,
@@ -357,6 +368,147 @@ def create_project_paper_card(project_id: str, payload: PaperCardCreateRequest) 
             created_at=now,
         ),
         artifact=Artifact.model_validate(artifact),
+    )
+
+
+@app.post("/projects/{project_id}/direction-reviews", response_model=DirectionReviewResponse, status_code=201)
+def create_project_direction_review(project_id: str, payload: DirectionReviewRequest) -> DirectionReviewResponse:
+    now = utc_now()
+    with get_connection() as connection:
+        project = fetch_project_dict(connection, project_id)
+        session_id = ensure_active_session(connection, project, now)
+        previous_titles = fetch_read_paper_titles(connection, project_id) if payload.round > 1 else []
+        insert_tool_event(
+            connection,
+            session_id,
+            "direction.scope",
+            "running",
+            f"正在界定研究方向并准备第 {payload.round} 轮 10 篇论文阅读：{payload.direction}",
+            now,
+        )
+
+    scope, candidates, errors = retrieve_direction_candidates(payload.direction, payload.round, previous_titles)
+    completed_at = utc_now()
+    artifacts: list[dict] = []
+    with get_connection() as connection:
+        project = fetch_project_dict(connection, project_id)
+        session_id = ensure_active_session(connection, project, completed_at)
+        paper_ids = insert_paper_candidates(connection, project_id, candidates, completed_at)
+        paper_dicts = [fetch_paper_dict(connection, project_id, paper_id) for paper_id in paper_ids]
+        readings = build_direction_readings(paper_dicts, payload.direction)
+        bundle = build_direction_review_bundle(
+            payload.direction,
+            payload.round,
+            scope,
+            readings,
+            previous_read_count=len(previous_titles),
+            errors=errors,
+        )
+        review_artifact = insert_artifact_row(
+            connection=connection,
+            project_id=project_id,
+            title=f"direction_review_round_{payload.round}.md",
+            kind="markdown",
+            content_markdown=render_direction_review_markdown(bundle),
+            content_json=render_direction_review_json(bundle),
+            diff="+ Generated ten-paper direction review\n+ Added summary and top-3 personal reading recommendations",
+            now=completed_at,
+        )
+        artifacts.append(review_artifact)
+
+        for reading in readings:
+            card_artifact = insert_artifact_row(
+                connection=connection,
+                project_id=project_id,
+                title=f"direction_round_{payload.round}_paper_card_{paper_slug(reading.card.paper_title)}.md",
+                kind="markdown",
+                content_markdown=render_card_markdown(reading.card, reading.paper),
+                content_json=json.dumps(reading.to_dict(), ensure_ascii=False, indent=2),
+                diff="+ Generated direction-review paper card\n+ Added abstract translation for interactive UI",
+                now=completed_at,
+            )
+            artifacts.append(card_artifact)
+            connection.execute(
+                """
+                INSERT INTO paper_cards (
+                    id, project_id, paper_id, artifact_id, sections_json, weakest_assumption,
+                    minimal_reproduction, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id("paper_card"),
+                    project_id,
+                    reading.paper.get("id"),
+                    card_artifact["id"],
+                    json.dumps([section.to_dict() for section in reading.card.sections], ensure_ascii=False, indent=2),
+                    reading.card.weakest_assumption,
+                    reading.card.minimal_reproduction,
+                    completed_at,
+                ),
+            )
+
+        insert_tool_event(
+            connection,
+            session_id,
+            "direction.scope",
+            "done",
+            f"已界定方向范围：{scope.year_range}，子方向 {len(scope.subtopics)} 个。",
+            completed_at,
+        )
+        insert_tool_event(
+            connection,
+            session_id,
+            "direction.retrieve",
+            "done" if readings else "queued",
+            f"第 {payload.round} 轮检索并筛选 {len(readings)} 篇近三年高相关论文。",
+            completed_at,
+        )
+        insert_tool_event(
+            connection,
+            session_id,
+            "direction.read",
+            "done" if readings else "queued",
+            f"已生成 {len(readings)} 张 12 条规则论文精读卡片。",
+            completed_at,
+        )
+        insert_tool_event(
+            connection,
+            session_id,
+            "direction.summarize",
+            "done",
+            f"已生成方向总结，并推荐 {len(bundle.recommended_paper_ids)} 篇用户亲自精读论文。",
+            completed_at,
+        )
+        connection.execute(
+            "UPDATE projects SET stage = ?, updated_at = ? WHERE id = ?",
+            ("direction-review", completed_at, project_id),
+        )
+
+    return DirectionReviewResponse(
+        direction=bundle.direction,
+        round=bundle.round,
+        total_read_count=bundle.total_read_count,
+        scope=DirectionScope(**bundle.scope.to_dict()),
+        papers=[
+            DirectionPaperReading(
+                paper=Paper.model_validate(reading.paper),
+                abstract_translation=reading.abstract_translation,
+                sections=[section.to_dict() for section in reading.card.sections],
+                weakest_assumption=reading.card.weakest_assumption,
+                minimal_reproduction=reading.card.minimal_reproduction,
+                counterexample=reading.card.counterexample,
+                follow_up_idea=reading.card.follow_up_idea,
+                why_selected=reading.why_selected,
+                venue_signal=reading.venue_signal,
+                self_read_priority=reading.self_read_priority,
+            )
+            for reading in bundle.readings
+        ],
+        recommended_paper_ids=bundle.recommended_paper_ids,
+        direction_summary=bundle.direction_summary,
+        artifacts=[Artifact.model_validate(artifact) for artifact in artifacts],
+        errors=bundle.errors,
     )
 
 
@@ -804,6 +956,22 @@ def fetch_project_paper_card_dicts(connection, project_id: str) -> list[dict]:
         (project_id,),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def fetch_read_paper_titles(connection, project_id: str) -> list[str]:
+    rows = connection.execute(
+        """
+        SELECT DISTINCT p.title
+        FROM paper_cards pc
+        JOIN papers p ON p.id = pc.paper_id
+        JOIN artifacts a ON a.id = pc.artifact_id
+        WHERE pc.project_id = ? AND pc.paper_id IS NOT NULL
+          AND a.title LIKE 'direction_round_%_paper_card_%'
+        ORDER BY pc.created_at ASC, pc.rowid ASC
+        """,
+        (project_id,),
+    ).fetchall()
+    return [row["title"] for row in rows if row["title"]]
 
 
 def build_paper_card_source(connection, project_id: str, payload: PaperCardCreateRequest) -> dict:
