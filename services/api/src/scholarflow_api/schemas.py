@@ -38,12 +38,17 @@ class Paper(BaseModel):
     id: str
     project_id: str
     title: str
+    authors: str
+    abstract: str
     year: str
     type: str
     venue: str
+    source: str
+    url: str
     relation: str
     priority: str
     code: str
+    relevance_score: float
     created_at: str
 
 
@@ -66,6 +71,20 @@ class Artifact(BaseModel):
     diff: str
     created_at: str
     updated_at: str
+
+
+class LiteratureSearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=300)
+    max_results: int = Field(default=12, ge=1, le=30)
+    sources: list[Literal["arxiv", "openalex"]] = Field(default_factory=lambda: ["arxiv", "openalex"])
+
+
+class LiteratureSearchResponse(BaseModel):
+    query: str
+    expanded_queries: list[str]
+    papers: list[Paper]
+    artifact: Artifact
+    errors: list[str]
 
 
 class AgentPlanRequest(BaseModel):

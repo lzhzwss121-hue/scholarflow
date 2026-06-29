@@ -30,12 +30,17 @@ export interface TimelineEvent {
 
 export interface PaperRow {
   title: string;
+  authors: string;
+  abstract: string;
   year: string;
   type: string;
   venue: string;
+  source: string;
+  url: string;
   relation: string;
   priority: "High" | "Medium" | "Watch";
   code: string;
+  relevanceScore: number;
 }
 
 export interface GapItem {
@@ -131,39 +136,59 @@ export const timelineEvents: TimelineEvent[] = [
 export const papers: PaperRow[] = [
   {
     title: "Evaluating Object Hallucination in Large Vision-Language Models",
+    authors: "unknown",
+    abstract: "Evaluates object hallucination in large vision-language models.",
     year: "2025",
     type: "Benchmark",
     venue: "arXiv",
+    source: "seed",
+    url: "",
     relation: "直接对应 hallucination evaluation",
     priority: "High",
     code: "available",
+    relevanceScore: 1.5,
   },
   {
     title: "Faithful Visual Question Answering Requires Grounded Evidence",
+    authors: "unknown",
+    abstract: "Separates answer correctness from grounded visual evidence.",
     year: "2025",
     type: "Method",
     venue: "ACL",
+    source: "seed",
+    url: "",
     relation: "把答案正确性和证据一致性分开",
     priority: "High",
     code: "partial",
+    relevanceScore: 1.4,
   },
   {
     title: "Benchmark Bias in Multimodal Foundation Model Evaluation",
+    authors: "unknown",
+    abstract: "Analyzes benchmark shortcuts and distribution bias.",
     year: "2024",
     type: "Analysis",
     venue: "NeurIPS",
+    source: "seed",
+    url: "",
     relation: "解释评测集捷径和分布偏差",
     priority: "High",
     code: "available",
+    relevanceScore: 1.3,
   },
   {
     title: "A Survey of Trustworthy Vision-Language Models",
+    authors: "unknown",
+    abstract: "Surveys trustworthy vision-language model research.",
     year: "2026",
     type: "Survey",
     venue: "arXiv",
+    source: "seed",
+    url: "",
     relation: "补全研究图谱和术语",
     priority: "Medium",
     code: "none",
+    relevanceScore: 0.9,
   },
 ];
 
@@ -271,4 +296,3 @@ export const artifacts: Record<ViewId, ArtifactContent> = {
       "+ Added failure criterion\n+ Added compute budget and baseline scope",
   },
 };
-

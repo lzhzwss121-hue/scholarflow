@@ -1,6 +1,6 @@
 # ScholarFlow Architecture
 
-This document describes the target architecture and the current Phase 5 minimal agent core.
+This document describes the target architecture and the current Phase 6 literature retrieval MVP.
 
 ## Product Shape
 
@@ -41,11 +41,11 @@ examples/
   workflows/
 ```
 
-Current Phase 5 entry points:
+Current Phase 6 entry points:
 
 - `apps/web`: React research workspace with API-aware project, timeline, paper, and artifact state.
 - `apps/cli`: Node CLI with workspace initialization and Web/API service management.
-- `services/api`: FastAPI app with SQLite persistence and the first minimal agent loop.
+- `services/api`: FastAPI app with SQLite persistence, the first minimal agent loop, and literature retrieval adapters.
 - `packages/schemas`: shared TypeScript API contracts.
 
 ## Web UI
@@ -59,7 +59,7 @@ Planned layout:
 - Artifact Preview: paper tables, paper cards, gap boards, experiment plans, diffs.
 - Tool Timeline: retrieval queries, filters, model calls, artifact writes, errors.
 
-The Phase 5 implementation reads and writes local API data for projects, papers, artifacts, sessions, tool events, and agent runs. It intentionally does not call a real paper retrieval API or generate deep paper cards yet.
+The Phase 6 implementation reads and writes local API data for projects, papers, artifacts, sessions, tool events, and agent runs. It can retrieve paper candidates from arXiv and OpenAlex, then save a structured paper-table artifact. It intentionally does not download PDFs or generate deep paper cards yet.
 
 The UI is Chinese-first. Technical terms such as Agent Loop, Artifact, Timeline, Gap, Claim, Baseline, and Ablation can remain in English when useful.
 
@@ -95,6 +95,8 @@ Current API capabilities:
 - Save and read artifacts.
 - Read project sessions.
 - Read session and project timelines.
+- Generate and execute minimal agent plans.
+- Retrieve and persist ranked paper tables from arXiv/OpenAlex.
 
 ## CLI
 
@@ -168,7 +170,7 @@ Future providers should be swappable through configuration. Phase 5 stores the p
 Initial tool categories:
 
 - Direction understanding.
-- Literature retrieval.
+- Literature retrieval: Phase 6 implements arXiv and OpenAlex adapters behind `POST /projects/{project_id}/literature/search`.
 - Paper metadata normalization.
 - PDF parsing.
 - Paper card generation.
@@ -204,6 +206,8 @@ Expected behavior:
 - Mark uncertain conclusions.
 - Preserve search queries and retrieval sources.
 - Avoid inventing citations, datasets, metrics, or experimental results.
+
+The Phase 6 paper table artifact preserves expanded queries, source API names, source URLs, relevance reasons, and retrieval warnings.
 
 ## Local Data Policy
 

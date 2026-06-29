@@ -8,9 +8,9 @@ ScholarFlow is not a paper search demo. The goal is to build a local-first resea
 
 ## Current Status
 
-This repository is in Phase 5: minimal agent core.
+This repository is in Phase 6: literature retrieval MVP.
 
-The current codebase includes a React research workspace, a FastAPI service backed by SQLite, a Node CLI for local workspace and service management, a minimal research agent loop, and a shared schema package. It does not include real model API calls, real paper retrieval, or deep paper card generation yet.
+The current codebase includes a React research workspace, a FastAPI service backed by SQLite, a Node CLI for local workspace and service management, a minimal research agent loop, real arXiv/OpenAlex literature retrieval, and a shared schema package. It does not include real model API calls or deep paper card generation yet.
 
 See [IMPLEMENTATION_PHASES.md](./IMPLEMENTATION_PHASES.md) for the staged build plan.
 
@@ -158,6 +158,14 @@ The Dashboard also includes the first Research Plan Mode:
 - Save the result artifact.
 - Refresh the visible timeline from SQLite.
 
+The Paper Table page can run the first real literature retrieval flow:
+
+- Expand a keyword into related search queries.
+- Retrieve candidates from arXiv and OpenAlex.
+- Deduplicate and rank papers.
+- Save a structured `paper_table.md` artifact.
+- Persist paper metadata to SQLite.
+
 ## Current CLI
 
 Phase 4 provides the local command entry:
@@ -186,7 +194,7 @@ The CLI creates this local workspace shape:
 
 ## Current API
 
-Phase 3 and Phase 5 provide these local API endpoints:
+Phase 3, Phase 5, and Phase 6 provide these local API endpoints:
 
 ```text
 GET  /health
@@ -202,6 +210,7 @@ GET  /sessions/{session_id}/timeline
 GET  /projects/{project_id}/timeline
 POST /agent/plan
 POST /agent/runs/{run_id}/execute
+POST /projects/{project_id}/literature/search
 ```
 
 The default development SQLite database path is `services/api/.data/scholarflow.sqlite3`, and it is ignored by Git. When launched by the CLI, the database path is `<workspace>/cache/scholarflow.sqlite3`.
@@ -219,6 +228,20 @@ Phase 5 provides the first minimal agent loop:
 - `update_timeline`.
 
 The current agent is deterministic and local-first. It does not call the DeepSeek API yet; the provider boundary exists so the later real model integration can replace the local planner without changing the workflow API.
+
+## Current Literature Retrieval
+
+Phase 6 provides a real paper-table workflow:
+
+- arXiv API retrieval.
+- OpenAlex Works retrieval.
+- Query expansion for AI research terms such as VLM, hallucination, multimodal evaluation, and research agents.
+- Title-based deduplication.
+- Lightweight relevance scoring using keyword overlap, recency, source, and title matches.
+- SQLite persistence for structured paper rows.
+- Markdown and JSON paper-table artifact output.
+
+The current retrieval flow does not download PDFs, build citation graphs, or generate deep paper cards. Those are later phases.
 
 ## Design Principles
 

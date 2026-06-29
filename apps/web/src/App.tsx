@@ -53,6 +53,7 @@ import {
   listProjectPapers,
   listProjects,
   saveArtifact,
+  searchProjectLiterature,
 } from "./apiClient";
 import "./styles.css";
 
@@ -93,6 +94,9 @@ export function App() {
   );
   const [agentPlan, setAgentPlan] = useState<ApiAgentPlanResponse | null>(null);
   const [agentBusy, setAgentBusy] = useState(false);
+  const [literatureQuery, setLiteratureQuery] = useState("VLM hallucination benchmark");
+  const [literatureBusy, setLiteratureBusy] = useState(false);
+  const [literatureErrors, setLiteratureErrors] = useState<string[]>([]);
 
   const activeArtifact = artifacts[activeView];
   const activeNavItem = useMemo(
@@ -137,6 +141,12 @@ export function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (activeProject?.keyword) {
+      setLiteratureQuery(activeProject.keyword);
+    }
+  }, [activeProject?.keyword]);
 
   async function loadProjectResources(projectId: string, cancelled = false) {
     const [apiPapers, apiTimeline, apiArtifacts] = await Promise.all([
@@ -256,6 +266,33 @@ export function App() {
     }
   }
 
+  async function handleSearchLiterature() {
+    if (!activeProject) {
+      setApiMessage("没有可写入的后端项目，请先创建或启动 API。");
+      return;
+    }
+
+    setLiteratureBusy(true);
+    setLiteratureErrors([]);
+    setApiMessage("正在检索 arXiv / OpenAlex 并生成 paper table...");
+    try {
+      const result = await searchProjectLiterature(activeProject.id, {
+        query: literatureQuery,
+        max_results: 12,
+        sources: ["arxiv", "openalex"],
+      });
+      setPaperRows(result.papers.map(toPaperRow));
+      setLastSavedArtifact(result.artifact);
+      setLiteratureErrors(result.errors);
+      setApiMessage(`检索完成：${result.papers.length} 篇论文，artifact: ${result.artifact.id}`);
+      await loadProjectResources(activeProject.id);
+    } catch (error) {
+      setApiMessage("文献检索失败，请检查网络、OpenAlex/arXiv 可用性或 API 日志。");
+    } finally {
+      setLiteratureBusy(false);
+    }
+  }
+
   return (
     <div className="scholarflow-app">
       <ProjectNavigator
@@ -302,10 +339,15 @@ export function App() {
               apiMessage={apiMessage}
               apiStatus={apiStatus}
               artifactCount={persistedArtifactCount}
+              literatureBusy={literatureBusy}
+              literatureErrors={literatureErrors}
+              literatureQuery={literatureQuery}
               onAgentTaskChange={setAgentTask}
               onCreateProject={handleCreateProject}
               onCreateAgentPlan={handleCreateAgentPlan}
               onExecuteAgentRun={handleExecuteAgentRun}
+              onLiteratureQueryChange={setLiteratureQuery}
+              onSearchLiterature={handleSearchLiterature}
               paperRows={paperRows}
               projectCount={projects.length}
               view={activeView}
@@ -423,10 +465,15 @@ interface ActiveViewProps {
   apiMessage: string;
   apiStatus: ApiStatus;
   artifactCount: number;
+  literatureBusy: boolean;
+  literatureErrors: string[];
+  literatureQuery: string;
   onAgentTaskChange: (task: string) => void;
   onCreateAgentPlan: () => void;
   onCreateProject: () => void;
   onExecuteAgentRun: () => void;
+  onLiteratureQueryChange: (query: string) => void;
+  onSearchLiterature: () => void;
   paperRows: PaperRow[];
   projectCount: number;
   view: ViewId;
@@ -440,10 +487,15 @@ function ActiveView({
   apiMessage,
   apiStatus,
   artifactCount,
+  literatureBusy,
+  literatureErrors,
+  literatureQuery,
   onAgentTaskChange,
   onCreateAgentPlan,
   onCreateProject,
   onExecuteAgentRun,
+  onLiteratureQueryChange,
+  onSearchLiterature,
   paperRows,
   projectCount,
   view,
@@ -452,7 +504,17 @@ function ActiveView({
     case "new-project":
       return <NewProjectView apiMessage={apiMessage} apiStatus={apiStatus} onCreateProject={onCreateProject} />;
     case "paper-table":
-      return <PaperTableView papers={paperRows} />;
+      return (
+        <PaperTableView
+          apiStatus={apiStatus}
+          errors={literatureErrors}
+          isSearching={literatureBusy}
+          onQueryChange={onLiteratureQueryChange}
+          onSearch={onSearchLiterature}
+          papers={paperRows}
+          query={literatureQuery}
+        />
+      );
     case "paper-reader":
       return <PaperReaderView />;
     case "gap-board":
@@ -672,38 +734,101 @@ function NewProjectView({
   );
 }
 
-function PaperTableView({ papers }: { papers: PaperRow[] }) {
+function PaperTableView({
+  apiStatus,
+  errors,
+  isSearching,
+  onQueryChange,
+  onSearch,
+  papers,
+  query,
+}: {
+  apiStatus: ApiStatus;
+  errors: string[];
+  isSearching: boolean;
+  onQueryChange: (query: string) => void;
+  onSearch: () => void;
+  papers: PaperRow[];
+  query: string;
+}) {
   return (
-    <section className="table-shell" aria-label="paper table">
-      <table>
-        <thead>
-          <tr>
-            <th>论文</th>
-            <th>年份</th>
-            <th>类型</th>
-            <th>来源</th>
-            <th>与方向关系</th>
-            <th>优先级</th>
-            <th>代码</th>
-          </tr>
-        </thead>
-        <tbody>
-          {papers.map((paper) => (
-            <tr key={paper.title}>
-              <td>{paper.title}</td>
-              <td>{paper.year}</td>
-              <td>{paper.type}</td>
-              <td>{paper.venue}</td>
-              <td>{paper.relation}</td>
-              <td>
-                <span className={`priority ${paper.priority.toLowerCase()}`}>{paper.priority}</span>
-              </td>
-              <td>{paper.code}</td>
+    <div className="view-stack">
+      <section className="literature-search-panel" aria-label="literature search">
+        <label>
+          检索关键词
+          <div className="search-control">
+            <Search size={17} />
+            <input value={query} onChange={(event) => onQueryChange(event.target.value)} />
+            <button
+              className="secondary-command"
+              disabled={apiStatus !== "online" || isSearching || query.trim().length === 0}
+              type="button"
+              onClick={onSearch}
+            >
+              <Search size={17} />
+              {isSearching ? "检索中" : "检索论文"}
+            </button>
+          </div>
+        </label>
+        <div className="source-row">
+          <span>arXiv</span>
+          <span>OpenAlex</span>
+          <span>Query Expansion</span>
+          <span>Dedup + Ranking</span>
+        </div>
+        {errors.length ? (
+          <div className="retrieval-errors">
+            <strong>检索警告</strong>
+            <p>{errors.slice(0, 2).join(" / ")}</p>
+          </div>
+        ) : null}
+      </section>
+
+      <section className="table-shell" aria-label="paper table">
+        <table>
+          <thead>
+            <tr>
+              <th>论文</th>
+              <th>年份</th>
+              <th>作者</th>
+              <th>来源</th>
+              <th>相关性理由</th>
+              <th>优先级</th>
+              <th>链接</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </section>
+          </thead>
+          <tbody>
+            {papers.map((paper) => (
+              <tr key={`${paper.source}-${paper.title}`}>
+                <td>
+                  <strong>{paper.title}</strong>
+                  <small>{paper.type}</small>
+                </td>
+                <td>{paper.year}</td>
+                <td>{paper.authors || "unknown"}</td>
+                <td>
+                  <span className="source-badge">{paper.source}</span>
+                  <small>{paper.venue}</small>
+                </td>
+                <td>{paper.relation}</td>
+                <td>
+                  <span className={`priority ${paper.priority.toLowerCase()}`}>{paper.priority}</span>
+                </td>
+                <td>
+                  {paper.url ? (
+                    <a href={paper.url} rel="noreferrer" target="_blank">
+                      open
+                    </a>
+                  ) : (
+                    "none"
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+    </div>
   );
 }
 
@@ -915,12 +1040,17 @@ function ArtifactPreview({ activeTab, apiStatus, artifact, lastSavedArtifact, on
 function toPaperRow(paper: ApiPaper): PaperRow {
   return {
     title: paper.title,
+    authors: paper.authors,
+    abstract: paper.abstract,
     year: paper.year,
     type: paper.type,
     venue: paper.venue,
+    source: paper.source,
+    url: paper.url,
     relation: paper.relation,
     priority: paper.priority === "High" || paper.priority === "Medium" || paper.priority === "Watch" ? paper.priority : "Medium",
     code: paper.code,
+    relevanceScore: paper.relevance_score,
   };
 }
 

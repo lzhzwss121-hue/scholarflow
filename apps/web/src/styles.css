@@ -340,6 +340,7 @@ button {
 
 .brief-panel,
 .agent-run-panel,
+.literature-search-panel,
 .form-panel,
 .table-shell,
 .paper-summary,
@@ -486,6 +487,75 @@ button {
   word-break: break-word;
 }
 
+.literature-search-panel {
+  padding: 18px;
+  display: grid;
+  gap: 12px;
+}
+
+.literature-search-panel label {
+  display: grid;
+  gap: 8px;
+  color: #344256;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.search-control {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) max-content;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid #d8dee7;
+  border-radius: 8px;
+  padding: 8px 8px 8px 12px;
+  background: #fbfcfd;
+}
+
+.search-control input {
+  min-width: 0;
+  min-height: 34px;
+  border: 0;
+  background: transparent;
+  color: #1d2733;
+  font-size: 14px;
+}
+
+.source-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.source-row span,
+.source-badge {
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #526170;
+  background: #edf1f6;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.retrieval-errors {
+  border: 1px solid #f3d7a3;
+  border-radius: 8px;
+  padding: 10px;
+  color: #7a5010;
+  background: #fff8ea;
+}
+
+.retrieval-errors strong {
+  display: block;
+  font-size: 12px;
+}
+
+.retrieval-errors p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -621,7 +691,7 @@ button {
 
 table {
   width: 100%;
-  min-width: 840px;
+  min-width: 1080px;
   border-collapse: collapse;
   font-size: 13px;
 }
@@ -646,6 +716,30 @@ th {
 td {
   color: #2e3a49;
   line-height: 1.45;
+}
+
+td strong,
+td small {
+  display: block;
+}
+
+td strong {
+  max-width: 360px;
+  color: #263545;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+td small {
+  margin-top: 4px;
+  color: #667789;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+td a {
+  color: #1f6f8b;
+  font-weight: 800;
 }
 
 .priority.high {
@@ -1018,6 +1112,7 @@ td {
   }
 
   .workspace-header,
+  .search-control,
   .experiment-row {
     align-items: flex-start;
     grid-template-columns: 1fr;

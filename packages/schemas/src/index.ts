@@ -48,12 +48,17 @@ export interface ApiPaper {
   id: string;
   project_id: string;
   title: string;
+  authors: string;
+  abstract: string;
   year: string;
   type: string;
   venue: string;
+  source: string;
+  url: string;
   relation: string;
   priority: string;
   code: string;
+  relevance_score: number;
   created_at: string;
 }
 
@@ -76,6 +81,20 @@ export interface ApiArtifactCreate {
   content_markdown?: string;
   content_json?: string;
   diff?: string;
+}
+
+export interface ApiLiteratureSearchRequest {
+  query: string;
+  max_results?: number;
+  sources?: Array<"arxiv" | "openalex">;
+}
+
+export interface ApiLiteratureSearchResponse {
+  query: string;
+  expanded_queries: string[];
+  papers: ApiPaper[];
+  artifact: ApiArtifact;
+  errors: string[];
 }
 
 export interface ApiAgentPlanRequest {

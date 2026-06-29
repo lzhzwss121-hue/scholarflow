@@ -106,6 +106,8 @@ Planned deliverables:
 - Relevance ranking.
 - Structured paper table artifact.
 
+Status: complete.
+
 ## Phase 7: Deep Paper Card
 
 Goal: generate the first complete ScholarFlow paper-reading artifact.

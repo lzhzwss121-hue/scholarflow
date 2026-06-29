@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 from fastapi import FastAPI, HTTPException
@@ -16,6 +17,7 @@ from scholarflow_api.agent_core import (
     render_plan_markdown,
 )
 from scholarflow_api.database import get_connection, init_db, new_id, row_to_dict, seed_papers, utc_now
+from scholarflow_api.literature import render_paper_table_json, render_paper_table_markdown, search_literature
 from scholarflow_api.schemas import (
     AgentExecuteRequest,
     AgentExecuteResponse,
@@ -24,6 +26,8 @@ from scholarflow_api.schemas import (
     Artifact,
     ArtifactCreate,
     HealthResponse,
+    LiteratureSearchRequest,
+    LiteratureSearchResponse,
     Paper,
     Project,
     ProjectCreate,
@@ -166,10 +170,102 @@ def list_project_papers(project_id: str) -> list[Paper]:
     ensure_project_exists(project_id)
     with get_connection() as connection:
         rows = connection.execute(
-            "SELECT * FROM papers WHERE project_id = ? ORDER BY priority, year DESC",
+            """
+            SELECT * FROM papers
+            WHERE project_id = ?
+            ORDER BY
+                CASE priority WHEN 'High' THEN 0 WHEN 'Medium' THEN 1 ELSE 2 END,
+                relevance_score DESC,
+                year DESC
+            """,
             (project_id,),
         ).fetchall()
     return [Paper.model_validate(dict(row)) for row in rows]
+
+
+@app.post("/projects/{project_id}/literature/search", response_model=LiteratureSearchResponse)
+def search_project_literature(project_id: str, payload: LiteratureSearchRequest) -> LiteratureSearchResponse:
+    now = utc_now()
+    with get_connection() as connection:
+        project = fetch_project_dict(connection, project_id)
+        session_id = ensure_active_session(connection, project, now)
+        insert_tool_event(
+            connection,
+            session_id,
+            "literature.query_expand",
+            "running",
+            f"正在基于关键词生成检索式：{payload.query}",
+            now,
+        )
+
+    result = search_literature(payload.query, payload.max_results, payload.sources)
+    completed_at = utc_now()
+    with get_connection() as connection:
+        project = fetch_project_dict(connection, project_id)
+        session_id = ensure_active_session(connection, project, completed_at)
+        if result.papers:
+            connection.execute(
+                "DELETE FROM papers WHERE project_id = ?",
+                (project_id,),
+            )
+        insert_paper_candidates(connection, project_id, result.papers, completed_at)
+        artifact = insert_artifact_row(
+            connection=connection,
+            project_id=project_id,
+            title="paper_table.md",
+            kind="markdown",
+            content_markdown=render_paper_table_markdown(result),
+            content_json=render_paper_table_json(result),
+            diff="+ Retrieved papers from arXiv/OpenAlex\n+ Ranked and deduplicated paper table",
+            now=completed_at,
+        )
+        insert_tool_event(
+            connection,
+            session_id,
+            "literature.query_expand",
+            "done",
+            f"生成 {len(result.expanded_queries)} 组检索式。",
+            completed_at,
+        )
+        insert_tool_event(
+            connection,
+            session_id,
+            "literature.retrieve",
+            "done" if result.papers else "queued",
+            f"检索并排序 {len(result.papers)} 篇论文；errors={len(result.errors)}。",
+            completed_at,
+        )
+        insert_tool_event(
+            connection,
+            session_id,
+            "artifact.save",
+            "done",
+            f"已保存结构化 paper table artifact: {artifact['title']}",
+            completed_at,
+        )
+        connection.execute(
+            "UPDATE projects SET stage = ?, updated_at = ? WHERE id = ?",
+            ("literature-retrieval", completed_at, project_id),
+        )
+        rows = connection.execute(
+            """
+            SELECT * FROM papers
+            WHERE project_id = ?
+            ORDER BY
+                CASE priority WHEN 'High' THEN 0 WHEN 'Medium' THEN 1 ELSE 2 END,
+                relevance_score DESC,
+                year DESC
+            """,
+            (project_id,),
+        ).fetchall()
+
+    return LiteratureSearchResponse(
+        query=result.query,
+        expanded_queries=result.expanded_queries,
+        papers=[Paper.model_validate(dict(row)) for row in rows],
+        artifact=Artifact.model_validate(artifact),
+        errors=result.errors,
+    )
 
 
 @app.get("/projects/{project_id}/artifacts", response_model=list[Artifact])
@@ -579,6 +675,58 @@ def insert_tool_event(
         """,
         (new_id("event"), session_id, time_label, tool, status, summary, created_at),
     )
+
+
+def insert_paper_candidates(connection, project_id: str, papers: list, now: str) -> list[str]:
+    paper_ids: list[str] = []
+    for paper in papers:
+        paper_id = build_paper_id(project_id, paper.source, paper.title)
+        paper_ids.append(paper_id)
+        connection.execute(
+            """
+            INSERT INTO papers (
+                id, project_id, title, authors, abstract, year, type, venue, source, url,
+                relation, priority, code, relevance_score, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                authors = excluded.authors,
+                abstract = excluded.abstract,
+                year = excluded.year,
+                type = excluded.type,
+                venue = excluded.venue,
+                source = excluded.source,
+                url = excluded.url,
+                relation = excluded.relation,
+                priority = excluded.priority,
+                code = excluded.code,
+                relevance_score = excluded.relevance_score
+            """,
+            (
+                paper_id,
+                project_id,
+                paper.title,
+                paper.authors,
+                paper.abstract,
+                paper.year,
+                paper.type,
+                paper.venue,
+                paper.source,
+                paper.url,
+                paper.relation,
+                paper.priority,
+                paper.code,
+                paper.relevance_score,
+                now,
+            ),
+        )
+    return paper_ids
+
+
+def build_paper_id(project_id: str, source: str, title: str) -> str:
+    digest = hashlib.sha1(f"{project_id}:{source}:{title.lower()}".encode("utf-8")).hexdigest()[:16]
+    return f"paper_{digest}"
 
 
 def build_agent_tool_registry(connection) -> ToolRegistry:

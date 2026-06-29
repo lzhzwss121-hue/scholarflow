@@ -6,6 +6,8 @@ import type {
   ApiArtifact,
   ApiArtifactCreate,
   ApiHealth,
+  ApiLiteratureSearchRequest,
+  ApiLiteratureSearchResponse,
   ApiPaper,
   ApiProject,
   ApiProjectCreate,
@@ -48,6 +50,13 @@ export function createProject(payload: ApiProjectCreate) {
 
 export function listProjectPapers(projectId: string) {
   return request<ApiPaper[]>(`/projects/${projectId}/papers`);
+}
+
+export function searchProjectLiterature(projectId: string, payload: ApiLiteratureSearchRequest) {
+  return request<ApiLiteratureSearchResponse>(`/projects/${projectId}/literature/search`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export function listProjectArtifacts(projectId: string) {

@@ -218,6 +218,8 @@ scholarflow/
 
 目标：从关键词生成真实论文表格。
 
+当前状态：complete。
+
 交付物：
 
 - arXiv 检索。

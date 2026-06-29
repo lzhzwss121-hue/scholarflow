@@ -63,12 +63,17 @@ def init_db() -> None:
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
                 title TEXT NOT NULL,
+                authors TEXT NOT NULL DEFAULT '',
+                abstract TEXT NOT NULL DEFAULT '',
                 year TEXT NOT NULL DEFAULT '',
                 type TEXT NOT NULL DEFAULT '',
                 venue TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                url TEXT NOT NULL DEFAULT '',
                 relation TEXT NOT NULL DEFAULT '',
                 priority TEXT NOT NULL DEFAULT 'Medium',
                 code TEXT NOT NULL DEFAULT '',
+                relevance_score REAL NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
             );
@@ -148,7 +153,25 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_tool_events_session_id ON tool_events(session_id);
             """
         )
+        ensure_paper_columns(connection)
         seed_demo_project(connection)
+
+
+def ensure_paper_columns(connection: sqlite3.Connection) -> None:
+    existing_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(papers)").fetchall()
+    }
+    columns = {
+        "authors": "TEXT NOT NULL DEFAULT ''",
+        "abstract": "TEXT NOT NULL DEFAULT ''",
+        "source": "TEXT NOT NULL DEFAULT ''",
+        "url": "TEXT NOT NULL DEFAULT ''",
+        "relevance_score": "REAL NOT NULL DEFAULT 0",
+    }
+    for name, definition in columns.items():
+        if name not in existing_columns:
+            connection.execute(f"ALTER TABLE papers ADD COLUMN {name} {definition}")
 
 
 def seed_demo_project(connection: sqlite3.Connection) -> None:
@@ -194,65 +217,105 @@ def seed_papers(connection: sqlite3.Connection, project_id: str, now: str) -> No
         (
             "object_hallucination",
             "Evaluating Object Hallucination in Large Vision-Language Models",
+            "unknown",
+            "",
             "2025",
             "Benchmark",
             "arXiv",
+            "seed",
+            "",
             "直接对应 hallucination evaluation",
             "High",
             "available",
+            1.5,
         ),
         (
             "faithful_vqa",
             "Faithful Visual Question Answering Requires Grounded Evidence",
+            "unknown",
+            "",
             "2025",
             "Method",
             "ACL",
+            "seed",
+            "",
             "把答案正确性和证据一致性分开",
             "High",
             "partial",
+            1.4,
         ),
         (
             "benchmark_bias",
             "Benchmark Bias in Multimodal Foundation Model Evaluation",
+            "unknown",
+            "",
             "2024",
             "Analysis",
             "NeurIPS",
+            "seed",
+            "",
             "解释评测集捷径和分布偏差",
             "High",
             "available",
+            1.3,
         ),
         (
             "trustworthy_vlm_survey",
             "A Survey of Trustworthy Vision-Language Models",
+            "unknown",
+            "",
             "2026",
             "Survey",
             "arXiv",
+            "seed",
+            "",
             "补全研究图谱和术语",
             "Medium",
             "none",
+            0.9,
         ),
     ]
     connection.executemany(
         """
         INSERT INTO papers (
-            id, project_id, title, year, type, venue, relation, priority, code, created_at
+            id, project_id, title, authors, abstract, year, type, venue, source, url,
+            relation, priority, code, relevance_score, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
                 f"paper_{paper_suffix}" if project_id == "local-bootstrap" else f"{project_id}_paper_{paper_suffix}",
                 project_id,
                 title,
+                authors,
+                abstract,
                 year,
                 type_,
                 venue,
+                source,
+                url,
                 relation,
                 priority,
                 code,
+                relevance_score,
                 now,
             )
-            for paper_suffix, title, year, type_, venue, relation, priority, code in papers
+            for (
+                paper_suffix,
+                title,
+                authors,
+                abstract,
+                year,
+                type_,
+                venue,
+                source,
+                url,
+                relation,
+                priority,
+                code,
+                relevance_score,
+            ) in papers
         ],
     )
 
