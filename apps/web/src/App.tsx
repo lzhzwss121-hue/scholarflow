@@ -1414,48 +1414,58 @@ function PaperTableView({
       </section>
 
       <section className="table-shell" aria-label="paper table">
-        <table>
-          <thead>
-            <tr>
-              <th>论文</th>
-              <th>年份</th>
-              <th>作者</th>
-              <th>来源</th>
-              <th>相关性理由</th>
-              <th>优先级</th>
-              <th>链接</th>
-            </tr>
-          </thead>
-          <tbody>
-            {papers.map((paper) => (
-              <tr key={`${paper.source}-${paper.title}`}>
-                <td>
-                  <strong>{paper.title}</strong>
-                  <small>{paper.type}</small>
-                </td>
-                <td>{paper.year}</td>
-                <td>{paper.authors || "unknown"}</td>
-                <td>
-                  <span className="source-badge">{paper.source}</span>
-                  <small>{paper.venue}</small>
-                </td>
-                <td>{paper.relation}</td>
-                <td>
-                  <span className={`priority ${paper.priority.toLowerCase()}`}>{paper.priority}</span>
-                </td>
-                <td>
-                  {paper.url ? (
-                    <a href={paper.url} rel="noreferrer" target="_blank">
-                      open
-                    </a>
-                  ) : (
-                    "none"
-                  )}
-                </td>
+        {papers.length ? (
+          <table>
+            <thead>
+              <tr>
+                <th>论文</th>
+                <th>年份</th>
+                <th>作者</th>
+                <th>来源</th>
+                <th>相关性理由</th>
+                <th>优先级</th>
+                <th>链接</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {papers.map((paper) => (
+                <tr key={`${paper.source}-${paper.title}`}>
+                  <td>
+                    <strong>{paper.title}</strong>
+                    <small>{paper.type}</small>
+                  </td>
+                  <td>{paper.year}</td>
+                  <td>{paper.authors || "unknown"}</td>
+                  <td>
+                    <span className="source-badge">{paper.source}</span>
+                    <small>{paper.venue}</small>
+                  </td>
+                  <td>{paper.relation}</td>
+                  <td>
+                    <span className={`priority ${paper.priority.toLowerCase()}`}>{paper.priority}</span>
+                  </td>
+                  <td>
+                    {paper.url ? (
+                      <a href={paper.url} rel="noreferrer" target="_blank">
+                        open
+                      </a>
+                    ) : (
+                      "none"
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div className="empty-table-state">
+            <h2>本次检索还没有返回论文</h2>
+            <p>
+              如果看到 OpenAlex 429，说明外部检索源暂时限流。可以稍后重试，或换一个更具体的关键词；系统不会再用旧 demo
+              论文冒充本次搜索结果。
+            </p>
+          </div>
+        )}
       </section>
     </div>
   );

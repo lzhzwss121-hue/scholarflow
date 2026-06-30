@@ -269,7 +269,14 @@ def seed_demo_project(connection: sqlite3.Connection) -> None:
         ("local-bootstrap",),
     ).fetchone()
     if existing:
-        if existing["title"] == "VLM Hallucination Benchmark":
+        legacy_paper = connection.execute(
+            """
+            SELECT id FROM papers
+            WHERE project_id = ? AND title = ?
+            """,
+            ("local-bootstrap", "Evaluating Object Hallucination in Large Vision-Language Models"),
+        ).fetchone()
+        if existing["title"] == "VLM Hallucination Benchmark" or legacy_paper:
             update_legacy_demo_project(connection)
         return
 
@@ -531,13 +538,13 @@ def seed_artifacts(connection: sqlite3.Connection, project_id: str, now: str) ->
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            "paper_card_faithful_vqa",
+            "paper_card_memory_augmented_reading",
             project_id,
-            "paper_faithful_vqa",
+            "paper_paper_memory_retrieval",
             artifact_id,
             json.dumps({"sections": 12}, ensure_ascii=False),
-            "人工证据标签足以代表模型真实视觉依据。",
-            "一周内验证 answer accuracy 与 evidence consistency 是否分离。",
+            "结构化论文记忆足以支撑后续研究问题回答。",
+            "一周内验证 Paper Memory 检索是否能减少无证据泛化回答。",
             now,
         ),
     )

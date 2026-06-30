@@ -246,12 +246,11 @@ def search_project_literature(project_id: str, payload: LiteratureSearchRequest)
     with get_connection() as connection:
         project = fetch_project_dict(connection, project_id)
         session_id = ensure_active_session(connection, project, completed_at)
-        if result.papers:
-            connection.execute(
-                "DELETE FROM papers WHERE project_id = ?",
-                (project_id,),
-            )
-        insert_paper_candidates(connection, project_id, result.papers, completed_at)
+        connection.execute(
+            "DELETE FROM papers WHERE project_id = ?",
+            (project_id,),
+        )
+        paper_ids = insert_paper_candidates(connection, project_id, result.papers, completed_at)
         artifact = insert_artifact_row(
             connection=connection,
             project_id=project_id,
@@ -290,17 +289,7 @@ def search_project_literature(project_id: str, payload: LiteratureSearchRequest)
             "UPDATE projects SET stage = ?, updated_at = ? WHERE id = ?",
             ("literature-retrieval", completed_at, project_id),
         )
-        rows = connection.execute(
-            """
-            SELECT * FROM papers
-            WHERE project_id = ?
-            ORDER BY
-                CASE priority WHEN 'High' THEN 0 WHEN 'Medium' THEN 1 ELSE 2 END,
-                relevance_score DESC,
-                year DESC
-            """,
-            (project_id,),
-        ).fetchall()
+        rows = fetch_project_papers_by_ids(connection, project_id, paper_ids)
 
     return LiteratureSearchResponse(
         query=result.query,
@@ -1128,6 +1117,24 @@ def fetch_project_paper_dicts(connection, project_id: str) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def fetch_project_papers_by_ids(connection, project_id: str, paper_ids: list[str]) -> list[dict]:
+    if not paper_ids:
+        return []
+    placeholders = ",".join("?" for _ in paper_ids)
+    rows = connection.execute(
+        f"""
+        SELECT * FROM papers
+        WHERE project_id = ? AND id IN ({placeholders})
+        ORDER BY
+            CASE priority WHEN 'High' THEN 0 WHEN 'Medium' THEN 1 ELSE 2 END,
+            relevance_score DESC,
+            year DESC
+        """,
+        (project_id, *paper_ids),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def fetch_project_paper_card_dicts(connection, project_id: str) -> list[dict]:
     rows = connection.execute(
         """
@@ -1534,9 +1541,12 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
         direction = infer_agent_direction(context)
         result = search_literature(direction, max_results=12, sources=["arxiv", "openalex"])
         now = utc_now()
-        if result.papers:
-            insert_paper_candidates(connection, context.project["id"], result.papers, now)
-        papers = fetch_project_paper_dicts(connection, context.project["id"])
+        connection.execute(
+            "DELETE FROM papers WHERE project_id = ?",
+            (context.project["id"],),
+        )
+        paper_ids = insert_paper_candidates(connection, context.project["id"], result.papers, now)
+        papers = fetch_project_papers_by_ids(connection, context.project["id"], paper_ids)
         artifact = insert_artifact_row(
             connection=connection,
             project_id=context.project["id"],

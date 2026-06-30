@@ -861,6 +861,30 @@ button {
   overflow: auto;
 }
 
+.empty-table-state {
+  min-height: 220px;
+  padding: 28px;
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  background: #ffffff;
+}
+
+.empty-table-state h2 {
+  margin: 0;
+  color: #263545;
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.empty-table-state p {
+  max-width: 620px;
+  margin: 0;
+  color: #667789;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
 table {
   width: 100%;
   min-width: 1080px;
