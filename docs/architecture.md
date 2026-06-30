@@ -159,7 +159,8 @@ Current model-provider implementation:
 - `agent_runs` table.
 - `POST /agent/plan`.
 - `POST /agent/runs/{run_id}/execute`.
-- Minimal tools: `create_plan`, `search_mock_papers`, `save_artifact`, `update_timeline`.
+- Default tools: `literature_search`, `direction_review`, `research_memory_query`, `research_decision`, `save_artifact`, `update_timeline`.
+- Demo tool: `search_mock_papers` remains registered for offline demos and is marked as Demo Mode in the UI when used.
 
 When `OPENROUTER_API_KEY` is available, Research Plan Mode calls the OpenRouter OpenAI-compatible chat completions API. Without a key or after an API failure, ScholarFlow falls back to the deterministic local planner so local development and CI remain stable.
 

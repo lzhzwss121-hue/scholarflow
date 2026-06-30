@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -946,8 +947,15 @@ def execute_agent_run(run_id: str, payload: AgentExecuteRequest) -> AgentExecute
 
         context = ToolContext(run_id=run_id, project=project, task=run_dict["task"], plan=plan)
         registry = build_agent_tool_registry(connection)
-        for tool_name in ["search_mock_papers", "save_artifact", "update_timeline"]:
-            mark_plan_step(plan, tool_name, "running")
+        for step in plan["steps"]:
+            tool_name = step.get("tool", "")
+            if tool_name == "create_plan":
+                step["status"] = "done"
+                continue
+            if not registry.has(tool_name):
+                raise HTTPException(status_code=400, detail=f"Agent tool is not registered: {tool_name}")
+
+            mark_plan_step_by_id(plan, step["id"], "running")
             insert_tool_event(
                 connection,
                 run_dict["session_id"],
@@ -957,12 +965,17 @@ def execute_agent_run(run_id: str, payload: AgentExecuteRequest) -> AgentExecute
                 utc_now(),
             )
             result = registry.run(tool_name, context)
+            context.outputs[result.tool] = result.data
             if result.data.get("papers"):
                 context.papers = result.data["papers"]
                 plan["papers"] = context.papers
+            if result.data.get("artifact"):
+                context.artifacts.append(result.data["artifact"])
+            if result.data.get("artifacts"):
+                context.artifacts.extend(result.data["artifacts"])
             if result.data.get("artifact_id"):
                 context.artifact_id = result.data["artifact_id"]
-            mark_plan_step(plan, tool_name, "done")
+            mark_plan_step_by_id(plan, step["id"], "done")
             insert_tool_event(
                 connection,
                 run_dict["session_id"],
@@ -971,6 +984,11 @@ def execute_agent_run(run_id: str, payload: AgentExecuteRequest) -> AgentExecute
                 result.summary,
                 utc_now(),
             )
+
+        if context.artifact_id is None and context.artifacts:
+            context.artifact_id = context.artifacts[-1].get("id")
+        if context.artifact_id is None:
+            raise HTTPException(status_code=500, detail="Agent run completed without a result artifact")
 
         result_artifact = fetch_artifact_dict(connection, context.artifact_id)
         completed_at = utc_now()
@@ -1100,9 +1118,24 @@ def fetch_project_paper_dicts(connection, project_id: str) -> list[dict]:
 def fetch_project_paper_card_dicts(connection, project_id: str) -> list[dict]:
     rows = connection.execute(
         """
-        SELECT * FROM paper_cards
-        WHERE project_id = ?
-        ORDER BY created_at DESC, rowid DESC
+        SELECT
+            pc.*,
+            p.title AS paper_title,
+            p.authors AS paper_authors,
+            p.abstract AS paper_abstract,
+            p.year AS paper_year,
+            p.type AS paper_type,
+            p.venue AS paper_venue,
+            p.source AS paper_source,
+            p.url AS paper_url,
+            p.relation AS paper_relation,
+            p.priority AS paper_priority,
+            p.code AS paper_code,
+            p.relevance_score AS paper_relevance_score
+        FROM paper_cards pc
+        LEFT JOIN papers p ON p.id = pc.paper_id
+        WHERE pc.project_id = ?
+        ORDER BY pc.created_at DESC, pc.rowid DESC
         """,
         (project_id,),
     ).fetchall()
@@ -1390,13 +1423,256 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
             summary="Research Plan 已存在，继续等待或执行后续工具。",
         )
 
+    def literature_search_tool(context: ToolContext) -> ToolResult:
+        direction = infer_agent_direction(context)
+        result = search_literature(direction, max_results=12, sources=["arxiv", "openalex"])
+        now = utc_now()
+        if result.papers:
+            insert_paper_candidates(connection, context.project["id"], result.papers, now)
+        papers = fetch_project_paper_dicts(connection, context.project["id"])
+        artifact = insert_artifact_row(
+            connection=connection,
+            project_id=context.project["id"],
+            title=f"agent_literature_search_{context.run_id}.md",
+            kind="markdown",
+            content_markdown=render_paper_table_markdown(result),
+            content_json=render_paper_table_json(result),
+            diff="+ Agent tool literature_search\n+ Retrieved and persisted real paper candidates",
+            now=now,
+        )
+        return ToolResult(
+            tool="literature_search",
+            status="done",
+            summary=f"已检索真实论文候选 {len(result.papers)} 篇；当前项目 paper table 共 {len(papers)} 篇。",
+            data={
+                "papers": papers,
+                "artifact_id": artifact["id"],
+                "artifact": artifact,
+                "paper_count": len(papers),
+                "errors": result.errors,
+            },
+        )
+
+    def direction_review_tool(context: ToolContext) -> ToolResult:
+        direction = infer_agent_direction(context)
+        round_index = next_agent_direction_round(connection, context.project["id"])
+        previous_titles = fetch_read_paper_titles(connection, context.project["id"]) if round_index > 1 else []
+        scope, candidate_pool, candidates, errors = retrieve_direction_candidate_pool(direction, round_index, previous_titles)
+        now = utc_now()
+        paper_ids = insert_paper_candidates(connection, context.project["id"], candidates, now)
+        paper_dicts = [fetch_paper_dict(connection, context.project["id"], paper_id) for paper_id in paper_ids]
+        baseline_map = build_baseline_map(
+            direction,
+            [candidate.to_dict() for candidate in candidate_pool],
+            paper_dicts,
+        )
+        readings = build_direction_readings(paper_dicts, direction, baseline_map)
+        bundle = build_direction_review_bundle(
+            direction,
+            round_index,
+            scope,
+            baseline_map,
+            readings,
+            previous_read_count=len(previous_titles),
+            errors=errors,
+        )
+        artifacts: list[dict] = []
+        baseline_artifact = insert_artifact_row(
+            connection=connection,
+            project_id=context.project["id"],
+            title=f"agent_baseline_map_round_{round_index}_{paper_slug(direction)}.md",
+            kind="markdown",
+            content_markdown=render_baseline_map_markdown(baseline_map),
+            content_json=json.dumps(baseline_map.to_dict(), ensure_ascii=False, indent=2),
+            diff="+ Agent tool direction_review\n+ Generated BaselineMap",
+            now=now,
+        )
+        artifacts.append(baseline_artifact)
+        review_artifact = insert_artifact_row(
+            connection=connection,
+            project_id=context.project["id"],
+            title=f"agent_direction_review_round_{round_index}.md",
+            kind="markdown",
+            content_markdown=render_direction_review_markdown(bundle),
+            content_json=render_direction_review_json(bundle),
+            diff="+ Agent tool direction_review\n+ Generated direction review",
+            now=now,
+        )
+        artifacts.append(review_artifact)
+
+        for reading in readings:
+            card_artifact = insert_artifact_row(
+                connection=connection,
+                project_id=context.project["id"],
+                title=f"agent_direction_round_{round_index}_paper_card_{paper_slug(reading.card.paper_title)}.md",
+                kind="markdown",
+                content_markdown=render_card_markdown(reading.card, reading.paper),
+                content_json=json.dumps(reading.to_dict(), ensure_ascii=False, indent=2),
+                diff="+ Agent tool direction_review\n+ Generated direction-review paper card",
+                now=now,
+            )
+            artifacts.append(card_artifact)
+            connection.execute(
+                """
+                INSERT INTO paper_cards (
+                    id, project_id, paper_id, artifact_id, sections_json, weakest_assumption,
+                    minimal_reproduction, research_sight_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id("paper_card"),
+                    context.project["id"],
+                    reading.paper.get("id"),
+                    card_artifact["id"],
+                    json.dumps([section.to_dict() for section in reading.card.sections], ensure_ascii=False, indent=2),
+                    reading.card.weakest_assumption,
+                    reading.card.minimal_reproduction,
+                    json.dumps(reading.research_sight.to_dict(), ensure_ascii=False, indent=2),
+                    now,
+                ),
+            )
+
+        upsert_direction_reading_memories(
+            connection,
+            context.project["id"],
+            direction,
+            round_index,
+            readings,
+            now,
+        )
+        direction_memory = upsert_direction_memory_snapshot(
+            connection,
+            context.project["id"],
+            direction,
+            now,
+            baseline_map=baseline_map.to_dict(),
+        )
+        memory_artifact = insert_artifact_row(
+            connection=connection,
+            project_id=context.project["id"],
+            title=f"agent_direction_memory_{paper_slug(direction)}.md",
+            kind="markdown",
+            content_markdown="\n\n".join(
+                [
+                    f"# Direction Memory: {direction_memory.direction}",
+                    direction_memory.summary,
+                    f"Total papers: {direction_memory.total_papers}",
+                    f"Rounds: {direction_memory.round_count}",
+                ],
+            ),
+            content_json=json.dumps(direction_memory.to_dict(), ensure_ascii=False, indent=2),
+            diff="+ Agent tool direction_review\n+ Updated paper memory bank",
+            now=now,
+        )
+        artifacts.append(memory_artifact)
+        return ToolResult(
+            tool="direction_review",
+            status="done",
+            summary=f"已完成第 {round_index} 轮方向精读，生成 {len(readings)} 张 Paper Card。",
+            data={
+                "papers": paper_dicts,
+                "artifacts": artifacts,
+                "artifact_id": review_artifact["id"],
+                "round": round_index,
+                "paper_count": len(readings),
+                "recommended_paper_ids": bundle.recommended_paper_ids,
+                "errors": errors,
+            },
+        )
+
+    def research_memory_query_tool(context: ToolContext) -> ToolResult:
+        now = utc_now()
+        direction = infer_agent_direction(context)
+        answer = query_research_memory(
+            connection,
+            project_id=context.project["id"],
+            question=context.task,
+            top_k=5,
+            now=now,
+            direction=direction,
+        )
+        answer_json = json.dumps(answer.to_dict(), ensure_ascii=False, indent=2)
+        artifact = insert_artifact_row(
+            connection=connection,
+            project_id=context.project["id"],
+            title=f"agent_research_memory_answer_{context.run_id}.md",
+            kind="markdown",
+            content_markdown=render_research_memory_answer_markdown(answer),
+            content_json=answer_json,
+            diff="+ Agent tool research_memory_query\n+ Retrieved paper memories",
+            now=now,
+        )
+        return ToolResult(
+            tool="research_memory_query",
+            status="done",
+            summary=f"已从 Paper Memory Bank 检索 {len(answer.hits)} 篇相关论文记忆。",
+            data={
+                "artifact_id": artifact["id"],
+                "artifact": artifact,
+                "hit_count": len(answer.hits),
+                "total_memories": answer.total_memories,
+                "warnings": answer.warnings,
+            },
+        )
+
+    def research_decision_tool(context: ToolContext) -> ToolResult:
+        now = utc_now()
+        papers = fetch_project_paper_dicts(connection, context.project["id"])
+        paper_cards = fetch_project_paper_card_dicts(connection, context.project["id"])
+        bundle = generate_research_decisions(context.project, papers, paper_cards, context.task)
+        bundle_json = render_decision_json(bundle)
+        artifacts = [
+            insert_artifact_row(
+                connection=connection,
+                project_id=context.project["id"],
+                title=f"agent_gap_board_{context.run_id}.md",
+                kind="markdown",
+                content_markdown=render_gap_board_markdown(bundle),
+                content_json=bundle_json,
+                diff="+ Agent tool research_decision\n+ Generated gap board",
+                now=now,
+            ),
+            insert_artifact_row(
+                connection=connection,
+                project_id=context.project["id"],
+                title=f"agent_idea_validation_{context.run_id}.md",
+                kind="markdown",
+                content_markdown=render_validation_markdown(bundle),
+                content_json=bundle_json,
+                diff="+ Agent tool research_decision\n+ Generated idea validation report",
+                now=now,
+            ),
+            insert_artifact_row(
+                connection=connection,
+                project_id=context.project["id"],
+                title=f"agent_experiment_plan_{context.run_id}.md",
+                kind="markdown",
+                content_markdown=render_experiment_markdown(bundle),
+                content_json=bundle_json,
+                diff="+ Agent tool research_decision\n+ Generated experiment plan",
+                now=now,
+            ),
+        ]
+        return ToolResult(
+            tool="research_decision",
+            status="done",
+            summary=f"已生成 {len(bundle.gaps)} 个 gap、idea validation 和 experiment plan。",
+            data={
+                "artifacts": artifacts,
+                "artifact_id": artifacts[-1]["id"],
+                "gap_count": len(bundle.gaps),
+                "experiment_claim": bundle.experiment.claim,
+            },
+        )
+
     def search_mock_papers_tool(context: ToolContext) -> ToolResult:
         papers = build_mock_papers(context.task, context.project)
         return ToolResult(
             tool="search_mock_papers",
             status="done",
             summary=f"已生成 {len(papers)} 条 mock paper candidates。",
-            data={"papers": papers},
+            data={"papers": papers, "paper_count": len(papers), "demo_mode": True},
         )
 
     def save_artifact_tool(context: ToolContext) -> ToolResult:
@@ -1412,6 +1688,8 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
                 context.project,
                 plan_snapshot,
                 context.papers,
+                context.outputs,
+                context.artifacts,
             ),
             content_json=json.dumps(
                 {
@@ -1419,18 +1697,20 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
                     "task": context.task,
                     "plan": plan_snapshot,
                     "papers": context.papers,
+                    "tool_outputs": context.outputs,
+                    "artifacts": context.artifacts,
                 },
                 ensure_ascii=False,
                 indent=2,
             ),
-            diff="+ Executed mock research tools\n+ Saved agent run artifact",
+            diff="+ Executed registered research tools\n+ Saved agent run artifact",
             now=utc_now(),
         )
         return ToolResult(
             tool="save_artifact",
             status="done",
             summary=f"已保存 agent run artifact: {artifact['title']}。",
-            data={"artifact_id": artifact["id"]},
+            data={"artifact_id": artifact["id"], "artifact": artifact},
         )
 
     def update_timeline_tool(context: ToolContext) -> ToolResult:
@@ -1442,16 +1722,59 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
         )
 
     registry.register("create_plan", create_plan_tool, "Generate the confirmed research plan.")
-    registry.register("search_mock_papers", search_mock_papers_tool, "Return local mock papers for Phase 5.")
+    registry.register("literature_search", literature_search_tool, "Retrieve real paper candidates from literature sources.")
+    registry.register("direction_review", direction_review_tool, "Run direction review, paper cards, baseline map, and memory writes.")
+    registry.register("research_memory_query", research_memory_query_tool, "Retrieve relevant memories from Paper Memory Bank.")
+    registry.register("research_decision", research_decision_tool, "Generate gap board, novelty validation, and experiment plan.")
+    registry.register("search_mock_papers", search_mock_papers_tool, "Demo Mode: return local mock papers without external retrieval.")
     registry.register("save_artifact", save_artifact_tool, "Persist the agent output as Markdown and JSON.")
     registry.register("update_timeline", update_timeline_tool, "Finalize visible tool timeline state.")
     return registry
+
+
+def infer_agent_direction(context: ToolContext) -> str:
+    candidates = [
+        context.project.get("keyword", ""),
+        context.project.get("field", ""),
+        context.project.get("title", ""),
+        context.task,
+    ]
+    for value in candidates:
+        normalized = " ".join(str(value or "").split())
+        if normalized:
+            return normalized[:500]
+    return "AI research reliability"
+
+
+def next_agent_direction_round(connection, project_id: str) -> int:
+    rows = connection.execute(
+        """
+        SELECT title FROM artifacts
+        WHERE project_id = ?
+          AND (title LIKE 'direction_review_round_%' OR title LIKE 'agent_direction_review_round_%')
+        """,
+        (project_id,),
+    ).fetchall()
+    rounds: list[int] = []
+    for row in rows:
+        title = dict(row).get("title", "")
+        match = re.search(r"round_(\d+)", title)
+        if match:
+            rounds.append(int(match.group(1)))
+    return min(max(rounds or [0]) + 1, 3)
 
 
 def mark_plan_step(plan: dict, tool_name: str, status: str) -> None:
     for step in plan["steps"]:
         if step["tool"] == tool_name:
             step["status"] = status
+
+
+def mark_plan_step_by_id(plan: dict, step_id: str, status: str) -> None:
+    for step in plan["steps"]:
+        if step.get("id") == step_id:
+            step["status"] = status
+            return
 
 
 def completed_plan_snapshot(plan: dict) -> dict:

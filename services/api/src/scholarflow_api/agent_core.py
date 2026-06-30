@@ -135,8 +135,10 @@ class OpenRouterProvider:
                             "task": task,
                             "project": project_context,
                             "allowed_tools": [
-                                "create_plan",
-                                "search_mock_papers",
+                                "literature_search",
+                                "direction_review",
+                                "research_memory_query",
+                                "research_decision",
                                 "save_artifact",
                                 "update_timeline",
                             ],
@@ -144,10 +146,12 @@ class OpenRouterProvider:
                                 "focus": "short research focus in Chinese",
                                 "rationale": "why this plan should run first in Chinese",
                                 "step_details": {
-                                    "create_plan": "detail for the planning step",
-                                    "search_mock_papers": "detail for paper candidate step",
-                                    "save_artifact": "detail for artifact saving step",
-                                    "update_timeline": "detail for timeline step",
+                                    "literature_search": "detail for retrieving real paper candidates",
+                                    "direction_review": "detail for ten-paper direction review",
+                                    "research_memory_query": "detail for querying paper memory",
+                                    "research_decision": "detail for gap and experiment planning",
+                                    "save_artifact": "detail for final artifact aggregation",
+                                    "update_timeline": "detail for timeline finalization",
                                 },
                             },
                         },
@@ -187,7 +191,9 @@ class ToolContext:
     project: dict[str, Any]
     task: str
     plan: dict[str, Any]
-    papers: list[dict[str, str]] = field(default_factory=list)
+    papers: list[dict[str, Any]] = field(default_factory=list)
+    artifacts: list[dict[str, Any]] = field(default_factory=list)
+    outputs: dict[str, Any] = field(default_factory=dict)
     artifact_id: str | None = None
 
 
@@ -217,6 +223,9 @@ class ToolRegistry:
             raise KeyError(f"Tool is not registered: {name}")
         return handler(context)
 
+    def has(self, name: str) -> bool:
+        return name in self._handlers
+
     def describe(self) -> list[dict[str, str]]:
         return [{"name": name, "description": description} for name, description in self._descriptions.items()]
 
@@ -241,7 +250,7 @@ def build_default_plan(task: str, project: dict[str, Any], provider: str) -> Age
     return AgentPlanDraft(
         provider=provider,
         rationale=(
-            f"先把任务收敛到“{focus}”，再用 mock paper table 和 artifact 保存验证最小 agent loop。"
+            f"先把任务收敛到“{focus}”，再按真实工具链完成文献检索、方向精读、记忆检索和实验决策。"
         ),
         steps=[
             AgentPlanStep(
@@ -252,15 +261,33 @@ def build_default_plan(task: str, project: dict[str, Any], provider: str) -> Age
                 status="done",
             ),
             AgentPlanStep(
-                id="search_mock_papers",
-                title="检索 mock paper candidates",
-                detail="使用本地 mock 数据生成结构化 paper table，验证工具调用和输出格式。",
-                tool="search_mock_papers",
+                id="literature_search",
+                title="检索真实 paper candidates",
+                detail="使用 arXiv / OpenAlex 检索并排序项目方向相关论文，保存 paper table artifact。",
+                tool="literature_search",
+            ),
+            AgentPlanStep(
+                id="direction_review",
+                title="执行方向级十篇论文精读",
+                detail="围绕研究方向筛选近三年高相关论文，生成 BaselineMap、Deep Paper Card、ResearchSight 和 Direction Memory。",
+                tool="direction_review",
+            ),
+            AgentPlanStep(
+                id="research_memory_query",
+                title="检索 Paper Memory Bank",
+                detail="基于用户任务从已保存论文记忆中检索 3-8 篇相关论文，形成 memory-grounded answer。",
+                tool="research_memory_query",
+            ),
+            AgentPlanStep(
+                id="research_decision",
+                title="生成 Gap / Novelty / Experiment Plan",
+                detail="基于论文表、Paper Card 和 Memory 生成 gap board、idea validation 和一周实验计划。",
+                tool="research_decision",
             ),
             AgentPlanStep(
                 id="save_artifact",
                 title="保存 Agent 输出 artifact",
-                detail="把 plan、mock paper table、下一步建议保存为 Markdown 和 JSON artifact。",
+                detail="聚合本次工具链输出，保存可回读的 agent run Markdown 和 JSON artifact。",
                 tool="save_artifact",
             ),
             AgentPlanStep(
@@ -427,7 +454,7 @@ def render_plan_markdown(task: str, project: dict[str, Any], plan: dict[str, Any
             "## Steps",
             "\n".join(step_lines),
             "## Phase Boundary",
-            "当前只执行 mock tools，用于验证 Plan Mode、Tool Registry、Timeline 和 Artifact 保存链路。",
+            "默认执行真实科研工具链。`search_mock_papers` 仅保留为 Demo Mode，用于离线演示。",
         ],
     )
 
@@ -436,26 +463,60 @@ def render_execution_markdown(
     task: str,
     project: dict[str, Any],
     plan: dict[str, Any],
-    papers: list[dict[str, str]],
+    papers: list[dict[str, Any]],
+    outputs: dict[str, Any] | None = None,
+    artifacts: list[dict[str, Any]] | None = None,
 ) -> str:
+    outputs = outputs or {}
+    artifacts = artifacts or []
+    is_demo = bool(outputs.get("search_mock_papers", {}).get("demo_mode"))
     paper_rows = [
-        f"| {paper['title']} | {paper['year']} | {paper['type']} | {paper['priority']} | {paper['relation']} |"
+        f"| {paper.get('title', '')} | {paper.get('year', '')} | {paper.get('type', '')} | {paper.get('priority', '')} | {paper.get('relation', '')} |"
         for paper in papers
     ]
     step_rows = [f"- [{step['status']}] {step['title']} -> `{step['tool']}`" for step in plan["steps"]]
+    artifact_rows = [
+        f"- `{artifact.get('title', '')}` ({artifact.get('kind', '')})"
+        for artifact in artifacts
+        if artifact.get("title")
+    ]
     return "\n\n".join(
         [
             "# ScholarFlow Agent Run",
+            "Demo Mode: " + ("yes" if is_demo else "no"),
             f"Project: {project.get('title', '')}",
             f"Task: {task}",
             f"Provider: {plan.get('provider', '')}",
             "## Executed Plan",
             "\n".join(step_rows),
-            "## Mock Paper Table",
+            "## Paper Table",
             "| Paper | Year | Type | Priority | Relation |",
             "| --- | --- | --- | --- | --- |",
-            "\n".join(paper_rows),
-            "## Next Step",
-            "进入 Phase 6 后，将把 `search_mock_papers` 替换为 arXiv / OpenAlex / Semantic Scholar 检索适配器。",
+            "\n".join(paper_rows) if paper_rows else "No papers returned by this run.",
+            "## Generated Artifacts",
+            "\n".join(artifact_rows) if artifact_rows else "No intermediate artifacts recorded.",
+            "## Output Summary",
+            render_output_summary(outputs),
         ],
     )
+
+
+def render_output_summary(outputs: dict[str, Any]) -> str:
+    if not outputs:
+        return "No structured tool outputs recorded."
+    lines: list[str] = []
+    if "literature_search" in outputs:
+        data = outputs["literature_search"]
+        lines.append(f"- Literature Search: {data.get('paper_count', 0)} papers, errors={len(data.get('errors', []))}.")
+    if "direction_review" in outputs:
+        data = outputs["direction_review"]
+        lines.append(f"- Direction Review: {data.get('paper_count', 0)} readings, round={data.get('round', 1)}.")
+    if "research_memory_query" in outputs:
+        data = outputs["research_memory_query"]
+        lines.append(f"- Paper Memory: {data.get('hit_count', 0)} retrieved memories.")
+    if "research_decision" in outputs:
+        data = outputs["research_decision"]
+        lines.append(f"- Research Decision: {data.get('gap_count', 0)} gaps and experiment plan generated.")
+    if "search_mock_papers" in outputs:
+        lines.append("- Demo Mode: mock paper candidates were used.")
+    return "\n".join(lines) if lines else "No recognized tool outputs recorded."

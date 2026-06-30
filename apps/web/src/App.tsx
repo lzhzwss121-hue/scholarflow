@@ -994,6 +994,7 @@ function AgentRunPanel({
   onExecuteAgentRun: () => void;
 }) {
   const canExecute = Boolean(agentPlan && agentPlan.status !== "completed" && !agentBusy && apiStatus === "online");
+  const isDemoMode = Boolean(agentPlan?.steps.some((step) => step.tool === "search_mock_papers"));
 
   return (
     <section className="agent-run-panel" aria-label="agent plan mode">
@@ -1002,7 +1003,14 @@ function AgentRunPanel({
           <p className="section-kicker">Research Plan Mode</p>
           <h2>{agentPlan ? `Run ${agentPlan.run_id}` : "Agent Task"}</h2>
         </div>
-        <span className={`run-status ${agentPlan?.status ?? "idle"}`}>{agentPlan?.status ?? "idle"}</span>
+        <div className="agent-run-badges">
+          {agentPlan ? (
+            <span className={`tool-mode-badge ${isDemoMode ? "demo" : "real"}`}>
+              {isDemoMode ? "Demo Mode" : "Real Tools"}
+            </span>
+          ) : null}
+          <span className={`run-status ${agentPlan?.status ?? "idle"}`}>{agentPlan?.status ?? "idle"}</span>
+        </div>
       </div>
 
       <label className="agent-task-field">

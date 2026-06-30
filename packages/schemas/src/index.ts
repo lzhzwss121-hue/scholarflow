@@ -374,7 +374,7 @@ export interface ApiAgentExecuteResponse {
   run_id: string;
   status: "completed";
   artifact: ApiArtifact;
-  papers: Array<Record<string, string>>;
+  papers: Array<Record<string, unknown>>;
   steps: ApiAgentPlanStep[];
 }
 

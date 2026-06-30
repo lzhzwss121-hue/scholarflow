@@ -377,7 +377,7 @@ class AgentExecuteResponse(BaseModel):
     run_id: str
     status: Literal["completed"]
     artifact: Artifact
-    papers: list[dict[str, str]]
+    papers: list[dict[str, object]]
     steps: list[AgentPlanStep]
 
 

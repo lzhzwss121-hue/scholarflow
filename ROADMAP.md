@@ -247,6 +247,8 @@ Planned deliverables:
 - Evidence-driven Deep Paper Card sections that degrade to "insufficient evidence" when method or experiment details are missing.
 - Signal-aware ResearchSight generation by paper type, with critique-level evidence snippet ids and confidence.
 - Same-round critique repetition check for direction reviews.
+- Experiment-plan anchor selection that excludes survey/review papers and requires claim/dataset/metric or benchmark/baseline evidence.
+- Real Agent Loop tools for literature search, direction review, paper memory query, and research decision generation.
 - Paper detail UI that shows extracted paper signals before long-form analysis.
 
-Status: Phase 15.1, 15.2, and 15.3 are complete for heuristic term extraction, abstract/metadata/pasted-text paper signals, and signal-aware deterministic ResearchSight. Experiment-anchor selection, real agent tools, and project switching remain future phases.
+Status: Phase 15.1 through 15.5 are complete for heuristic term extraction, abstract/metadata/pasted-text paper signals, signal-aware deterministic ResearchSight, stored-card experiment anchor selection, and the default real Agent Loop tool chain. Project switching remains a future phase.

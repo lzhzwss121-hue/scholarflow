@@ -592,6 +592,72 @@ scholarflow/
 - evidence_snippet_id 指向 ScholarFlow 当前的 EvidencePack，不是 PDF 原文段落定位。
 - 重复度校正只在当前方向精读一轮内生效，尚未做跨轮/跨项目风格去重。
 
+### Phase 15.4: Experiment Plan Anchor Selection
+
+当前状态：complete for stored paper cards and paper metadata。
+
+目标：避免 Experiment Plan 把 survey / review 当成 Day 1 复现实验切口，确保一周实验计划指向真正可实验的论文。
+
+交付物：
+
+- 新增 `select_experiment_anchor(papers, paper_cards)`。
+- 从 `paper_cards` 读取时 left join `papers`，让 decision 模块能看到论文标题、类型、摘要、venue、priority 等 metadata。
+- 排除 title / type / card content 含 survey、review、overview、taxonomy、综述、调研、文献图谱的论文。
+- 排除 Paper Card 已明确写“需要补充 PDF/实验细节”或“不应作为一周复现实验 anchor”的论文。
+- 优先选择同时包含 claim、dataset、metric 的论文；也支持 benchmark + baseline 信号作为候选。
+- Experiment Plan 的 Day 1 明确指向 anchor paper。
+- 没有合格 anchor 时，Experiment Plan 输出“缺少可复现 anchor”，不硬生成 7 天复现实验。
+
+验收标准：
+
+- Experiment Plan 的 Day 1 必须指向一篇可实验论文，而不是综述。
+- 只有 survey/review 命中时，系统要求补充非 survey 的方法或 benchmark 论文。
+- anchor 必须能解释为什么被选中，例如包含 claim、dataset、metric、baseline 或 benchmark 信号。
+
+边界：
+
+- anchor 解析当前基于 paper metadata、Paper Card 的 `minimal_reproduction` 和 section 文本。
+- 尚未解析 PDF 实验表格，也未自动运行 benchmark。
+- 如果历史 Paper Card 缺少完整 minimal reproduction，系统会保守降级为缺少 anchor。
+
+### Phase 15.5: Real Agent Tool Chain
+
+当前状态：complete for registered Web/API tools。
+
+目标：让 Agent Loop 不再只是 mock demo，而是按 plan 顺序执行 ScholarFlow 已有真实科研工具。
+
+交付物：
+
+- OpenRouter planning prompt 的 allowed tools 改为：
+  - `literature_search`
+  - `direction_review`
+  - `research_memory_query`
+  - `research_decision`
+  - `save_artifact`
+  - `update_timeline`
+- local fallback plan 默认生成真实工具链，而不是 mock paper table。
+- `execute_agent_run()` 按 `plan["steps"]` 顺序逐步执行已注册工具，不再硬编码 `search_mock_papers -> save_artifact -> update_timeline`。
+- Tool Registry 新增真实工具：
+  - `literature_search`：检索 arXiv / OpenAlex 并保存 paper table。
+  - `direction_review`：生成 BaselineMap、Paper Card、ResearchSight、Paper Memory。
+  - `research_memory_query`：检索 Paper Memory Bank 并保存 memory-grounded answer。
+  - `research_decision`：生成 Gap Board、Idea Validation、Experiment Plan。
+- `search_mock_papers` 保留为 Demo Mode 工具，但默认 plan 不再使用。
+- Agent Run 最终 artifact 聚合 papers、tool outputs 和中间 artifacts。
+- Web UI 在 Agent Plan 面板显示 `Real Tools` / `Demo Mode` badge。
+
+验收标准：
+
+- 默认 local fallback plan 不包含 `search_mock_papers`。
+- Agent 执行逻辑来自 plan steps，而不是固定 mock 工具列表。
+- Mock 工具仍可用于离线演示，并在 UI 标记为 Demo Mode。
+
+边界：
+
+- 真实工具仍是 Web/API 内部同步执行，尚未实现后台队列、取消、重试和流式进度。
+- `direction_review` 工具会触发真实文献检索，依赖外部 arXiv / OpenAlex 可用性。
+- Tool failure 目前仍由 API 异常中断，下一步可增加 step-level failed status 和恢复策略。
+
 ## 阶段推进规则
 
 每个阶段完成时必须回答：
