@@ -265,10 +265,12 @@ def ensure_direction_memory_columns(connection: sqlite3.Connection) -> None:
 
 def seed_demo_project(connection: sqlite3.Connection) -> None:
     existing = connection.execute(
-        "SELECT id FROM projects WHERE id = ?",
+        "SELECT id, title FROM projects WHERE id = ?",
         ("local-bootstrap",),
     ).fetchone()
     if existing:
+        if existing["title"] == "VLM Hallucination Benchmark":
+            update_legacy_demo_project(connection)
         return
 
     now = utc_now()
@@ -283,10 +285,10 @@ def seed_demo_project(connection: sqlite3.Connection) -> None:
         """,
         (
             "local-bootstrap",
-            "VLM Hallucination Benchmark",
-            "从可信多模态评测出发，定位现有 benchmark 无法暴露的证据错误和 visual grounding 失败。",
-            "VLM hallucination benchmark",
-            "Trustworthy AI / Multimodal Evaluation",
+            "AI 研究方向探索示例",
+            "输入你自己的研究方向后，ScholarFlow 会帮助你检索论文、精读论文、整理记忆并生成 gap 与实验计划。",
+            "你的研究方向关键词",
+            "Artificial Intelligence",
             "zh-CN",
             "survey-to-experiment",
             "api",
@@ -301,66 +303,148 @@ def seed_demo_project(connection: sqlite3.Connection) -> None:
     seed_session(connection, "local-bootstrap", session_id, now)
 
 
+def update_legacy_demo_project(connection: sqlite3.Connection) -> None:
+    now = utc_now()
+    connection.execute(
+        """
+        UPDATE projects
+        SET title = ?, description = ?, keyword = ?, field = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            "AI 研究方向探索示例",
+            "输入你自己的研究方向后，ScholarFlow 会帮助你检索论文、精读论文、整理记忆并生成 gap 与实验计划。",
+            "你的研究方向关键词",
+            "Artificial Intelligence",
+            now,
+            "local-bootstrap",
+        ),
+    )
+    connection.execute(
+        """
+        UPDATE artifacts
+        SET content_markdown = ?, content_json = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            "# AI 研究方向探索示例\n\n- 先在新建项目页输入自己的研究方向\n- 再检索近三年论文并执行方向精读\n- 最后生成 Paper Memory、Gap Board 和 Experiment Plan",
+            json.dumps(
+                {
+                    "project": "ai-research-direction-example",
+                    "stage": "api",
+                    "source": "seed",
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            now,
+            "artifact_research_overview",
+        ),
+    )
+    demo_papers = [
+        (
+            "Synthetic Example: Research Workflow Agents for Literature Review",
+            "System",
+            "Demo",
+            "展示从方向到论文表的工作流",
+            "demo",
+            "paper_object_hallucination",
+        ),
+        (
+            "Synthetic Example: Memory-Augmented Paper Reading",
+            "Method",
+            "Demo",
+            "展示 Paper Memory 如何支持后续问答",
+            "demo",
+            "paper_faithful_vqa",
+        ),
+        (
+            "Synthetic Example: Evidence-Bounded Gap Analysis",
+            "Protocol",
+            "Demo",
+            "展示如何从论文证据生成研究 gap",
+            "demo",
+            "paper_benchmark_bias",
+        ),
+        (
+            "Synthetic Example: Selecting Reproducible Experiment Anchors",
+            "Guide",
+            "Demo",
+            "展示实验计划如何避免选择综述论文",
+            "demo",
+            "paper_trustworthy_vlm_survey",
+        ),
+    ]
+    connection.executemany(
+        """
+        UPDATE papers
+        SET title = ?, type = ?, venue = ?, relation = ?, code = ?
+        WHERE id = ?
+        """,
+        demo_papers,
+    )
+
+
 def seed_papers(connection: sqlite3.Connection, project_id: str, now: str) -> None:
     papers = [
         (
-            "object_hallucination",
-            "Evaluating Object Hallucination in Large Vision-Language Models",
+            "research_agent_workflow",
+            "Synthetic Example: Research Workflow Agents for Literature Review",
             "unknown",
             "",
             "2025",
-            "Benchmark",
-            "arXiv",
+            "System",
+            "Demo",
             "seed",
             "",
-            "直接对应 hallucination evaluation",
+            "展示从方向到论文表的工作流",
             "High",
-            "available",
+            "demo",
             1.5,
         ),
         (
-            "faithful_vqa",
-            "Faithful Visual Question Answering Requires Grounded Evidence",
+            "paper_memory_retrieval",
+            "Synthetic Example: Memory-Augmented Paper Reading",
             "unknown",
             "",
             "2025",
             "Method",
-            "ACL",
+            "Demo",
             "seed",
             "",
-            "把答案正确性和证据一致性分开",
+            "展示 Paper Memory 如何支持后续问答",
             "High",
-            "partial",
+            "demo",
             1.4,
         ),
         (
-            "benchmark_bias",
-            "Benchmark Bias in Multimodal Foundation Model Evaluation",
+            "gap_analysis_protocol",
+            "Synthetic Example: Evidence-Bounded Gap Analysis",
             "unknown",
             "",
             "2024",
-            "Analysis",
-            "NeurIPS",
+            "Protocol",
+            "Demo",
             "seed",
             "",
-            "解释评测集捷径和分布偏差",
+            "展示如何从论文证据生成研究 gap",
             "High",
-            "available",
+            "demo",
             1.3,
         ),
         (
-            "trustworthy_vlm_survey",
-            "A Survey of Trustworthy Vision-Language Models",
+            "experiment_anchor_selection",
+            "Synthetic Example: Selecting Reproducible Experiment Anchors",
             "unknown",
             "",
             "2026",
-            "Survey",
-            "arXiv",
+            "Guide",
+            "Demo",
             "seed",
             "",
-            "补全研究图谱和术语",
+            "展示实验计划如何避免选择综述论文",
             "Medium",
-            "none",
+            "demo",
             0.9,
         ),
     ]
@@ -423,10 +507,10 @@ def seed_artifacts(connection: sqlite3.Connection, project_id: str, now: str) ->
             project_id,
             "research_overview.md",
             "markdown",
-            "# VLM Hallucination Benchmark\n\n- 方向：trustworthy VLM evaluation\n- 当前阶段：Backend API\n- 下一步：Agent Core 之前的数据持久化",
+            "# AI 研究方向探索示例\n\n- 先在新建项目页输入自己的研究方向\n- 再检索近三年论文并执行方向精读\n- 最后生成 Paper Memory、Gap Board 和 Experiment Plan",
             json.dumps(
                 {
-                    "project": "vlm-hallucination-benchmark",
+                    "project": "ai-research-direction-example",
                     "stage": "api",
                     "source": "seed",
                 },

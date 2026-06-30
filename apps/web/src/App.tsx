@@ -6,7 +6,6 @@ import {
   CheckCircle2,
   Circle,
   Clock3,
-  Download,
   FileText,
   FlaskConical,
   GitBranch,
@@ -68,6 +67,12 @@ import "./styles.css";
 
 type ArtifactTab = "markdown" | "json" | "diff";
 type ApiStatus = "checking" | "online" | "offline";
+type ProjectDraft = {
+  title: string;
+  description: string;
+  keyword: string;
+  field: string;
+};
 
 const navIcons: Record<ViewId, LucideIcon> = {
   dashboard: LayoutDashboard,
@@ -103,15 +108,23 @@ export function App() {
   const [persistedArtifactCount, setPersistedArtifactCount] = useState(0);
   const [lastSavedArtifact, setLastSavedArtifact] = useState<ApiArtifact | null>(null);
   const [projectArtifacts, setProjectArtifacts] = useState<ApiArtifact[]>([]);
+  const [artifactDraft, setArtifactDraft] = useState<ArtifactContent | null>(null);
+  const [artifactSaving, setArtifactSaving] = useState(false);
+  const [projectDraft, setProjectDraft] = useState<ProjectDraft>({
+    title: "",
+    description: "",
+    keyword: "",
+    field: "Artificial Intelligence",
+  });
   const [agentTask, setAgentTask] = useState(
-    "请基于 VLM hallucination benchmark 方向，生成一个从文献表到可验证 gap 的最小科研任务计划。",
+    "请根据我的研究方向，生成一个从文献检索到可验证 gap 的最小科研任务计划。",
   );
   const [agentPlan, setAgentPlan] = useState<ApiAgentPlanResponse | null>(null);
   const [agentBusy, setAgentBusy] = useState(false);
-  const [literatureQuery, setLiteratureQuery] = useState("VLM hallucination benchmark");
+  const [literatureQuery, setLiteratureQuery] = useState("");
   const [literatureBusy, setLiteratureBusy] = useState(false);
   const [literatureErrors, setLiteratureErrors] = useState<string[]>([]);
-  const [directionInput, setDirectionInput] = useState("VLM hallucination benchmark");
+  const [directionInput, setDirectionInput] = useState("");
   const [directionRound, setDirectionRound] = useState(1);
   const [directionBusy, setDirectionBusy] = useState(false);
   const [directionReview, setDirectionReview] = useState<ApiDirectionReviewResponse | null>(null);
@@ -131,6 +144,14 @@ export function App() {
   const [researchDecision, setResearchDecision] = useState<ApiResearchDecisionResponse | null>(null);
 
   const activeArtifact = artifacts[activeView];
+  const displayedArtifact: ArtifactContent = lastSavedArtifact
+    ? {
+        title: lastSavedArtifact.title,
+        markdown: lastSavedArtifact.content_markdown,
+        json: lastSavedArtifact.content_json,
+        diff: lastSavedArtifact.diff,
+      }
+    : activeArtifact;
   const activeNavItem = useMemo(
     () => navItems.find((item) => item.id === activeView),
     [activeView],
@@ -175,7 +196,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (activeProject?.keyword) {
+    if (activeProject?.keyword && activeProject.keyword !== "你的研究方向关键词") {
       setLiteratureQuery(activeProject.keyword);
       setDirectionInput(activeProject.keyword);
     }
@@ -187,6 +208,10 @@ export function App() {
   useEffect(() => {
     setLastSavedArtifact(selectArtifactForView(projectArtifacts, activeView));
   }, [activeView, projectArtifacts]);
+
+  useEffect(() => {
+    setArtifactDraft(displayedArtifact);
+  }, [displayedArtifact.title, displayedArtifact.markdown, displayedArtifact.json, displayedArtifact.diff]);
 
   useEffect(() => {
     if (!paperRows.length) {
@@ -240,13 +265,24 @@ export function App() {
   }
 
   async function handleCreateProject() {
+    const keyword = projectDraft.keyword.trim();
+    if (!keyword) {
+      setApiMessage("请先输入你想研究的方向或关键词。");
+      return;
+    }
+
+    const title = projectDraft.title.trim() || keyword;
+    const description =
+      projectDraft.description.trim() || `围绕「${keyword}」检索论文、精读论文、生成 gap 和实验计划。`;
+    const field = projectDraft.field.trim() || "Artificial Intelligence";
+
     setApiMessage("正在创建本地 research project...");
     try {
       const project = await createProject({
-        title: "VLM Hallucination Benchmark",
-        description: "从可信多模态评测出发，定位证据错误和 visual grounding 失败。",
-        keyword: "VLM hallucination benchmark",
-        field: "Trustworthy AI / Multimodal Evaluation",
+        title,
+        description,
+        keyword,
+        field,
         language: "zh-CN",
         workflow: "survey-to-experiment",
       });
@@ -255,6 +291,9 @@ export function App() {
       setProjects(nextProjects);
       setActiveProject(project);
       setActiveView("dashboard");
+      setLiteratureQuery(keyword);
+      setDirectionInput(keyword);
+      setAgentTask(`请基于「${keyword}」方向，生成一个从文献检索到可验证 gap 的最小科研任务计划。`);
       setApiMessage(`已创建项目并初始化 session: ${project.id}`);
       await loadProjectResources(project.id);
     } catch (error) {
@@ -269,15 +308,17 @@ export function App() {
       return;
     }
 
-    setApiMessage("正在保存当前 artifact 到 SQLite...");
+    const artifactToSave = artifactDraft ?? displayedArtifact;
+    setArtifactSaving(true);
+    setApiMessage("正在保存右侧 Artifact 编辑内容到 SQLite...");
     try {
       const saved = await saveArtifact({
         project_id: activeProject.id,
-        title: activeArtifact.title,
+        title: artifactToSave.title,
         kind: artifactTab,
-        content_markdown: activeArtifact.markdown,
-        content_json: activeArtifact.json,
-        diff: activeArtifact.diff,
+        content_markdown: artifactToSave.markdown,
+        content_json: artifactToSave.json,
+        diff: artifactToSave.diff,
       });
       const reloaded = await getArtifact(saved.id);
       setLastSavedArtifact(reloaded);
@@ -288,6 +329,8 @@ export function App() {
       setProjectArtifacts((items) => [reloaded, ...items.filter((item) => item.id !== reloaded.id)]);
     } catch (error) {
       setApiMessage("保存 artifact 失败，请确认 API 与 SQLite 工作区可用。");
+    } finally {
+      setArtifactSaving(false);
     }
   }
 
@@ -495,14 +538,14 @@ export function App() {
             <h1>{viewTitles[activeView]}</h1>
           </div>
           <div className="toolbar" aria-label="workspace actions">
-            <button className="icon-button" title="运行静态工作流" type="button">
-              <Play size={17} />
-            </button>
-            <button className="icon-button" title="保存 Artifact 到 API" type="button" onClick={handleSaveArtifact}>
+            <button
+              className="icon-button"
+              disabled={apiStatus !== "online" || artifactSaving}
+              title="保存右侧 Artifact 编辑内容"
+              type="button"
+              onClick={handleSaveArtifact}
+            >
               <Save size={17} />
-            </button>
-            <button className="icon-button" title="导出 Artifact" type="button">
-              <Download size={17} />
             </button>
           </div>
         </header>
@@ -535,6 +578,7 @@ export function App() {
               memoryQuestion={memoryQuestion}
               memoryResult={memoryResult}
               memoryTopK={memoryTopK}
+              projectDraft={projectDraft}
               onAgentTaskChange={setAgentTask}
               onCreateProject={handleCreateProject}
               onCreateAgentPlan={handleCreateAgentPlan}
@@ -550,9 +594,11 @@ export function App() {
               onMemoryTopKChange={setMemoryTopK}
               onPaperCardInputChange={setPaperCardInput}
               onQueryResearchMemory={handleQueryResearchMemory}
+              onProjectDraftChange={setProjectDraft}
               onSearchLiterature={handleSearchLiterature}
               onSelectedDirectionPaperChange={setSelectedDirectionPaperId}
               onSelectedPaperChange={setSelectedPaperId}
+              onSelectView={setActiveView}
               paperRows={paperRows}
               paperCardBusy={paperCardBusy}
               paperCardInput={paperCardInput}
@@ -574,8 +620,11 @@ export function App() {
       <ArtifactPreview
         activeTab={artifactTab}
         apiStatus={apiStatus}
-        artifact={activeArtifact}
+        artifact={artifactDraft ?? displayedArtifact}
+        isSaving={artifactSaving}
         lastSavedArtifact={lastSavedArtifact}
+        onArtifactChange={setArtifactDraft}
+        onSave={handleSaveArtifact}
         onTabChange={setArtifactTab}
       />
     </div>
@@ -671,11 +720,11 @@ function ProjectNavigator({
 
       <section className="navigator-section">
         <p className="section-kicker">Project</p>
-        <h2>{activeProject?.title ?? "VLM Hallucination Benchmark"}</h2>
+        <h2>{activeProject?.title ?? "等待创建研究项目"}</h2>
         <div className="tag-row">
-          <span>Trustworthy AI</span>
-          <span>VLM</span>
-          <span>Evaluation</span>
+          <span>{activeProject?.field || "AI Research"}</span>
+          <span>{activeProject?.workflow || "survey-to-experiment"}</span>
+          <span>{activeProject?.language || "zh-CN"}</span>
         </div>
       </section>
 
@@ -714,6 +763,7 @@ interface ActiveViewProps {
   memoryQuestion: string;
   memoryResult: ApiResearchMemoryQueryResponse | null;
   memoryTopK: number;
+  projectDraft: ProjectDraft;
   onAgentTaskChange: (task: string) => void;
   onCreateAgentPlan: () => void;
   onCreateDirectionReview: () => void;
@@ -728,10 +778,12 @@ interface ActiveViewProps {
   onMemoryQuestionChange: (question: string) => void;
   onMemoryTopKChange: (topK: number) => void;
   onPaperCardInputChange: (value: string) => void;
+  onProjectDraftChange: (draft: ProjectDraft) => void;
   onQueryResearchMemory: () => void;
   onSearchLiterature: () => void;
   onSelectedDirectionPaperChange: (paperId: string) => void;
   onSelectedPaperChange: (paperId: string) => void;
+  onSelectView: (view: ViewId) => void;
   paperRows: PaperRow[];
   paperCardBusy: boolean;
   paperCardInput: string;
@@ -764,6 +816,7 @@ function ActiveView({
   memoryQuestion,
   memoryResult,
   memoryTopK,
+  projectDraft,
   onAgentTaskChange,
   onCreateAgentPlan,
   onCreateDirectionReview,
@@ -778,10 +831,12 @@ function ActiveView({
   onMemoryQuestionChange,
   onMemoryTopKChange,
   onPaperCardInputChange,
+  onProjectDraftChange,
   onQueryResearchMemory,
   onSearchLiterature,
   onSelectedDirectionPaperChange,
   onSelectedPaperChange,
+  onSelectView,
   paperRows,
   paperCardBusy,
   paperCardInput,
@@ -793,7 +848,15 @@ function ActiveView({
 }: ActiveViewProps) {
   switch (view) {
     case "new-project":
-      return <NewProjectView apiMessage={apiMessage} apiStatus={apiStatus} onCreateProject={onCreateProject} />;
+      return (
+        <NewProjectView
+          apiMessage={apiMessage}
+          apiStatus={apiStatus}
+          draft={projectDraft}
+          onCreateProject={onCreateProject}
+          onDraftChange={onProjectDraftChange}
+        />
+      );
     case "paper-table":
       return (
         <PaperTableView
@@ -884,6 +947,7 @@ function ActiveView({
           onAgentTaskChange={onAgentTaskChange}
           onCreateAgentPlan={onCreateAgentPlan}
           onExecuteAgentRun={onExecuteAgentRun}
+          onSelectView={onSelectView}
           paperCount={paperRows.length}
           projectCount={projectCount}
         />
@@ -901,6 +965,7 @@ function DashboardView({
   onAgentTaskChange,
   onCreateAgentPlan,
   onExecuteAgentRun,
+  onSelectView,
   paperCount,
   projectCount,
 }: {
@@ -913,6 +978,7 @@ function DashboardView({
   onAgentTaskChange: (task: string) => void;
   onCreateAgentPlan: () => void;
   onExecuteAgentRun: () => void;
+  onSelectView: (view: ViewId) => void;
   paperCount: number;
   projectCount: number;
 }) {
@@ -921,13 +987,21 @@ function DashboardView({
       <section className="brief-panel">
         <div>
           <p className="section-kicker">Current Task</p>
-          <h2>{activeProject?.title ?? "从 VLM hallucination benchmark 找到可验证研究 gap"}</h2>
+          <h2>{activeProject?.title ?? "输入你的研究方向，开始一次科研任务流程"}</h2>
         </div>
         <p>
           当前版本已经贯通 Research Plan、文献检索、Deep Paper Card、Gap Board 和 Experiment Plan。
           系统会把关键工具调用写入 session timeline，并把研究输出保存为 artifact。
         </p>
       </section>
+
+      <WorkflowGuide
+        apiStatus={apiStatus}
+        hasProject={Boolean(activeProject)}
+        onSelectView={onSelectView}
+        paperCount={paperCount}
+        artifactCount={artifactCount}
+      />
 
       <AgentRuntimePanel
         apiStatus={apiStatus}
@@ -953,15 +1027,103 @@ function DashboardView({
         <Metric label="Artifacts" value={String(artifactCount)} detail="artifacts table" />
       </section>
 
-      <section className="workflow-strip" aria-label="research workflow">
-        {["Project", "Plan", "Tools", "Artifacts", "Timeline", "Confirm"].map((item, index) => (
-          <div className="workflow-node" key={item}>
-            <span>{index + 1}</span>
-            {item}
-          </div>
-        ))}
-      </section>
     </div>
+  );
+}
+
+function WorkflowGuide({
+  apiStatus,
+  artifactCount,
+  hasProject,
+  onSelectView,
+  paperCount,
+}: {
+  apiStatus: ApiStatus;
+  artifactCount: number;
+  hasProject: boolean;
+  onSelectView: (view: ViewId) => void;
+  paperCount: number;
+}) {
+  const steps: Array<{
+    id: string;
+    title: string;
+    detail: string;
+    action: string;
+    target: ViewId;
+    status: "ready" | "blocked" | "done";
+  }> = [
+    {
+      id: "project",
+      title: "1. 创建或选择研究项目",
+      detail: "先确定研究方向、关键词和工作流。后续论文、记忆和 artifact 都会归到这个项目下。",
+      action: hasProject ? "查看项目" : "新建项目",
+      target: hasProject ? "dashboard" : "new-project",
+      status: hasProject ? "done" : "ready",
+    },
+    {
+      id: "search",
+      title: "2. 检索近三年相关论文",
+      detail: "用研究方向作为 query，生成 Paper Table，作为方向精读和记忆库的输入。",
+      action: "去检索论文",
+      target: "paper-table",
+      status: !hasProject ? "blocked" : paperCount > 0 ? "done" : "ready",
+    },
+    {
+      id: "read",
+      title: "3. 方向精读与论文卡片",
+      detail: "每轮读取 10 篇高相关论文，生成摘要翻译、12 条精读、ResearchSight 和 round summary。",
+      action: "开始方向精读",
+      target: "direction-review",
+      status: paperCount > 0 ? "ready" : "blocked",
+    },
+    {
+      id: "memory",
+      title: "4. 查询 Paper Memory",
+      detail: "读完多篇后不要把 30 篇全塞上下文，而是按问题检索最相关的 3-8 篇再回答。",
+      action: "问论文记忆",
+      target: "paper-memory",
+      status: artifactCount > 0 ? "ready" : "blocked",
+    },
+    {
+      id: "decision",
+      title: "5. 生成 Gap 与一周实验",
+      detail: "基于已读论文找真 gap、判断 novelty risk，并给出可复现 anchor 和最小实验计划。",
+      action: "生成研究决策",
+      target: "gap-board",
+      status: artifactCount > 0 ? "ready" : "blocked",
+    },
+  ];
+
+  return (
+    <section className="workflow-guide" aria-label="research workflow guide">
+      <div className="workflow-guide-header">
+        <div>
+          <p className="section-kicker">Recommended Path</p>
+          <h2>按这个顺序完成一次科研任务</h2>
+        </div>
+        <span className={`run-status ${apiStatus === "online" ? "completed" : "queued"}`}>
+          {apiStatus === "online" ? "API ready" : "需要启动 API"}
+        </span>
+      </div>
+      <div className="workflow-guide-list">
+        {steps.map((step) => (
+          <article className={`workflow-guide-step ${step.status}`} key={step.id}>
+            <div>
+              <h3>{step.title}</h3>
+              <p>{step.detail}</p>
+            </div>
+            <button
+              className="secondary-command"
+              disabled={step.status === "blocked" || apiStatus !== "online"}
+              type="button"
+              onClick={() => onSelectView(step.target)}
+            >
+              {step.action}
+            </button>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -1114,39 +1276,73 @@ function AgentRunPanel({
 function NewProjectView({
   apiMessage,
   apiStatus,
+  draft,
   onCreateProject,
+  onDraftChange,
 }: {
   apiMessage: string;
   apiStatus: ApiStatus;
+  draft: ProjectDraft;
   onCreateProject: () => void;
+  onDraftChange: (draft: ProjectDraft) => void;
 }) {
+  function updateDraft(field: keyof ProjectDraft, value: string) {
+    onDraftChange({
+      ...draft,
+      [field]: value,
+    });
+  }
+
   return (
     <div className="view-stack">
       <section className="form-panel">
         <label>
-          研究关键词
+          项目名称
+          <div className="input-shell">
+            <FileText size={17} />
+            <input
+              placeholder="例如：大语言模型推理可靠性评估"
+              value={draft.title}
+              onChange={(event) => updateDraft("title", event.target.value)}
+            />
+          </div>
+        </label>
+        <label>
+          研究方向 / 关键词
           <div className="input-shell">
             <Search size={17} />
-            <input readOnly value="VLM hallucination benchmark" />
+            <input
+              placeholder="输入你真正想研究的方向，例如：AI agent 工具调用可靠性"
+              value={draft.keyword}
+              onChange={(event) => updateDraft("keyword", event.target.value)}
+            />
           </div>
         </label>
         <label>
           研究目标
           <textarea
-            readOnly
-            value="从可信多模态评测出发，定位现有 benchmark 无法暴露的证据错误和视觉 grounding 失败。"
+            placeholder="简要说明你想解决的问题、应用场景或希望 ScholarFlow 帮你调研的范围。"
+            value={draft.description}
+            onChange={(event) => updateDraft("description", event.target.value)}
           />
         </label>
         <div className="form-grid">
           <label>
             领域
-            <input readOnly value="Trustworthy AI / Multimodal Evaluation" />
+            <input
+              placeholder="例如：Artificial Intelligence / NLP / Robotics"
+              value={draft.field}
+              onChange={(event) => updateDraft("field", event.target.value)}
+            />
           </label>
           <label>
             输出语言
             <input readOnly value="中文为主，保留英文术语" />
           </label>
         </div>
+        <p className="form-helper">
+          ScholarFlow 不预设研究方向。这里输入什么，后续文献检索、方向精读、Paper Memory 和实验计划就围绕什么展开。
+        </p>
         <div className="api-action-row">
           <button className="secondary-command" disabled={apiStatus === "checking"} type="button" onClick={onCreateProject}>
             <Plus size={17} />
@@ -1312,7 +1508,7 @@ function DirectionReviewView({
           <label>
             研究方向
             <textarea
-              placeholder="例如：VLM hallucination benchmark / multimodal evidence faithfulness"
+              placeholder="例如：AI agent 工具调用可靠性 / 大模型推理评估 / 医学图像分割泛化"
               value={direction}
               onChange={(event) => onDirectionChange(event.target.value)}
             />
@@ -2296,28 +2492,53 @@ interface ArtifactPreviewProps {
   activeTab: ArtifactTab;
   apiStatus: ApiStatus;
   artifact: ArtifactContent;
+  isSaving: boolean;
   lastSavedArtifact: ApiArtifact | null;
+  onArtifactChange: (artifact: ArtifactContent) => void;
+  onSave: () => void;
   onTabChange: (tab: ArtifactTab) => void;
 }
 
-function ArtifactPreview({ activeTab, apiStatus, artifact, lastSavedArtifact, onTabChange }: ArtifactPreviewProps) {
-  const previewArtifact = lastSavedArtifact
-    ? {
-        title: lastSavedArtifact.title,
-        markdown: lastSavedArtifact.content_markdown,
-        json: lastSavedArtifact.content_json,
-        diff: lastSavedArtifact.diff,
-      }
-    : artifact;
-  const content = previewArtifact[activeTab];
+function ArtifactPreview({
+  activeTab,
+  apiStatus,
+  artifact,
+  isSaving,
+  lastSavedArtifact,
+  onArtifactChange,
+  onSave,
+  onTabChange,
+}: ArtifactPreviewProps) {
+  const content = artifact[activeTab];
+
+  function updateArtifactField(field: keyof ArtifactContent, value: string) {
+    onArtifactChange({
+      ...artifact,
+      [field]: value,
+    });
+  }
 
   return (
     <aside className="artifact-preview" aria-label="artifact preview">
       <div className="artifact-header">
         <div>
-          <p className="section-kicker">Artifact Preview</p>
-          <h2>{previewArtifact.title}</h2>
+          <p className="section-kicker">Editable Artifact</p>
+          <input
+            aria-label="artifact title"
+            className="artifact-title-input"
+            value={artifact.title}
+            onChange={(event) => updateArtifactField("title", event.target.value)}
+          />
         </div>
+        <button
+          className="secondary-command"
+          disabled={apiStatus !== "online" || isSaving}
+          type="button"
+          onClick={onSave}
+        >
+          <Save size={17} />
+          {isSaving ? "保存中" : "保存"}
+        </button>
       </div>
 
       <div className="segmented-control" role="tablist" aria-label="artifact format">
@@ -2334,11 +2555,15 @@ function ArtifactPreview({ activeTab, apiStatus, artifact, lastSavedArtifact, on
       </div>
 
       <div className="artifact-meta">
-        <span>{apiStatus === "online" ? "SQLite writable" : "Preview only"}</span>
-        <span>{lastSavedArtifact ? `Last saved: ${lastSavedArtifact.id}` : "Not saved this session"}</span>
+        <span>{apiStatus === "online" ? "可编辑并保存到 SQLite" : "离线预览，启动 API 后可保存"}</span>
+        <span>{lastSavedArtifact ? `当前来源: ${lastSavedArtifact.id}` : "当前来源: 内置示例"}</span>
       </div>
 
-      <pre className="artifact-code">{content}</pre>
+      <textarea
+        className="artifact-editor"
+        value={content}
+        onChange={(event) => updateArtifactField(activeTab, event.target.value)}
+      />
     </aside>
   );
 }

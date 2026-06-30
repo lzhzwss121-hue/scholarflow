@@ -68,21 +68,21 @@ export interface ArtifactContent {
 }
 
 export const navItems: NavItem[] = [
-  { id: "dashboard", label: "Dashboard" },
-  { id: "new-project", label: "New Project" },
-  { id: "paper-table", label: "Paper Table", count: 18 },
-  { id: "direction-review", label: "方向精读", count: 10 },
-  { id: "paper-memory", label: "论文记忆", count: 30 },
-  { id: "paper-reader", label: "Paper Reader", count: 3 },
-  { id: "gap-board", label: "Gap Board", count: 5 },
-  { id: "experiment-planner", label: "Experiment Planner", count: 2 },
+  { id: "dashboard", label: "项目总览" },
+  { id: "new-project", label: "新建项目" },
+  { id: "paper-table", label: "文献检索" },
+  { id: "direction-review", label: "方向精读" },
+  { id: "paper-memory", label: "论文记忆" },
+  { id: "paper-reader", label: "单篇精读" },
+  { id: "gap-board", label: "Gap 分析" },
+  { id: "experiment-planner", label: "实验计划" },
 ];
 
 export const planSteps: PlanStep[] = [
   {
     id: "intent",
     title: "方向理解",
-    detail: "将 VLM hallucination benchmark 拆成 visual grounding、faithfulness、benchmark bias 三个子问题。",
+    detail: "将用户输入的研究方向拆成任务、方法、数据集、评价指标和潜在失败模式。",
     status: "done",
   },
   {
@@ -116,7 +116,7 @@ export const timelineEvents: TimelineEvent[] = [
     time: "13:42",
     tool: "query.expand",
     status: "done",
-    summary: "生成 VLM hallucination / visual grounding / faithfulness 相关检索式。",
+    summary: "根据用户研究方向生成多组检索式。",
   },
   {
     time: "13:45",
@@ -140,63 +140,63 @@ export const timelineEvents: TimelineEvent[] = [
 
 export const papers: PaperRow[] = [
   {
-    id: "paper_object_hallucination",
-    title: "Evaluating Object Hallucination in Large Vision-Language Models",
+    id: "paper_research_agent_workflow",
+    title: "Synthetic Example: Research Workflow Agents for Literature Review",
     authors: "unknown",
-    abstract: "Evaluates object hallucination in large vision-language models.",
+    abstract: "Synthetic example showing how an agent organizes literature review workflows.",
     year: "2025",
-    type: "Benchmark",
-    venue: "arXiv",
+    type: "System",
+    venue: "Demo",
     source: "seed",
     url: "",
-    relation: "直接对应 hallucination evaluation",
+    relation: "展示从方向到论文表的工作流",
     priority: "High",
-    code: "available",
+    code: "demo",
     relevanceScore: 1.5,
   },
   {
-    id: "paper_faithful_vqa",
-    title: "Faithful Visual Question Answering Requires Grounded Evidence",
+    id: "paper_memory_retrieval",
+    title: "Synthetic Example: Memory-Augmented Paper Reading",
     authors: "unknown",
-    abstract: "Separates answer correctness from grounded visual evidence.",
+    abstract: "Synthetic example showing how structured paper memory supports follow-up questions.",
     year: "2025",
     type: "Method",
-    venue: "ACL",
+    venue: "Demo",
     source: "seed",
     url: "",
-    relation: "把答案正确性和证据一致性分开",
+    relation: "展示 Paper Memory 如何支持后续问答",
     priority: "High",
-    code: "partial",
+    code: "demo",
     relevanceScore: 1.4,
   },
   {
-    id: "paper_benchmark_bias",
-    title: "Benchmark Bias in Multimodal Foundation Model Evaluation",
+    id: "paper_gap_analysis_protocol",
+    title: "Synthetic Example: Evidence-Bounded Gap Analysis",
     authors: "unknown",
-    abstract: "Analyzes benchmark shortcuts and distribution bias.",
+    abstract: "Synthetic example showing how paper evidence becomes research gaps.",
     year: "2024",
-    type: "Analysis",
-    venue: "NeurIPS",
+    type: "Protocol",
+    venue: "Demo",
     source: "seed",
     url: "",
-    relation: "解释评测集捷径和分布偏差",
+    relation: "展示如何从论文证据生成研究 gap",
     priority: "High",
-    code: "available",
+    code: "demo",
     relevanceScore: 1.3,
   },
   {
-    id: "paper_trustworthy_vlm_survey",
-    title: "A Survey of Trustworthy Vision-Language Models",
+    id: "paper_experiment_anchor_selection",
+    title: "Synthetic Example: Selecting Reproducible Experiment Anchors",
     authors: "unknown",
-    abstract: "Surveys trustworthy vision-language model research.",
+    abstract: "Synthetic example showing how to choose a reproducible experiment anchor.",
     year: "2026",
-    type: "Survey",
-    venue: "arXiv",
+    type: "Guide",
+    venue: "Demo",
     source: "seed",
     url: "",
-    relation: "补全研究图谱和术语",
+    relation: "展示实验计划如何避免选择综述论文",
     priority: "Medium",
-    code: "none",
+    code: "demo",
     relevanceScore: 0.9,
   },
 ];
@@ -205,7 +205,7 @@ export const gapItems: GapItem[] = [
   {
     title: "答案正确但证据错误",
     weakness: "多数 benchmark 只检查最终答案，弱化了视觉证据链。",
-    opportunity: "设计 evidence-aware hallucination split，把答案、定位、解释分开评分。",
+    opportunity: "设计证据边界清晰的评价协议，把结论、证据和失败模式分开检查。",
     risk: "high",
   },
   {
@@ -253,25 +253,25 @@ export const artifacts: Record<ViewId, ArtifactContent> = {
   dashboard: {
     title: "research_overview.md",
     markdown:
-      "# VLM Hallucination Benchmark\n\n- 方向：trustworthy VLM evaluation\n- 当前阶段：Deep Paper Card\n- 下一步：Gap Analysis\n- 资产：18 papers, 3 paper cards, 5 gaps",
+      "# AI 研究方向探索示例\n\n- 输入自己的研究方向\n- 检索近三年相关论文\n- 生成方向精读、Paper Memory、Gap Board 和 Experiment Plan",
     json:
-      '{\n  "project": "vlm-hallucination-benchmark",\n  "stage": "paper-card",\n  "papers": 18,\n  "gaps": 5\n}',
+      '{\n  "project": "ai-research-direction-example",\n  "stage": "paper-card",\n  "papers": 0,\n  "gaps": 0\n}',
     diff:
-      "+ Added benchmark bias as a first-class subtopic\n+ Added evidence faithfulness as the main evaluation lens",
+      "+ Added user-defined research direction workflow\n+ Removed domain-specific default topic",
   },
   "new-project": {
     title: "project_brief.md",
     markdown:
-      "# Project Brief\n\n关键词：VLM hallucination benchmark\n\n目标：从评测缺陷出发，找到可复现、可反驳、可扩展的研究切入点。",
+      "# Project Brief\n\n关键词：等待用户输入\n\n目标：围绕用户自己的研究方向，找到可复现、可反驳、可扩展的研究切入点。",
     json:
-      '{\n  "keyword": "VLM hallucination benchmark",\n  "language": "zh-CN",\n  "workflow": "survey-to-experiment"\n}',
+      '{\n  "keyword": "",\n  "language": "zh-CN",\n  "workflow": "survey-to-experiment"\n}',
     diff:
       "+ Set default workflow to survey-to-experiment\n+ Added Chinese-first artifact policy",
   },
   "paper-table": {
     title: "paper_table.md",
     markdown:
-      "| Paper | Year | Type | Priority |\n| --- | --- | --- | --- |\n| Evaluating Object Hallucination | 2025 | Benchmark | High |\n| Faithful VQA Requires Grounded Evidence | 2025 | Method | High |",
+      "| Paper | Year | Type | Priority |\n| --- | --- | --- | --- |\n| Synthetic Example: Research Workflow Agents | 2026 | System | High |\n| Synthetic Example: Memory-Augmented Paper Reading | 2025 | Method | High |",
     json:
       '{\n  "rows": 18,\n  "filters": ["recent", "code_available", "task_relevance"],\n  "top_priority": 3\n}',
     diff:
@@ -280,7 +280,7 @@ export const artifacts: Record<ViewId, ArtifactContent> = {
   "direction-review": {
     title: "direction_review_round_1.md",
     markdown:
-      "# Direction Review Round 1\n\n方向：VLM hallucination benchmark\n\n- 近三年 10 篇高相关论文\n- 每篇保存摘要中文翻译与 12 条精读内容\n- 推荐 3 篇用户亲自精读\n- 生成方向级总结",
+      "# Direction Review Round 1\n\n方向：用户输入的研究方向\n\n- 近三年 10 篇高相关论文\n- 每篇保存摘要中文翻译与 12 条精读内容\n- 推荐 3 篇用户亲自精读\n- 生成方向级总结",
     json:
       '{\n  "round": 1,\n  "papers": 10,\n  "max_rounds": 3,\n  "total_limit": 30\n}',
     diff:
@@ -298,9 +298,9 @@ export const artifacts: Record<ViewId, ArtifactContent> = {
   "paper-reader": {
     title: "paper_card.md",
     markdown:
-      "# Deep Paper Card\n\n1. 研究问题：VLM 在答案正确时仍可能使用错误视觉证据。\n2. 作者思路：从 benchmark shortcut 和 grounding failure 推导出 evidence-aware evaluation。\n3. 最脆弱假设：人工证据标签能代表真实视觉依据。",
+      "# Deep Paper Card\n\n1. 研究问题：论文解决了什么具体科研问题。\n2. 作者思路：从已有失败模式和相关工作重建 idea 来源。\n3. 最脆弱假设：指出方法或实验最容易被反例攻击的前提。",
     json:
-      '{\n  "sections": 12,\n  "weakest_assumption": "evidence labels represent real visual grounding",\n  "minimal_reproduction": "one-week evidence mismatch test"\n}',
+      '{\n  "sections": 12,\n  "weakest_assumption": "to be extracted from the selected paper",\n  "minimal_reproduction": "one-week claim test"\n}',
     diff:
       "+ Added reconstructed author reasoning path\n+ Added counterexample design section",
   },

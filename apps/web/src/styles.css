@@ -260,7 +260,6 @@ button {
 .paper-summary h2,
 .gap-card h2,
 .experiment-row h2,
-.artifact-header h2,
 .side-panel h2 {
   margin: 0;
   color: #1d2733;
@@ -344,6 +343,11 @@ button {
   color: #1f6f8b;
 }
 
+.icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .workspace-body {
   min-height: 0;
   display: grid;
@@ -408,6 +412,73 @@ button {
   background: #ffffff;
   display: grid;
   gap: 14px;
+}
+
+.workflow-guide {
+  border: 1px solid #d9dee6;
+  border-radius: 8px;
+  padding: 18px;
+  background: #ffffff;
+  display: grid;
+  gap: 14px;
+}
+
+.workflow-guide-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.workflow-guide-header h2 {
+  margin: 0;
+  color: #1d2733;
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.workflow-guide-list {
+  display: grid;
+  gap: 10px;
+}
+
+.workflow-guide-step {
+  min-height: 92px;
+  border: 1px solid #dce3eb;
+  border-radius: 8px;
+  padding: 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  background: #fbfcfd;
+}
+
+.workflow-guide-step.ready {
+  border-color: #bfd6df;
+}
+
+.workflow-guide-step.done {
+  border-color: #c8dfd3;
+  background: #f6fbf8;
+}
+
+.workflow-guide-step.blocked {
+  opacity: 0.68;
+}
+
+.workflow-guide-step h3 {
+  margin: 0;
+  color: #263545;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.workflow-guide-step p {
+  margin: 7px 0 0;
+  color: #667789;
+  font-size: 13px;
+  line-height: 1.55;
 }
 
 .runtime-heading {
@@ -708,35 +779,6 @@ button {
   letter-spacing: 0;
 }
 
-.workflow-strip {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.workflow-node {
-  min-height: 74px;
-  border: 1px solid #d9dee6;
-  border-radius: 8px;
-  background: #ffffff;
-  padding: 12px;
-  color: #344256;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.workflow-node span {
-  width: 24px;
-  height: 24px;
-  border-radius: 999px;
-  display: grid;
-  place-items: center;
-  margin-bottom: 8px;
-  background: #f1f4f7;
-  color: #1f6f8b;
-  font-size: 12px;
-}
-
 .form-panel {
   display: grid;
   gap: 16px;
@@ -805,6 +847,13 @@ button {
   resize: vertical;
   padding: 12px;
   color: #1d2733;
+  line-height: 1.6;
+}
+
+.form-helper {
+  margin: 0;
+  color: #667789;
+  font-size: 13px;
   line-height: 1.6;
 }
 
@@ -2221,10 +2270,24 @@ td a {
   gap: 14px;
 }
 
-.artifact-header h2 {
-  font-size: 16px;
+.artifact-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.artifact-title-input {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid #d8dee7;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #fbfcfd;
+  color: #1d2733;
+  font-size: 14px;
+  font-weight: 800;
   line-height: 1.35;
-  word-break: break-word;
 }
 
 .segmented-control {
@@ -2266,20 +2329,30 @@ td a {
   white-space: nowrap;
 }
 
-.artifact-code {
+.artifact-editor {
   min-height: 0;
   flex: 1;
+  width: 100%;
   margin: 0;
   border: 1px solid #d9dee6;
   border-radius: 8px;
   padding: 14px;
-  overflow: auto;
-  background: #111827;
-  color: #d8e4f0;
+  resize: none;
+  background: #fbfcfd;
+  color: #1d2733;
   font-size: 12px;
   line-height: 1.7;
+  font-family:
+    "SFMono-Regular", Consolas, "Liberation Mono", Menlo,
+    monospace;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.artifact-editor:focus,
+.artifact-title-input:focus {
+  outline: 2px solid #b7dce8;
+  outline-offset: 1px;
 }
 
 @media (max-width: 1280px) {
@@ -2327,9 +2400,12 @@ td a {
 
   .metric-grid,
   .agent-plan-list,
-  .runtime-grid,
-  .workflow-strip {
+  .runtime-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workflow-guide-step {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -2393,7 +2469,6 @@ td a {
   .metric-grid,
   .agent-plan-list,
   .runtime-grid,
-  .workflow-strip,
   .form-grid,
   .api-action-row {
     grid-template-columns: 1fr;
