@@ -553,11 +553,44 @@ scholarflow/
 - minimal reproduction 必须绑定具体 claim / dataset / metric；缺失时降级为“需要补充 PDF/实验细节”。
 - 旧 artifact / 旧数据库记录没有 signals 时不影响读取。
 
-当前边界：
+边界：
 
 - PaperSignals 当前为启发式抽取，来源于 title、abstract 和用户粘贴的 `paper_text`。
 - 尚未做 PDF 结构化解析、表格抽取或实验章节定位。
-- ResearchSight 仍未完全接入 PaperSignals，这将在 Phase 15.3 完成。
+
+### Phase 15.3: ResearchSight 类型化与证据锚定
+
+当前状态：complete for signal-aware deterministic ResearchSight。
+
+交付物：
+
+- `build_research_sight()` 接收 `PaperSignals`。
+- ResearchSight 按论文类型生成不同评价逻辑：
+  - benchmark paper：检查数据构造、负样本、metric 是否能暴露失败模式。
+  - method paper：检查是否改变核心机制，还是 prompt / decoding / scale trick。
+  - survey paper：不再按复现实验评价，只评价文献图谱价值、覆盖范围和分类轴。
+  - system paper：检查 workflow 状态、工具调用、artifact 和失败恢复。
+- 新增 `ResearchSightJudgment`：
+  - field
+  - evidence_snippet_id
+  - confidence
+  - rationale
+- 每条 ResearchSight 判断都有结构化证据锚点。
+- Direction Review 对同一轮 10 篇论文的 `why_good` 做重复度检查；相似度过高时用 PaperSignals 重写为更具体评价。
+- 前端论文详情页展示每条 critique 的 evidence snippet id、confidence 和 rationale。
+
+验收标准：
+
+- benchmark / method / survey 类型论文的 ResearchSight 不再使用同一套批判模板。
+- 每条核心 critique 都能看到证据片段 id 和置信度。
+- survey 不再被建议为一周模型复现实验 anchor。
+- 旧 memory / 旧 artifact 没有 `critique_evidence` 时仍能被 API 兼容读取。
+
+边界：
+
+- ResearchSight 仍是 deterministic heuristic，不是多角色 LLM 审稿。
+- evidence_snippet_id 指向 ScholarFlow 当前的 EvidencePack，不是 PDF 原文段落定位。
+- 重复度校正只在当前方向精读一轮内生效，尚未做跨轮/跨项目风格去重。
 
 ## 阶段推进规则
 

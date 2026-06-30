@@ -245,6 +245,8 @@ Planned deliverables:
 - Domain phrase whitelist for trustworthy AI and multimodal evaluation terms.
 - `PaperSignals` extraction for task, method, dataset, metric, claim, limitation, and contribution type.
 - Evidence-driven Deep Paper Card sections that degrade to "insufficient evidence" when method or experiment details are missing.
+- Signal-aware ResearchSight generation by paper type, with critique-level evidence snippet ids and confidence.
+- Same-round critique repetition check for direction reviews.
 - Paper detail UI that shows extracted paper signals before long-form analysis.
 
-Status: Phase 15.1 and 15.2 are complete for heuristic term extraction and abstract/metadata/pasted-text paper signals. ResearchSight signal integration, experiment-anchor selection, real agent tools, and project switching remain future phases.
+Status: Phase 15.1, 15.2, and 15.3 are complete for heuristic term extraction, abstract/metadata/pasted-text paper signals, and signal-aware deterministic ResearchSight. Experiment-anchor selection, real agent tools, and project switching remain future phases.

@@ -1447,6 +1447,21 @@ function BaselineReferenceList({
 function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }) {
   const signals = reading.signals;
   const missingSignals = signals?.missing_signals ?? [];
+  const critiqueEvidence = new Map(
+    (reading.research_sight.critique_evidence ?? []).map((item) => [item.field, item]),
+  );
+  const renderCritiqueEvidence = (field: string) => {
+    const evidence = critiqueEvidence.get(field);
+    if (!evidence) {
+      return null;
+    }
+    return (
+      <small className="critique-evidence-note">
+        evidence: {evidence.evidence_snippet_id || "none"} · confidence: {evidence.confidence || "low"}
+        {evidence.rationale ? ` · ${evidence.rationale}` : ""}
+      </small>
+    );
+  };
 
   return (
     <section className="direction-detail" aria-label="selected paper detail">
@@ -1547,22 +1562,27 @@ function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }
           <div>
             <strong>为什么好</strong>
             <p>{reading.research_sight.why_good}</p>
+            {renderCritiqueEvidence("why_good")}
           </div>
           <div>
             <strong>为什么不好</strong>
             <p>{reading.research_sight.why_not_good}</p>
+            {renderCritiqueEvidence("why_not_good")}
           </div>
           <div>
             <strong>更好角度</strong>
             <p>{reading.research_sight.better_angle}</p>
+            {renderCritiqueEvidence("better_angle")}
           </div>
           <div>
             <strong>Baseline 对比</strong>
             <p>{reading.research_sight.baseline_comparison}</p>
+            {renderCritiqueEvidence("baseline_comparison")}
           </div>
           <div>
             <strong>下一步 proposal</strong>
             <p>{reading.research_sight.next_step_proposal}</p>
+            {renderCritiqueEvidence("next_step_proposal")}
           </div>
         </div>
         <div className="sight-evidence-grid" aria-label="research sight evidence">

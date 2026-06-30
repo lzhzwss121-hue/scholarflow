@@ -128,6 +128,13 @@ class EvidencePack(BaseModel):
     grounding_summary: str = ""
 
 
+class ResearchSightJudgment(BaseModel):
+    field: str = ""
+    evidence_snippet_id: str = ""
+    confidence: str = ""
+    rationale: str = ""
+
+
 class BaselineReference(BaseModel):
     title: str
     year: str
@@ -168,6 +175,7 @@ class ResearchSight(BaseModel):
     baseline_comparison: str
     next_step_proposal: str
     evidence_pack: EvidencePack = Field(default_factory=EvidencePack)
+    critique_evidence: list[ResearchSightJudgment] = Field(default_factory=list)
 
 
 class PaperCard(BaseModel):

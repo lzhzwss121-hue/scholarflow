@@ -1202,10 +1202,15 @@ def build_research_sight_response(value: str) -> ResearchSight:
             "missing_evidence": [],
             "grounding_summary": "",
         },
+        "critique_evidence": [],
     }
     for key, value in defaults.items():
         if key == "evidence_pack":
             if isinstance(parsed.get(key), dict):
+                defaults[key] = parsed[key]
+            continue
+        if key == "critique_evidence":
+            if isinstance(parsed.get(key), list):
                 defaults[key] = parsed[key]
             continue
         defaults[key] = str(parsed.get(key, value))

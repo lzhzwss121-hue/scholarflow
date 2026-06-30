@@ -140,6 +140,13 @@ export interface ApiEvidencePack {
   grounding_summary: string;
 }
 
+export interface ApiResearchSightJudgment {
+  field: string;
+  evidence_snippet_id: string;
+  confidence: string;
+  rationale: string;
+}
+
 export interface ApiBaselineReference {
   title: string;
   year: string;
@@ -180,6 +187,7 @@ export interface ApiResearchSight {
   baseline_comparison: string;
   next_step_proposal: string;
   evidence_pack: ApiEvidencePack;
+  critique_evidence: ApiResearchSightJudgment[];
 }
 
 export interface ApiPaperCard {

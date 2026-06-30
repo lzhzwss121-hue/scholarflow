@@ -1129,6 +1129,14 @@ td a {
   line-height: 1.6;
 }
 
+.critique-evidence-note {
+  display: block;
+  margin-top: 7px;
+  color: #7a8797;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .research-sight-critique {
   display: grid;
   gap: 10px;

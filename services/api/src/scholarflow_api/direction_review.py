@@ -193,7 +193,7 @@ def build_direction_readings(
     for paper in papers:
         card = generate_deep_paper_card(paper)
         sections = [section.to_dict() for section in card.sections]
-        research_sight = build_research_sight(paper, sections, baseline_map, direction)
+        research_sight = build_research_sight(paper, sections, baseline_map, direction, card.signals)
         readings.append(
             DirectionPaperReading(
                 paper=paper,
@@ -205,7 +205,52 @@ def build_direction_readings(
                 self_read_priority=paper.get("id", "") in recommended_ids,
             ),
         )
+    enforce_research_sight_diversity(readings)
     return readings
+
+
+def enforce_research_sight_diversity(readings: list[DirectionPaperReading]) -> None:
+    fingerprints: list[set[str]] = []
+    for reading in readings:
+        current = sight_fingerprint(reading.research_sight.why_good)
+        if any(jaccard_similarity(current, previous) >= 0.72 for previous in fingerprints):
+            reading.research_sight.why_good = build_specific_why_good(reading)
+            upsert_critique_evidence_rationale(
+                reading.research_sight,
+                "why_good",
+                "同轮 why_good 重复度过高，已用 PaperSignals 重新生成更具体的亮点评价。",
+            )
+            current = sight_fingerprint(reading.research_sight.why_good)
+        fingerprints.append(current)
+
+
+def build_specific_why_good(reading: DirectionPaperReading) -> str:
+    signals = reading.card.signals
+    return (
+        f"好的地方：这篇论文的亮点具体落在 `{signals.contribution_type or 'unknown'}` 类型贡献上。"
+        f"它围绕 `{signals.task}`，用方法信号 `{signals.method}`，"
+        f"尝试在 `{signals.dataset}` 上通过 `{signals.metric}` 支撑 `{signals.claim}`。"
+        "这比通用地说“定义了失败模式”更可检查，也更容易被后续实验反驳。"
+    )
+
+
+def upsert_critique_evidence_rationale(research_sight: ResearchSight, field: str, rationale: str) -> None:
+    for judgment in research_sight.critique_evidence:
+        if judgment.field == field:
+            judgment.rationale = rationale
+            return
+
+
+def sight_fingerprint(value: str) -> set[str]:
+    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}|[\u4e00-\u9fff]{2,}", value.lower())
+    stop_words = {"the", "and", "that", "with", "this", "paper", "good", "地方", "好的", "它的", "如果", "价值"}
+    return {token for token in tokens if token not in stop_words}
+
+
+def jaccard_similarity(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
 
 
 def build_direction_review_bundle(
