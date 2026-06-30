@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  ArrowRight,
   BookOpen,
   BrainCircuit,
   CheckCircle2,
@@ -14,6 +15,7 @@ import {
   Plus,
   Save,
   Search,
+  Sparkles,
   Table2,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -95,6 +97,21 @@ const viewTitles: Record<ViewId, string> = {
   "gap-board": "Gap Board",
   "experiment-planner": "实验计划",
 };
+
+const conferenceBadges = [
+  "CVPR",
+  "ICCV",
+  "ECCV",
+  "NeurIPS",
+  "ICLR",
+  "ICML",
+  "AAAI",
+  "IJCAI",
+  "ACL",
+  "EMNLP",
+  "KDD",
+  "SIGIR",
+];
 
 export function App() {
   const [activeView, setActiveView] = useState<ViewId>("dashboard");
@@ -982,17 +999,46 @@ function DashboardView({
   paperCount: number;
   projectCount: number;
 }) {
+  const heroSubtitle = activeProject
+    ? "当前项目会持续推进文献检索、论文精读、Paper Memory 和实验计划，所有输出都会沉淀为可回读 artifact。"
+    : "输入研究方向后，ScholarFlow 会按论文检索、方向精读、证据记忆、Gap 分析和最小复现实验的顺序推进。";
+
   return (
     <div className="view-stack">
-      <section className="brief-panel">
-        <div>
-          <p className="section-kicker">Current Task</p>
-          <h2>{activeProject?.title ?? "输入你的研究方向，开始一次科研任务流程"}</h2>
+      <section className="research-hero">
+        <div className="hero-stars" aria-hidden="true" />
+        <div className="hero-content">
+          <div className="hero-badge">
+            <Sparkles size={15} />
+            中文 AI 科研任务流程 Agent
+          </div>
+          <h2>把 AI 研究方向推进成可验证的科研任务</h2>
+          <p>{heroSubtitle}</p>
+          <div className="hero-actions">
+            <button className="primary-command hero-command" type="button" onClick={() => onSelectView("new-project")}>
+              新建研究项目
+              <ArrowRight size={17} />
+            </button>
+            <button className="secondary-command hero-command" type="button" onClick={() => onSelectView("paper-table")}>
+              检索论文
+              <Search size={17} />
+            </button>
+            <button className="secondary-command hero-command" type="button" onClick={() => onSelectView("direction-review")}>
+              开始精读
+              <BookOpen size={17} />
+            </button>
+          </div>
         </div>
-        <p>
-          当前版本已经贯通 Research Plan、文献检索、Deep Paper Card、Gap Board 和 Experiment Plan。
-          系统会把关键工具调用写入 session timeline，并把研究输出保存为 artifact。
-        </p>
+        <div className="conference-stage" aria-label="AI 顶会方向背景">
+          <span>面向 AI 顶会论文阅读与科研复现</span>
+          <ConferenceMarquee />
+        </div>
+        <div className="hero-stat-card" aria-label="workspace stats">
+          <Metric label="研究项目" value={String(projectCount || 1)} detail="projects" />
+          <Metric label="论文记忆" value={String(paperCount)} detail="paper records" />
+          <Metric label="Artifacts" value={String(artifactCount)} detail="saved outputs" />
+          <Metric label="运行模式" value={apiStatus === "online" ? "Real" : "Mock"} detail="tool chain" />
+        </div>
       </section>
 
       <WorkflowGuide
@@ -1019,14 +1065,21 @@ function DashboardView({
         onCreateAgentPlan={onCreateAgentPlan}
         onExecuteAgentRun={onExecuteAgentRun}
       />
+    </div>
+  );
+}
 
-      <section className="metric-grid" aria-label="research status">
-        <Metric label="后端状态" value={apiStatus === "online" ? "ON" : "OFF"} detail="FastAPI + SQLite" />
-        <Metric label="项目数" value={String(projectCount || 1)} detail="projects table" />
-        <Metric label="论文记录" value={String(paperCount)} detail="papers table" />
-        <Metric label="Artifacts" value={String(artifactCount)} detail="artifacts table" />
-      </section>
-
+function ConferenceMarquee() {
+  const repeatedBadges = [...conferenceBadges, ...conferenceBadges];
+  return (
+    <div className="conference-marquee" aria-hidden="true">
+      <div className="conference-track">
+        {repeatedBadges.map((label, index) => (
+          <span className="conference-badge" key={`${label}-${index}`}>
+            {label}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
