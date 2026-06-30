@@ -249,6 +249,7 @@ Planned deliverables:
 - Same-round critique repetition check for direction reviews.
 - Experiment-plan anchor selection that excludes survey/review papers and requires claim/dataset/metric or benchmark/baseline evidence.
 - Real Agent Loop tools for literature search, direction review, paper memory query, and research decision generation.
+- Agent run failure persistence, compact run artifacts, project switching, and persisted artifact recall in the Web UI.
 - Paper detail UI that shows extracted paper signals before long-form analysis.
 
-Status: Phase 15.1 through 15.5 are complete for heuristic term extraction, abstract/metadata/pasted-text paper signals, signal-aware deterministic ResearchSight, stored-card experiment anchor selection, and the default real Agent Loop tool chain. Project switching remains a future phase.
+Status: Phase 15.1 through 15.6 are complete for heuristic term extraction, abstract/metadata/pasted-text paper signals, signal-aware deterministic ResearchSight, stored-card experiment anchor selection, the default real Agent Loop tool chain, compact/failure-aware agent runs, and Web UI project switching with persisted artifact recall.

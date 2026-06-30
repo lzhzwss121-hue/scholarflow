@@ -263,6 +263,9 @@ class IdeaValidation(BaseModel):
 
 
 class ExperimentPlan(BaseModel):
+    status: Literal["ready", "blocked"] = "ready"
+    anchor_paper_id: str = ""
+    anchor_paper_title: str = ""
     claim: str
     dataset: str
     baseline: str

@@ -275,6 +275,9 @@ export interface ApiIdeaValidation {
 }
 
 export interface ApiExperimentPlan {
+  status: "ready" | "blocked";
+  anchor_paper_id: string;
+  anchor_paper_title: string;
   claim: string;
   dataset: string;
   baseline: string;

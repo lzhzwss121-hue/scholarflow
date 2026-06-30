@@ -6,6 +6,21 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 
+KNOWN_BASELINES = [
+    "Qwen2.5-VL",
+    "LLaVA-1.5",
+    "GPT-4V",
+    "GPT-4o",
+    "Qwen2-VL",
+    "Qwen-VL",
+    "BLIP-2",
+    "InstructBLIP",
+    "MiniGPT-4",
+    "mPLUG-Owl",
+    "LLaVA",
+]
+
+
 @dataclass
 class GapDecision:
     id: str
@@ -36,6 +51,9 @@ class IdeaValidation:
 
 @dataclass
 class ExperimentPlan:
+    status: str
+    anchor_paper_id: str
+    anchor_paper_title: str
     claim: str
     dataset: str
     baseline: str
@@ -265,26 +283,30 @@ def build_experiment_anchor_candidate(paper: dict[str, Any], card: dict[str, Any
 def build_experiment_plan_from_anchor(anchor: ExperimentAnchor | None, focus: str) -> ExperimentPlan:
     if anchor is None:
         return ExperimentPlan(
-            claim="缺少可复现 anchor：当前 paper cards 中没有找到非 survey/review 且同时具备 claim、dataset、metric 或 benchmark+baseline 信号的论文。",
-            dataset="暂不指定数据集。需要先补充至少一篇方法/benchmark 论文的 PDF 实验细节，或重新执行方向精读生成更完整 Paper Card。",
-            baseline="暂不指定 baseline。原因是没有合格 anchor 时，强行选择 baseline 会变成泛泛实验计划。",
+            status="blocked",
+            anchor_paper_id="",
+            anchor_paper_title="",
+            claim="缺少可复现 anchor",
+            dataset="",
+            baseline="",
             metrics=["anchor availability", "claim/dataset/metric completeness", "paper type is not survey/review"],
             ablations=[
                 "补充 PDF 后重新抽取 claim、dataset、metric。",
                 "排除 title/type 含 survey、review、overview 的论文。",
                 "优先选择 benchmark 或 method paper，而不是综述。",
             ],
-            resources="先投入 30-60 分钟补全论文元数据或 PDF 实验段；暂不进入 7 天复现实验。",
+            resources="需要先补充至少一篇非 survey/review 的方法或 benchmark 论文，且 Paper Card 明确包含 claim、dataset、metric 或 benchmark+baseline。",
             timeline=[
-                "Day 1: 缺少可复现 anchor，先补充至少一篇非 survey/review 的方法或 benchmark 论文。",
-                "Day 1: 检查该论文是否包含 claim、dataset、metric 和 baseline。",
-                "Day 2+: 只有 anchor 合格后，才生成 7 天复现实验计划。",
+                "Blocked: 需要先补充一篇非 survey/review 的方法或 benchmark 论文。",
             ],
             success_criterion="找到一篇可实验论文，其 Paper Card 明确包含 claim、dataset、metric 或 benchmark+baseline。",
             failure_criterion="继续只能命中 survey/review/overview，或 Paper Card 明确写着需要补充 PDF/实验细节。",
         )
 
     return ExperimentPlan(
+        status="ready",
+        anchor_paper_id=anchor.paper_id,
+        anchor_paper_title=anchor.paper_title,
         claim=f"Anchor paper: `{anchor.paper_title}`。待验证 claim：{anchor.claim}",
         dataset=anchor.dataset,
         baseline=anchor.baseline,
@@ -311,19 +333,18 @@ def build_experiment_plan_from_anchor(anchor: ExperimentAnchor | None, focus: st
 
 
 def is_survey_like(paper: dict[str, Any], card: dict[str, Any]) -> bool:
-    text = normalize_space(
-        " ".join(
-            [
-                paper.get("title", ""),
-                paper.get("type", ""),
-                paper.get("abstract", ""),
-                card.get("minimal_reproduction", ""),
-                card.get("sections_json", ""),
-            ],
-        ),
-    ).lower()
-    survey_markers = ["survey", "review", "overview", "taxonomy", "综述", "调研", "文献图谱"]
-    return any(marker in text for marker in survey_markers)
+    title = normalize_space(paper.get("title", "")).lower()
+    paper_type = normalize_space(paper.get("type", "")).lower()
+    minimal = normalize_space(card.get("minimal_reproduction", "")).lower()
+
+    hard_markers = ["survey", "review", "overview", "taxonomy", "position paper", "综述", "调研", "文献图谱"]
+    if any(marker in title for marker in hard_markers):
+        return True
+    if any(marker in paper_type for marker in hard_markers):
+        return True
+    if "不应作为一周复现实验 anchor" in minimal or "survey/review" in minimal:
+        return True
+    return False
 
 
 def is_invalid_minimal_reproduction(value: str) -> bool:
@@ -423,12 +444,36 @@ def extract_anchor_metrics(minimal: str, combined: str) -> list[str]:
 
 def extract_anchor_baseline(minimal: str, combined: str) -> str:
     line = extract_labeled_value(minimal, ["Baseline", "baseline"])
-    if line:
+    if line and not is_bad_baseline_line(line):
         return line
-    match = re.search(r"(strong baseline|simple baseline|公开强 baseline|轻量 baseline|baseline[^。.!?\n]{0,160})", combined, flags=re.IGNORECASE)
-    if match:
-        return normalize_space(match.group(0))[:220]
+
+    names = find_named_terms(combined, KNOWN_BASELINES)
+    if names:
+        return ", ".join(names[:4])
+
+    if has_benchmark_signal(combined):
+        return "公开强 VLM baseline + no-grounding/simple-prompt baseline"
     return ""
+
+
+def is_bad_baseline_line(value: str) -> bool:
+    lower = normalize_space(value).lower()
+    if find_named_terms(value, KNOWN_BASELINES):
+        return False
+    bad_patterns = [
+        "baseline 来验证",
+        "baseline to validate",
+        "baseline 来复核",
+        "baseline 验证",
+        "验证核心 claim",
+        "validate core claim",
+        "compare with baseline",
+        "对比 baseline",
+    ]
+    if any(pattern in lower for pattern in bad_patterns):
+        return True
+    generic_terms = ["baseline", "strong baseline", "simple baseline", "公开强 baseline", "轻量 baseline"]
+    return lower in generic_terms
 
 
 def extract_labeled_value(text: str, labels: list[str]) -> str:
@@ -539,6 +584,8 @@ def render_experiment_markdown(bundle: ResearchDecisionBundle) -> str:
         [
             "# Experiment Plan",
             f"Project: {bundle.project_title}",
+            f"Status: {plan.status}",
+            f"Anchor: {plan.anchor_paper_title or 'N/A'}",
             f"## Claim\n{plan.claim}",
             f"## Dataset\n{plan.dataset}",
             f"## Baseline\n{plan.baseline}",

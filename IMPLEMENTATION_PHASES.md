@@ -643,7 +643,8 @@ scholarflow/
   - `research_memory_query`：检索 Paper Memory Bank 并保存 memory-grounded answer。
   - `research_decision`：生成 Gap Board、Idea Validation、Experiment Plan。
 - `search_mock_papers` 保留为 Demo Mode 工具，但默认 plan 不再使用。
-- Agent Run 最终 artifact 聚合 papers、tool outputs 和中间 artifacts。
+- Agent Run 最终 artifact 只保存 paper count、tool output summary 和 artifact refs，避免嵌套全量 papers / outputs / artifacts。
+- Tool 执行失败时会把当前 step 标记为 `failed`，写入失败 timeline，并把 `agent_runs.status` 更新为 `failed`。
 - Web UI 在 Agent Plan 面板显示 `Real Tools` / `Demo Mode` badge。
 
 验收标准：
@@ -651,12 +652,36 @@ scholarflow/
 - 默认 local fallback plan 不包含 `search_mock_papers`。
 - Agent 执行逻辑来自 plan steps，而不是固定 mock 工具列表。
 - Mock 工具仍可用于离线演示，并在 UI 标记为 Demo Mode。
+- 单个 tool 抛异常时，run 不会长期停留在 `running`。
 
 边界：
 
 - 真实工具仍是 Web/API 内部同步执行，尚未实现后台队列、取消、重试和流式进度。
 - `direction_review` 工具会触发真实文献检索，依赖外部 arXiv / OpenAlex 可用性。
-- Tool failure 目前仍由 API 异常中断，下一步可增加 step-level failed status 和恢复策略。
+- Tool failure 目前会失败落库，但尚未实现自动重试和断点续跑。
+
+### Phase 15.6: Project Switching And Artifact Recall
+
+当前状态：complete for Web UI project selector and persisted artifact recall。
+
+目标：让用户切换项目后能看到该项目真实 papers、artifacts、timeline，并在刷新页面后继续查看最近生成的 artifact。
+
+交付物：
+
+- Sidebar 顶部增加 project selector。
+- 创建项目后立即切换到新项目并刷新 papers、artifacts、timeline。
+- `loadProjectResources()` 保存完整 artifact 列表，而不仅是 artifact count。
+- Direction Review、Paper Memory、Paper Reader、Gap Board、Experiment Planner 等页面按 artifact title 匹配最近真实 artifact。
+- Artifact Preview 在有真实 artifact 时优先展示 API 回读内容，没有真实 artifact 时保留 mock fallback。
+
+验收标准：
+
+- 刷新页面后，进入 Direction Review / Paper Memory / Gap Board / Experiment Planner 能看到最近一次真实 API artifact。
+- 切换项目会重置当前临时结果，并加载目标项目的 papers、timeline 和 artifacts。
+
+边界：
+
+- 当前 selector 只支持已有项目切换，尚未支持项目搜索、归档、删除或重命名。
 
 ## 阶段推进规则
 

@@ -102,6 +102,7 @@ export function App() {
   const [timelineRows, setTimelineRows] = useState<TimelineEvent[]>(fallbackTimelineEvents);
   const [persistedArtifactCount, setPersistedArtifactCount] = useState(0);
   const [lastSavedArtifact, setLastSavedArtifact] = useState<ApiArtifact | null>(null);
+  const [projectArtifacts, setProjectArtifacts] = useState<ApiArtifact[]>([]);
   const [agentTask, setAgentTask] = useState(
     "请基于 VLM hallucination benchmark 方向，生成一个从文献表到可验证 gap 的最小科研任务计划。",
   );
@@ -184,6 +185,10 @@ export function App() {
   }, [activeProject?.id, activeProject?.keyword]);
 
   useEffect(() => {
+    setLastSavedArtifact(selectArtifactForView(projectArtifacts, activeView));
+  }, [activeView, projectArtifacts]);
+
+  useEffect(() => {
     if (!paperRows.length) {
       setSelectedPaperId("");
       return;
@@ -207,6 +212,31 @@ export function App() {
     setPaperRows(apiPapers.map(toPaperRow));
     setTimelineRows(apiTimeline.map(toTimelineEvent));
     setPersistedArtifactCount(apiArtifacts.length);
+    setProjectArtifacts(apiArtifacts);
+    setLastSavedArtifact(selectArtifactForView(apiArtifacts, activeView));
+  }
+
+  async function handleSelectProject(projectId: string) {
+    const project = projects.find((item) => item.id === projectId) ?? null;
+    setActiveProject(project);
+    setLastSavedArtifact(null);
+    setProjectArtifacts([]);
+    setDirectionReview(null);
+    setMemoryResult(null);
+    setResearchDecision(null);
+    setLatestPaperCard(null);
+    setSelectedDirectionPaperId("");
+
+    if (!project) {
+      setPaperRows(fallbackPapers);
+      setTimelineRows(fallbackTimelineEvents);
+      setPersistedArtifactCount(0);
+      return;
+    }
+
+    setApiMessage(`正在切换项目: ${project.title}`);
+    await loadProjectResources(project.id);
+    setApiMessage(`已切换项目: ${project.title}`);
   }
 
   async function handleCreateProject() {
@@ -255,6 +285,7 @@ export function App() {
       setApiMessage(`Artifact 已保存并回读: ${reloaded.id}`);
       const refreshedTimeline = await getProjectTimeline(activeProject.id);
       setTimelineRows(refreshedTimeline.map(toTimelineEvent));
+      setProjectArtifacts((items) => [reloaded, ...items.filter((item) => item.id !== reloaded.id)]);
     } catch (error) {
       setApiMessage("保存 artifact 失败，请确认 API 与 SQLite 工作区可用。");
     }
@@ -451,8 +482,10 @@ export function App() {
         apiStatus={apiStatus}
         artifactCount={persistedArtifactCount}
         onSelect={setActiveView}
+        onSelectProject={handleSelectProject}
         paperCount={paperRows.length}
         projectCount={projects.length}
+        projects={projects}
       />
 
       <main className="agent-workspace">
@@ -555,8 +588,10 @@ interface NavigatorProps {
   apiStatus: ApiStatus;
   artifactCount: number;
   onSelect: (view: ViewId) => void;
+  onSelectProject: (projectId: string) => void;
   paperCount: number;
   projectCount: number;
+  projects: ApiProject[];
 }
 
 function ProjectNavigator({
@@ -565,8 +600,10 @@ function ProjectNavigator({
   apiStatus,
   artifactCount,
   onSelect,
+  onSelectProject,
   paperCount,
   projectCount,
+  projects,
 }: NavigatorProps) {
   return (
     <aside className="project-navigator">
@@ -582,6 +619,26 @@ function ProjectNavigator({
         <span className="api-dot" />
         {apiStatus === "online" ? "API Online" : apiStatus === "checking" ? "API Checking" : "Mock Mode"}
       </div>
+
+      <label className="project-selector-field">
+        <span>Project</span>
+        <select
+          className="project-selector"
+          value={activeProject?.id ?? ""}
+          onChange={(event) => onSelectProject(event.target.value)}
+        >
+          {projects.length ? null : (
+            <option disabled value="">
+              暂无项目
+            </option>
+          )}
+          {projects.map((project) => (
+            <option key={project.id} value={project.id}>
+              {project.title}
+            </option>
+          ))}
+        </select>
+      </label>
 
       <button
         className="primary-command"
@@ -2048,6 +2105,7 @@ function ExperimentPlannerView({
   onGoalChange: (goal: string) => void;
 }) {
   const plan = decision?.experiment;
+  const isBlocked = plan?.status === "blocked";
 
   return (
     <div className="view-stack">
@@ -2055,7 +2113,7 @@ function ExperimentPlannerView({
         <div className="decision-header">
           <div>
             <p className="section-kicker">Experiment Plan</p>
-            <h2>{plan ? "One-week Minimal Experiment" : "从 gap 生成实验计划"}</h2>
+            <h2>{plan ? (isBlocked ? "缺少可复现实验 anchor" : "One-week Minimal Experiment") : "从 gap 生成实验计划"}</h2>
           </div>
           <button
             className="secondary-command"
@@ -2074,16 +2132,24 @@ function ExperimentPlannerView({
       </section>
 
       {plan ? (
-        <section className="experiment-detail">
+        <section className={`experiment-detail ${isBlocked ? "blocked" : "ready"}`}>
           <h2>{plan.claim}</h2>
           <dl>
             <div>
+              <dt>Status</dt>
+              <dd>{plan.status}</dd>
+            </div>
+            <div>
+              <dt>Anchor</dt>
+              <dd>{plan.anchor_paper_title || "N/A"}</dd>
+            </div>
+            <div>
               <dt>Dataset</dt>
-              <dd>{plan.dataset}</dd>
+              <dd>{plan.dataset || "N/A"}</dd>
             </div>
             <div>
               <dt>Baseline</dt>
-              <dd>{plan.baseline}</dd>
+              <dd>{plan.baseline || "N/A"}</dd>
             </div>
             <div>
               <dt>Metrics</dt>
@@ -2108,7 +2174,7 @@ function ExperimentPlannerView({
               week: `Step ${index + 1}`,
               goal: step,
               deliverable: index === plan.timeline.length - 1 ? plan.success_criterion : plan.claim,
-              cost: index === 0 ? plan.resources : "tracked",
+              cost: isBlocked ? "blocked" : index === 0 ? plan.resources : "tracked",
             }))
           : experiments
         ).map((item) => (
@@ -2274,6 +2340,26 @@ function ArtifactPreview({ activeTab, apiStatus, artifact, lastSavedArtifact, on
 
       <pre className="artifact-code">{content}</pre>
     </aside>
+  );
+}
+
+function selectArtifactForView(items: ApiArtifact[], view: ViewId): ApiArtifact | null {
+  const patterns: Record<ViewId, string[]> = {
+    dashboard: ["agent_run", "agent_plan"],
+    "new-project": [],
+    "paper-table": ["paper_table", "literature_search"],
+    "direction-review": ["direction_review", "baseline_map"],
+    "paper-memory": ["research_memory_answer", "direction_memory"],
+    "paper-reader": ["paper_card"],
+    "gap-board": ["gap_board", "idea_validation"],
+    "experiment-planner": ["experiment_plan"],
+  };
+  const wanted = patterns[view] ?? [];
+  return (
+    items.find((artifact) => {
+      const title = artifact.title.toLowerCase();
+      return wanted.some((pattern) => title.includes(pattern));
+    }) ?? items[0] ?? null
   );
 }
 

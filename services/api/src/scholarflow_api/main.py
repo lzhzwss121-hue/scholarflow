@@ -953,6 +953,15 @@ def execute_agent_run(run_id: str, payload: AgentExecuteRequest) -> AgentExecute
                 step["status"] = "done"
                 continue
             if not registry.has(tool_name):
+                fail_agent_run_step(
+                    connection,
+                    run_dict,
+                    run_id,
+                    plan,
+                    step,
+                    tool_name,
+                    f"Agent tool is not registered: {tool_name}",
+                )
                 raise HTTPException(status_code=400, detail=f"Agent tool is not registered: {tool_name}")
 
             mark_plan_step_by_id(plan, step["id"], "running")
@@ -964,26 +973,30 @@ def execute_agent_run(run_id: str, payload: AgentExecuteRequest) -> AgentExecute
                 f"正在执行 {tool_name}。",
                 utc_now(),
             )
-            result = registry.run(tool_name, context)
-            context.outputs[result.tool] = result.data
-            if result.data.get("papers"):
-                context.papers = result.data["papers"]
-                plan["papers"] = context.papers
-            if result.data.get("artifact"):
-                context.artifacts.append(result.data["artifact"])
-            if result.data.get("artifacts"):
-                context.artifacts.extend(result.data["artifacts"])
-            if result.data.get("artifact_id"):
-                context.artifact_id = result.data["artifact_id"]
-            mark_plan_step_by_id(plan, step["id"], "done")
-            insert_tool_event(
-                connection,
-                run_dict["session_id"],
-                tool_name,
-                "done",
-                result.summary,
-                utc_now(),
-            )
+            try:
+                result = registry.run(tool_name, context)
+                context.outputs[result.tool] = result.data
+                if result.data.get("papers"):
+                    context.papers = result.data["papers"]
+                    plan["papers"] = context.papers
+                if result.data.get("artifact"):
+                    context.artifacts.append(result.data["artifact"])
+                if result.data.get("artifacts"):
+                    context.artifacts.extend(result.data["artifacts"])
+                if result.data.get("artifact_id"):
+                    context.artifact_id = result.data["artifact_id"]
+                mark_plan_step_by_id(plan, step["id"], "done")
+                insert_tool_event(
+                    connection,
+                    run_dict["session_id"],
+                    tool_name,
+                    "done",
+                    result.summary,
+                    utc_now(),
+                )
+            except Exception as error:
+                fail_agent_run_step(connection, run_dict, run_id, plan, step, tool_name, error)
+                raise
 
         if context.artifact_id is None and context.artifacts:
             context.artifact_id = context.artifacts[-1].get("id")
@@ -1361,6 +1374,100 @@ def insert_tool_event(
     )
 
 
+def fail_agent_run_step(
+    connection,
+    run_dict: dict,
+    run_id: str,
+    plan: dict,
+    step: dict,
+    tool_name: str,
+    error: object,
+) -> None:
+    error_message = error.detail if isinstance(error, HTTPException) else str(error)
+    error_message = error_message or error.__class__.__name__
+    failed_at = utc_now()
+    mark_plan_step_by_id(plan, step.get("id", ""), "failed")
+    connection.execute(
+        """
+        UPDATE agent_runs
+        SET status = ?, plan_json = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        ("failed", json.dumps(plan, ensure_ascii=False, indent=2), failed_at, run_id),
+    )
+    insert_tool_event(
+        connection,
+        run_dict["session_id"],
+        tool_name or "unknown_tool",
+        "failed",
+        error_message[:500],
+        failed_at,
+    )
+    connection.commit()
+
+
+def artifact_ref(artifact: dict) -> dict[str, str]:
+    return {
+        "id": str(artifact.get("id", "")),
+        "title": str(artifact.get("title", "")),
+        "kind": str(artifact.get("kind", "")),
+        "created_at": str(artifact.get("created_at", "")),
+    }
+
+
+def summarize_literature_output(data: dict | None) -> dict[str, object]:
+    data = data or {}
+    return {
+        "paper_count": data.get("paper_count", 0),
+        "artifact_id": data.get("artifact_id", ""),
+        "errors_count": len(data.get("errors", [])),
+        "demo_mode": bool(data.get("demo_mode", False)),
+    }
+
+
+def summarize_direction_output(data: dict | None) -> dict[str, object]:
+    data = data or {}
+    return {
+        "round": data.get("round", 0),
+        "paper_count": data.get("paper_count", 0),
+        "artifact_id": data.get("artifact_id", ""),
+        "artifact_count": len(data.get("artifacts", [])),
+        "recommended_paper_ids": data.get("recommended_paper_ids", []),
+        "errors_count": len(data.get("errors", [])),
+    }
+
+
+def summarize_memory_output(data: dict | None) -> dict[str, object]:
+    data = data or {}
+    return {
+        "hit_count": data.get("hit_count", 0),
+        "total_memories": data.get("total_memories", 0),
+        "artifact_id": data.get("artifact_id", ""),
+        "warnings": data.get("warnings", []),
+    }
+
+
+def summarize_decision_output(data: dict | None) -> dict[str, object]:
+    data = data or {}
+    return {
+        "gap_count": data.get("gap_count", 0),
+        "artifact_id": data.get("artifact_id", ""),
+        "experiment_status": data.get("experiment_status", ""),
+        "anchor_paper_title": data.get("anchor_paper_title", ""),
+        "experiment_claim": data.get("experiment_claim", ""),
+    }
+
+
+def output_summary(outputs: dict) -> dict[str, object]:
+    return {
+        "literature_search": summarize_literature_output(outputs.get("literature_search")),
+        "direction_review": summarize_direction_output(outputs.get("direction_review")),
+        "research_memory_query": summarize_memory_output(outputs.get("research_memory_query")),
+        "research_decision": summarize_decision_output(outputs.get("research_decision")),
+        "search_mock_papers": summarize_literature_output(outputs.get("search_mock_papers")),
+    }
+
+
 def insert_paper_candidates(connection, project_id: str, papers: list, now: str) -> list[str]:
     paper_ids: list[str] = []
     for paper in papers:
@@ -1662,6 +1769,8 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
                 "artifacts": artifacts,
                 "artifact_id": artifacts[-1]["id"],
                 "gap_count": len(bundle.gaps),
+                "experiment_status": bundle.experiment.status,
+                "anchor_paper_title": bundle.experiment.anchor_paper_title,
                 "experiment_claim": bundle.experiment.claim,
             },
         )
@@ -1677,7 +1786,7 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
 
     def save_artifact_tool(context: ToolContext) -> ToolResult:
         plan_snapshot = completed_plan_snapshot(context.plan)
-        plan_snapshot["papers"] = context.papers
+        plan_snapshot.pop("papers", None)
         artifact = insert_artifact_row(
             connection=connection,
             project_id=context.project["id"],
@@ -1696,9 +1805,9 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
                     "run_id": context.run_id,
                     "task": context.task,
                     "plan": plan_snapshot,
-                    "papers": context.papers,
-                    "tool_outputs": context.outputs,
-                    "artifacts": context.artifacts,
+                    "paper_count": len(context.papers),
+                    "tool_outputs": output_summary(context.outputs),
+                    "artifact_refs": [artifact_ref(item) for item in context.artifacts],
                 },
                 ensure_ascii=False,
                 indent=2,
