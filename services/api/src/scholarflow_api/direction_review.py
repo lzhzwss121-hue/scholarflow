@@ -6,8 +6,10 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from scholarflow_api.baseline_map import BaselineMap, render_baseline_map_markdown
 from scholarflow_api.literature import PaperCandidate, search_literature
 from scholarflow_api.paper_card import DeepPaperCard, generate_deep_paper_card
+from scholarflow_api.research_sight import ResearchSight, build_research_sight
 
 
 TOP_VENUE_KEYWORDS = [
@@ -56,6 +58,7 @@ class DirectionPaperReading:
     paper: dict[str, Any]
     abstract_translation: str
     card: DeepPaperCard
+    research_sight: ResearchSight
     why_selected: str
     venue_signal: str
     self_read_priority: bool
@@ -65,6 +68,7 @@ class DirectionPaperReading:
             "paper": self.paper,
             "abstract_translation": self.abstract_translation,
             "card": self.card.to_dict(),
+            "research_sight": self.research_sight.to_dict(),
             "why_selected": self.why_selected,
             "venue_signal": self.venue_signal,
             "self_read_priority": self.self_read_priority,
@@ -76,6 +80,7 @@ class DirectionReviewBundle:
     direction: str
     round: int
     scope: DirectionScope
+    baseline_map: BaselineMap
     readings: list[DirectionPaperReading]
     recommended_paper_ids: list[str]
     direction_summary: str
@@ -87,6 +92,7 @@ class DirectionReviewBundle:
             "direction": self.direction,
             "round": self.round,
             "scope": self.scope.to_dict(),
+            "baseline_map": self.baseline_map.to_dict(),
             "papers": [reading.to_dict() for reading in self.readings],
             "recommended_paper_ids": self.recommended_paper_ids,
             "direction_summary": self.direction_summary,
@@ -115,7 +121,11 @@ def build_direction_scope(direction: str, round_index: int) -> DirectionScope:
     )
 
 
-def retrieve_direction_candidates(direction: str, round_index: int, previously_read_titles: list[str]) -> tuple[DirectionScope, list[PaperCandidate], list[str]]:
+def retrieve_direction_candidate_pool(
+    direction: str,
+    round_index: int,
+    previously_read_titles: list[str],
+) -> tuple[DirectionScope, list[PaperCandidate], list[PaperCandidate], list[str]]:
     scope = build_direction_scope(direction, round_index)
     candidates: list[PaperCandidate] = []
     errors: list[str] = []
@@ -126,6 +136,11 @@ def retrieve_direction_candidates(direction: str, round_index: int, previously_r
         errors.extend(result.errors)
 
     selected = select_top_direction_papers(candidates, direction, previously_read_titles, limit=10)
+    return scope, candidates, selected, errors
+
+
+def retrieve_direction_candidates(direction: str, round_index: int, previously_read_titles: list[str]) -> tuple[DirectionScope, list[PaperCandidate], list[str]]:
+    scope, _candidate_pool, selected, errors = retrieve_direction_candidate_pool(direction, round_index, previously_read_titles)
     return scope, selected, errors
 
 
@@ -166,17 +181,24 @@ def select_top_direction_papers(
     return sorted(relaxed.values(), key=lambda paper: score_direction_paper(paper, direction), reverse=True)[:limit]
 
 
-def build_direction_readings(papers: list[dict[str, Any]], direction: str) -> list[DirectionPaperReading]:
+def build_direction_readings(
+    papers: list[dict[str, Any]],
+    direction: str,
+    baseline_map: BaselineMap,
+) -> list[DirectionPaperReading]:
     scored = sorted(papers, key=lambda paper: score_direction_paper_dict(paper, direction), reverse=True)
     recommended_ids = {paper.get("id", "") for paper in scored[:3]}
     readings: list[DirectionPaperReading] = []
     for paper in papers:
         card = generate_deep_paper_card(paper)
+        sections = [section.to_dict() for section in card.sections]
+        research_sight = build_research_sight(paper, sections, baseline_map, direction)
         readings.append(
             DirectionPaperReading(
                 paper=paper,
                 abstract_translation=translate_abstract_to_chinese(paper),
                 card=card,
+                research_sight=research_sight,
                 why_selected=build_selection_reason(paper, direction),
                 venue_signal=detect_venue_signal(paper.get("venue", "")),
                 self_read_priority=paper.get("id", "") in recommended_ids,
@@ -189,6 +211,7 @@ def build_direction_review_bundle(
     direction: str,
     round_index: int,
     scope: DirectionScope,
+    baseline_map: BaselineMap,
     readings: list[DirectionPaperReading],
     previous_read_count: int,
     errors: list[str],
@@ -199,23 +222,27 @@ def build_direction_review_bundle(
         direction=direction,
         round=round_index,
         scope=scope,
+        baseline_map=baseline_map,
         readings=readings,
         recommended_paper_ids=recommended,
-        direction_summary=build_direction_summary(direction, readings, total_read_count),
+        direction_summary=build_direction_summary(direction, readings, total_read_count, baseline_map),
         total_read_count=total_read_count,
         errors=errors,
     )
 
 
-def build_direction_summary(direction: str, readings: list[DirectionPaperReading], total_read_count: int) -> str:
+def build_direction_summary(direction: str, readings: list[DirectionPaperReading], total_read_count: int, baseline_map: BaselineMap) -> str:
     venues = unique_preserve_order([reading.paper.get("venue", "") for reading in readings if reading.paper.get("venue")])
     top_titles = [reading.paper.get("title", "") for reading in readings if reading.self_read_priority]
     focus_terms = ", ".join(infer_subtopics(direction)[:4])
+    baseline_titles = [item.title for item in baseline_map.recent_strong_baselines[:2]]
+    baseline_note = "; ".join(baseline_titles) if baseline_titles else "当前 baseline 信号不足，需要继续检索"
     return (
         f"基于当前累计已读 {total_read_count} 篇论文，ScholarFlow 对 `{direction}` 的理解是："
         f"这个方向的核心不只是提出一个新模型，而是围绕 {focus_terms or '任务定义、评价方式和失败模式'} "
         "建立可验证的问题边界。近三年的高相关论文通常分成三类：第一类定义任务或 benchmark，"
         "第二类提出方法或系统改进，第三类暴露现有评测和方法的脆弱假设。"
+        f"本轮 BaselineMap 显示应重点对照：{baseline_note}。"
         "用户下一步不应平均阅读所有论文，而应先亲自精读三篇最能代表问题定义、方法路线和评测缺陷的论文。"
         f"本轮最值得亲自精读的是：{'; '.join(top_titles) if top_titles else '当前结果不足三篇，需要继续检索或人工补充'}。"
         f" 主要 venue/source 信号包括：{', '.join(venues[:6]) if venues else 'venue metadata insufficient'}。"
@@ -255,6 +282,8 @@ def render_direction_review_markdown(bundle: DirectionReviewBundle) -> str:
             f"Excluded: {bundle.scope.excluded_scope}",
             "## Direction Summary",
             bundle.direction_summary,
+            "## BaselineMap",
+            render_baseline_map_markdown(bundle.baseline_map),
             "## Three Papers Worth Personal Deep Reading",
             "\n".join(
                 f"- {reading.paper.get('title', '')}: {reading.why_selected}" for reading in recommended

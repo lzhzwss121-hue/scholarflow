@@ -16,13 +16,14 @@ from scholarflow_api.agent_core import (
     render_execution_markdown,
     render_plan_markdown,
 )
+from scholarflow_api.baseline_map import build_baseline_map, render_baseline_map_markdown
 from scholarflow_api.database import get_connection, init_db, new_id, row_to_dict, seed_papers, utc_now
 from scholarflow_api.direction_review import (
     build_direction_readings,
     build_direction_review_bundle,
     render_direction_review_json,
     render_direction_review_markdown,
-    retrieve_direction_candidates,
+    retrieve_direction_candidate_pool,
 )
 from scholarflow_api.literature import render_paper_table_json, render_paper_table_markdown, search_literature
 from scholarflow_api.paper_card import (
@@ -51,6 +52,7 @@ from scholarflow_api.schemas import (
     AgentPlanResponse,
     Artifact,
     ArtifactCreate,
+    BaselineMap,
     DirectionPaperReading,
     DirectionReviewRequest,
     DirectionReviewResponse,
@@ -64,6 +66,7 @@ from scholarflow_api.schemas import (
     PaperCardResponse,
     Project,
     ProjectCreate,
+    ResearchSight,
     ResearchDecisionRequest,
     ResearchDecisionResponse,
     DirectionMemory,
@@ -397,7 +400,7 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
             now,
         )
 
-    scope, candidates, errors = retrieve_direction_candidates(payload.direction, payload.round, previous_titles)
+    scope, candidate_pool, candidates, errors = retrieve_direction_candidate_pool(payload.direction, payload.round, previous_titles)
     completed_at = utc_now()
     artifacts: list[dict] = []
     with get_connection() as connection:
@@ -405,15 +408,32 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
         session_id = ensure_active_session(connection, project, completed_at)
         paper_ids = insert_paper_candidates(connection, project_id, candidates, completed_at)
         paper_dicts = [fetch_paper_dict(connection, project_id, paper_id) for paper_id in paper_ids]
-        readings = build_direction_readings(paper_dicts, payload.direction)
+        baseline_map = build_baseline_map(
+            payload.direction,
+            [candidate.to_dict() for candidate in candidate_pool],
+            paper_dicts,
+        )
+        readings = build_direction_readings(paper_dicts, payload.direction, baseline_map)
         bundle = build_direction_review_bundle(
             payload.direction,
             payload.round,
             scope,
+            baseline_map,
             readings,
             previous_read_count=len(previous_titles),
             errors=errors,
         )
+        baseline_artifact = insert_artifact_row(
+            connection=connection,
+            project_id=project_id,
+            title=f"baseline_map_round_{payload.round}_{paper_slug(payload.direction)}.md",
+            kind="markdown",
+            content_markdown=render_baseline_map_markdown(baseline_map),
+            content_json=json.dumps(baseline_map.to_dict(), ensure_ascii=False, indent=2),
+            diff="+ Generated BaselineMap\n+ Added classic, recent, and alternative-paradigm references",
+            now=completed_at,
+        )
+        artifacts.append(baseline_artifact)
         review_artifact = insert_artifact_row(
             connection=connection,
             project_id=project_id,
@@ -442,9 +462,9 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
                 """
                 INSERT INTO paper_cards (
                     id, project_id, paper_id, artifact_id, sections_json, weakest_assumption,
-                    minimal_reproduction, created_at
+                    minimal_reproduction, research_sight_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     new_id("paper_card"),
@@ -454,6 +474,7 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
                     json.dumps([section.to_dict() for section in reading.card.sections], ensure_ascii=False, indent=2),
                     reading.card.weakest_assumption,
                     reading.card.minimal_reproduction,
+                    json.dumps(reading.research_sight.to_dict(), ensure_ascii=False, indent=2),
                     completed_at,
                 ),
             )
@@ -466,7 +487,13 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
             readings,
             completed_at,
         )
-        direction_memory = upsert_direction_memory_snapshot(connection, project_id, payload.direction, completed_at)
+        direction_memory = upsert_direction_memory_snapshot(
+            connection,
+            project_id,
+            payload.direction,
+            completed_at,
+            baseline_map=baseline_map.to_dict(),
+        )
         memory_artifact = insert_artifact_row(
             connection=connection,
             project_id=project_id,
@@ -513,6 +540,14 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
         insert_tool_event(
             connection,
             session_id,
+            "baseline.curate",
+            "done",
+            f"已生成 BaselineMap：经典 {len(baseline_map.classic_baselines)} 篇，近三年强参照 {len(baseline_map.recent_strong_baselines)} 篇，异质范式 {len(baseline_map.alternative_paradigms)} 篇。",
+            completed_at,
+        )
+        insert_tool_event(
+            connection,
+            session_id,
             "direction.summarize",
             "done",
             f"已生成方向总结，并推荐 {len(bundle.recommended_paper_ids)} 篇用户亲自精读论文。",
@@ -536,11 +571,13 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
         round=bundle.round,
         total_read_count=bundle.total_read_count,
         scope=DirectionScope(**bundle.scope.to_dict()),
+        baseline_map=BaselineMap(**bundle.baseline_map.to_dict()),
         papers=[
             DirectionPaperReading(
                 paper=Paper.model_validate(reading.paper),
                 abstract_translation=reading.abstract_translation,
                 sections=[section.to_dict() for section in reading.card.sections],
+                research_sight=ResearchSight(**reading.research_sight.to_dict()),
                 weakest_assumption=reading.card.weakest_assumption,
                 minimal_reproduction=reading.card.minimal_reproduction,
                 counterexample=reading.card.counterexample,
@@ -696,7 +733,7 @@ def query_project_research_memory(project_id: str, payload: ResearchMemoryQueryR
         top_k=answer.top_k,
         answer=answer.answer,
         hits=[to_paper_memory_hit(hit) for hit in answer.hits],
-        direction_memory=DirectionMemory(**answer.direction_memory.to_dict()) if answer.direction_memory else None,
+        direction_memory=to_direction_memory_response(answer.direction_memory) if answer.direction_memory else None,
         total_memories=answer.total_memories,
         artifact=Artifact.model_validate(artifact),
         warnings=answer.warnings,
@@ -1117,8 +1154,44 @@ def to_paper_memory_hit(hit) -> PaperMemoryHit:
         counterexample=memory.get("counterexample", ""),
         follow_up_idea=memory.get("follow_up_idea", ""),
         why_selected=memory.get("why_selected", ""),
+        research_sight=build_research_sight_response(memory.get("research_sight_json", "{}")),
         self_read_priority=bool(int(memory.get("self_read_priority") or 0)),
     )
+
+
+def to_direction_memory_response(memory) -> DirectionMemory:
+    baseline_map = memory.baseline_map if isinstance(memory.baseline_map, dict) else {}
+    return DirectionMemory(
+        direction=memory.direction,
+        total_papers=memory.total_papers,
+        round_count=memory.round_count,
+        summary=memory.summary,
+        paper_ids=memory.paper_ids,
+        baseline_map=BaselineMap(**baseline_map) if baseline_map.get("direction") else None,
+        updated_at=memory.updated_at,
+    )
+
+
+def build_research_sight_response(value: str) -> ResearchSight:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        parsed = {}
+    if not isinstance(parsed, dict):
+        parsed = {}
+    defaults = {
+        "motivation_sharpness": "",
+        "solution_elegance": "",
+        "evaluation_integrity": "",
+        "paradigm_inspiration": "",
+        "why_good": "",
+        "why_not_good": "",
+        "better_angle": "",
+        "baseline_comparison": "",
+        "next_step_proposal": "",
+    }
+    defaults.update({key: str(parsed.get(key, "")) for key in defaults})
+    return ResearchSight(**defaults)
 
 
 def build_paper_card_source(connection, project_id: str, payload: PaperCardCreateRequest) -> dict:

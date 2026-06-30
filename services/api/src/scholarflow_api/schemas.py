@@ -100,6 +100,43 @@ class PaperCardSection(BaseModel):
     content: str
 
 
+class BaselineReference(BaseModel):
+    title: str
+    year: str
+    venue: str
+    source: str
+    url: str
+    category: str
+    reason: str
+    strengths: str
+    risks: str
+
+
+class BaselineMap(BaseModel):
+    direction: str
+    task_definition: str
+    classic_baselines: list[BaselineReference]
+    recent_strong_baselines: list[BaselineReference]
+    alternative_paradigms: list[BaselineReference]
+    common_benchmarks: list[str]
+    evaluation_risks: list[str]
+    open_questions: list[str]
+    generated_from: list[str]
+    curator_notes: str
+
+
+class ResearchSight(BaseModel):
+    motivation_sharpness: str
+    solution_elegance: str
+    evaluation_integrity: str
+    paradigm_inspiration: str
+    why_good: str
+    why_not_good: str
+    better_angle: str
+    baseline_comparison: str
+    next_step_proposal: str
+
+
 class PaperCard(BaseModel):
     id: str
     project_id: str
@@ -135,6 +172,7 @@ class DirectionPaperReading(BaseModel):
     paper: Paper
     abstract_translation: str
     sections: list[PaperCardSection]
+    research_sight: ResearchSight
     weakest_assumption: str
     minimal_reproduction: str
     counterexample: str
@@ -149,6 +187,7 @@ class DirectionReviewResponse(BaseModel):
     round: int
     total_read_count: int
     scope: DirectionScope
+    baseline_map: BaselineMap
     papers: list[DirectionPaperReading]
     recommended_paper_ids: list[str]
     direction_summary: str
@@ -217,6 +256,7 @@ class PaperMemoryHit(BaseModel):
     counterexample: str
     follow_up_idea: str
     why_selected: str
+    research_sight: ResearchSight
     self_read_priority: bool
 
 
@@ -226,6 +266,7 @@ class DirectionMemory(BaseModel):
     round_count: int
     summary: str
     paper_ids: list[str]
+    baseline_map: BaselineMap | None = None
     updated_at: str
 
 

@@ -112,6 +112,43 @@ export interface ApiPaperCardSection {
   content: string;
 }
 
+export interface ApiBaselineReference {
+  title: string;
+  year: string;
+  venue: string;
+  source: string;
+  url: string;
+  category: string;
+  reason: string;
+  strengths: string;
+  risks: string;
+}
+
+export interface ApiBaselineMap {
+  direction: string;
+  task_definition: string;
+  classic_baselines: ApiBaselineReference[];
+  recent_strong_baselines: ApiBaselineReference[];
+  alternative_paradigms: ApiBaselineReference[];
+  common_benchmarks: string[];
+  evaluation_risks: string[];
+  open_questions: string[];
+  generated_from: string[];
+  curator_notes: string;
+}
+
+export interface ApiResearchSight {
+  motivation_sharpness: string;
+  solution_elegance: string;
+  evaluation_integrity: string;
+  paradigm_inspiration: string;
+  why_good: string;
+  why_not_good: string;
+  better_angle: string;
+  baseline_comparison: string;
+  next_step_proposal: string;
+}
+
 export interface ApiPaperCard {
   id: string;
   project_id: string;
@@ -147,6 +184,7 @@ export interface ApiDirectionPaperReading {
   paper: ApiPaper;
   abstract_translation: string;
   sections: ApiPaperCardSection[];
+  research_sight: ApiResearchSight;
   weakest_assumption: string;
   minimal_reproduction: string;
   counterexample: string;
@@ -161,6 +199,7 @@ export interface ApiDirectionReviewResponse {
   round: number;
   total_read_count: number;
   scope: ApiDirectionScope;
+  baseline_map: ApiBaselineMap;
   papers: ApiDirectionPaperReading[];
   recommended_paper_ids: string[];
   direction_summary: string;
@@ -229,6 +268,7 @@ export interface ApiPaperMemoryHit {
   counterexample: string;
   follow_up_idea: string;
   why_selected: string;
+  research_sight: ApiResearchSight;
   self_read_priority: boolean;
 }
 
@@ -238,6 +278,7 @@ export interface ApiDirectionMemory {
   round_count: number;
   summary: string;
   paper_ids: string[];
+  baseline_map?: ApiBaselineMap | null;
   updated_at: string;
 }
 

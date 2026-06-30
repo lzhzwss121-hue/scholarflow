@@ -9,6 +9,8 @@ The project is designed for workflows such as:
 - Finding and organizing papers for an AI research direction.
 - Running a direction review: 10 recent high-relevance papers per round, up to 30 papers across three rounds.
 - Building a Paper Memory Bank so later questions retrieve 3-8 relevant paper memories instead of relying on chat context.
+- Building a BaselineMap for each direction, including classic baselines, recent strong baselines, alternative paradigms, benchmark risks, and open questions.
+- Producing Research Sight critiques that explain why a paper is good, why it may be weak, and what better research angle may exist.
 - Producing structured paper tables and deep paper-reading notes.
 - Identifying real research gaps instead of vague topic ideas.
 - Planning one-week reproduction experiments.
@@ -24,8 +26,10 @@ Keyword / rough idea
   -> understand the research direction
   -> retrieve and rank papers
   -> select 10 recent high-relevance papers for each review round
+  -> build a BaselineMap for cross-paper comparison
   -> generate a structured paper table
   -> create interactive deep paper cards
+  -> add Research Sight critique to each paper card
   -> build a searchable paper memory bank
   -> answer follow-up questions from 3-8 retrieved paper memories
   -> analyze gaps and novelty risk

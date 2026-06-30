@@ -181,6 +181,8 @@ Initial tool categories:
 - Direction understanding.
 - Literature retrieval: Phase 6 implements arXiv and OpenAlex adapters behind `POST /projects/{project_id}/literature/search`.
 - Paper metadata normalization.
+- BaselineMap: direction-level comparison background with classic baselines, recent strong baselines, alternative paradigms, benchmark risks, and open questions.
+- ResearchSight: paper-level critique covering motivation sharpness, solution elegance, evaluation integrity, paradigm inspiration, why-good, why-not-good, better-angle, baseline comparison, and next-step proposal.
 - Paper memory retrieval: the memory bank stores structured readings and retrieves 3-8 relevant paper memories before answering follow-up questions.
 - PDF parsing.
 - Paper card generation: Phase 7 implements deterministic single-paper card generation with Markdown and JSON artifacts.
@@ -201,6 +203,8 @@ Planned entities:
 - Paper: metadata, source links, code links, tags, relevance score.
 - Artifact: Markdown or JSON output saved by the agent.
 - PaperCard: structured deep analysis for one paper.
+- BaselineMap: comparative context used by direction review and memory.
+- ResearchSight: structured critique attached to one paper reading.
 - PaperMemory: searchable compressed record created from a direction-review paper card.
 - DirectionMemory: cumulative summary over up to 30 paper memories for one research direction.
 - Session: one agent run or conversation.
@@ -220,7 +224,7 @@ Expected behavior:
 - Preserve search queries and retrieval sources.
 - Avoid inventing citations, datasets, metrics, or experimental results.
 
-The Phase 6 paper table artifact preserves expanded queries, source API names, source URLs, relevance reasons, and retrieval warnings. Phase 7 paper-card artifacts preserve the 12 sections, weakest assumption, minimal reproduction, counterexample, and follow-up idea in structured JSON. Phase 8 decision artifacts preserve true/engineering/pseudo gap labels, novelty risk, feasibility, and experiment plans. Phase 9 adds public release documentation, contribution templates, CI, release notes, and synthetic example artifacts. Phase 10 direction-review artifacts preserve the scope, selected papers, abstract Chinese reading entry, 12-section card content, direction summary, and top-3 self-reading recommendation. Phase 11 memory artifacts preserve the user question, retrieved paper memories, direction memory snapshot, answer, and retrieval warnings.
+The Phase 6 paper table artifact preserves expanded queries, source API names, source URLs, relevance reasons, and retrieval warnings. Phase 7 paper-card artifacts preserve the 12 sections, weakest assumption, minimal reproduction, counterexample, and follow-up idea in structured JSON. Phase 8 decision artifacts preserve true/engineering/pseudo gap labels, novelty risk, feasibility, and experiment plans. Phase 9 adds public release documentation, contribution templates, CI, release notes, and synthetic example artifacts. Phase 10 direction-review artifacts preserve the scope, selected papers, abstract Chinese reading entry, 12-section card content, direction summary, and top-3 self-reading recommendation. Phase 11 memory artifacts preserve the user question, retrieved paper memories, direction memory snapshot, answer, and retrieval warnings. Phase 13 artifacts preserve the direction-level BaselineMap and paper-level ResearchSight critique, while still marking them as candidate-pool and abstract-level analysis unless full-paper evidence is available.
 
 ## Local Data Policy
 

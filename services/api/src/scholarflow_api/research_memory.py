@@ -30,6 +30,7 @@ class DirectionMemorySnapshot:
     round_count: int
     summary: str
     paper_ids: list[str]
+    baseline_map: dict[str, Any]
     updated_at: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -80,10 +81,10 @@ def upsert_paper_memory_payload(connection, payload: dict[str, Any]) -> None:
         INSERT INTO paper_memories (
             id, project_id, paper_id, direction, round_index, title, authors, year, venue, source,
             url, abstract_translation, sections_json, weakest_assumption, minimal_reproduction,
-            counterexample, follow_up_idea, why_selected, memory_text, keywords_json,
-            self_read_priority, created_at, updated_at
+            counterexample, follow_up_idea, why_selected, research_sight_json, memory_text,
+            keywords_json, self_read_priority, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             direction = excluded.direction,
             round_index = excluded.round_index,
@@ -100,6 +101,7 @@ def upsert_paper_memory_payload(connection, payload: dict[str, Any]) -> None:
             counterexample = excluded.counterexample,
             follow_up_idea = excluded.follow_up_idea,
             why_selected = excluded.why_selected,
+            research_sight_json = excluded.research_sight_json,
             memory_text = excluded.memory_text,
             keywords_json = excluded.keywords_json,
             self_read_priority = excluded.self_read_priority,
@@ -124,6 +126,7 @@ def upsert_paper_memory_payload(connection, payload: dict[str, Any]) -> None:
             payload["counterexample"],
             payload["follow_up_idea"],
             payload["why_selected"],
+            payload["research_sight_json"],
             payload["memory_text"],
             payload["keywords_json"],
             1 if payload["self_read_priority"] else 0,
@@ -154,6 +157,7 @@ def build_memory_payload_from_reading(
         counterexample=reading.card.counterexample,
         follow_up_idea=reading.card.follow_up_idea,
         why_selected=reading.why_selected,
+        research_sight=reading.research_sight.to_dict(),
         self_read_priority=reading.self_read_priority,
         now=now,
     )
@@ -173,7 +177,9 @@ def build_memory_payload(
     why_selected: str,
     self_read_priority: bool,
     now: str,
+    research_sight: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    research_sight = research_sight or {}
     memory_text = build_memory_text(
         paper,
         abstract_translation,
@@ -183,6 +189,7 @@ def build_memory_payload(
         counterexample,
         follow_up_idea,
         why_selected,
+        research_sight,
     )
     keywords = extract_memory_keywords(memory_text)
     paper_id = paper.get("id") or ""
@@ -205,6 +212,7 @@ def build_memory_payload(
         "counterexample": normalize_space(counterexample),
         "follow_up_idea": normalize_space(follow_up_idea),
         "why_selected": normalize_space(why_selected),
+        "research_sight_json": json.dumps(research_sight, ensure_ascii=False, indent=2),
         "memory_text": memory_text,
         "keywords_json": json.dumps(keywords, ensure_ascii=False),
         "self_read_priority": self_read_priority,
@@ -222,10 +230,12 @@ def build_memory_text(
     counterexample: str,
     follow_up_idea: str,
     why_selected: str,
+    research_sight: dict[str, Any],
 ) -> str:
     section_text = " ".join(
         f"{section.get('title', '')}: {section.get('content', '')}" for section in sections
     )
+    sight_text = " ".join(f"{key}: {value}" for key, value in research_sight.items())
     return normalize_space(
         " ".join(
             [
@@ -239,26 +249,37 @@ def build_memory_text(
                 counterexample,
                 follow_up_idea,
                 why_selected,
+                sight_text,
             ],
         ),
     )
 
 
-def upsert_direction_memory_snapshot(connection, project_id: str, direction: str, now: str) -> DirectionMemorySnapshot:
+def upsert_direction_memory_snapshot(
+    connection,
+    project_id: str,
+    direction: str,
+    now: str,
+    baseline_map: dict[str, Any] | None = None,
+) -> DirectionMemorySnapshot:
+    if baseline_map is None:
+        baseline_map = fetch_existing_direction_baseline_map(connection, project_id, direction)
     records = fetch_memory_records(connection, project_id, direction)
-    snapshot = build_direction_memory_snapshot(direction, records, now)
+    snapshot = build_direction_memory_snapshot(direction, records, now, baseline_map)
     snapshot_id = build_direction_memory_id(project_id, direction)
     connection.execute(
         """
         INSERT INTO direction_memories (
-            id, project_id, direction, total_papers, round_count, summary, paper_ids_json, created_at, updated_at
+            id, project_id, direction, total_papers, round_count, summary, paper_ids_json,
+            baseline_map_json, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             total_papers = excluded.total_papers,
             round_count = excluded.round_count,
             summary = excluded.summary,
             paper_ids_json = excluded.paper_ids_json,
+            baseline_map_json = excluded.baseline_map_json,
             updated_at = excluded.updated_at
         """,
         (
@@ -269,6 +290,7 @@ def upsert_direction_memory_snapshot(connection, project_id: str, direction: str
             snapshot.round_count,
             snapshot.summary,
             json.dumps(snapshot.paper_ids, ensure_ascii=False),
+            json.dumps(snapshot.baseline_map, ensure_ascii=False, indent=2),
             now,
             now,
         ),
@@ -276,16 +298,40 @@ def upsert_direction_memory_snapshot(connection, project_id: str, direction: str
     return snapshot
 
 
-def build_direction_memory_snapshot(direction: str, records: list[dict[str, Any]], now: str) -> DirectionMemorySnapshot:
+def fetch_existing_direction_baseline_map(connection, project_id: str, direction: str) -> dict[str, Any]:
+    row = connection.execute(
+        """
+        SELECT baseline_map_json FROM direction_memories
+        WHERE project_id = ? AND lower(direction) = lower(?)
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (project_id, normalize_space(direction)),
+    ).fetchone()
+    if not row:
+        return {}
+    return safe_json_dict(dict(row).get("baseline_map_json", "{}"))
+
+
+def build_direction_memory_snapshot(
+    direction: str,
+    records: list[dict[str, Any]],
+    now: str,
+    baseline_map: dict[str, Any] | None = None,
+) -> DirectionMemorySnapshot:
     unique_records = records[:30]
     paper_ids = [record.get("paper_id") or record["id"] for record in unique_records]
     round_count = max([int(record.get("round_index") or 0) for record in unique_records] or [0])
     key_terms = extract_memory_keywords(" ".join(record.get("memory_text", "") for record in unique_records), limit=8)
     recommended = [record["title"] for record in unique_records if int(record.get("self_read_priority") or 0) == 1][:5]
+    sight_focus = extract_sight_focus(unique_records)
+    baseline_note = build_baseline_memory_note(baseline_map or {})
     summary = (
         f"Direction Memory `{direction}` 当前覆盖 {len(unique_records)} 篇论文，来自 {round_count} 轮方向精读。"
         f" 主要记忆关键词：{', '.join(key_terms) if key_terms else '暂无稳定关键词'}。"
         f" 优先精读线索：{'; '.join(recommended) if recommended else '暂无显式推荐论文'}。"
+        f" 科研审美线索：{sight_focus or '暂无 ResearchSight 聚合线索'}。"
+        f" BaselineMap 线索：{baseline_note}"
         " 用户提问时应先检索相关论文，再基于命中的 paper memory 回答，而不是把全部论文塞入一次模型上下文。"
     )
     return DirectionMemorySnapshot(
@@ -294,6 +340,7 @@ def build_direction_memory_snapshot(direction: str, records: list[dict[str, Any]
         round_count=round_count,
         summary=summary,
         paper_ids=paper_ids,
+        baseline_map=baseline_map or {},
         updated_at=now,
     )
 
@@ -384,6 +431,7 @@ def fetch_direction_memory_snapshot(
         round_count=int(data["round_count"] or 0),
         summary=data["summary"],
         paper_ids=safe_json_list(data.get("paper_ids_json", "[]")),
+        baseline_map=safe_json_dict(data.get("baseline_map_json", "{}")),
         updated_at=data["updated_at"],
     )
 
@@ -462,12 +510,16 @@ def build_memory_answer(
     weakest = first_nonempty(hit.memory.get("weakest_assumption", "") for hit in hits)
     minimal = first_nonempty(hit.memory.get("minimal_reproduction", "") for hit in hits)
     counterexample = first_nonempty(hit.memory.get("counterexample", "") for hit in hits)
+    why_not_good = first_research_sight_value(hits, "why_not_good")
+    better_angle = first_research_sight_value(hits, "better_angle")
     direction_prefix = f"在 `{snapshot.direction}` 的方向记忆中，" if snapshot else ""
     return (
         f"{direction_prefix}针对问题 `{question}`，ScholarFlow 从 Paper Memory Bank 中检索到 {len(hits)} 篇相关论文。"
         f"最相关的证据来自：{'; '.join(titles)}。"
         "综合这些论文，当前更可靠的回答方式是先看它们共同暴露的失败模式，而不是直接平均所有论文结论。"
         f" 关键脆弱点：{weakest or '当前命中没有明确记录最脆弱假设'}"
+        f" 审美批判：{why_not_good or '当前命中没有明确 ResearchSight 批判字段'}"
+        f" 更好角度：{better_angle or '当前命中没有明确 ResearchSight 破局视角'}"
         f" 可执行验证：{minimal or '当前命中没有明确记录最小复现实验'}"
         f" 反例方向：{counterexample or '当前命中没有明确记录反例设计'}"
         " 这份回答只基于已保存的 paper memory，不等同于全文证据；正式写作前仍应回到原论文核对。"
@@ -547,6 +599,7 @@ def backfill_project_research_memory(connection, project_id: str, now: str) -> i
             why_selected=payload.get("why_selected", ""),
             self_read_priority=bool(payload.get("self_read_priority", False)),
             now=now,
+            research_sight=payload.get("research_sight", {}),
         )
         upsert_paper_memory_payload(connection, memory_payload)
         touched_directions.add(direction)
@@ -608,6 +661,54 @@ def safe_json_list(value: str) -> list[str]:
     if not isinstance(parsed, list):
         return []
     return [str(item) for item in parsed]
+
+
+def safe_json_dict(value: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def extract_sight_focus(records: list[dict[str, Any]]) -> str:
+    critiques: list[str] = []
+    angles: list[str] = []
+    for record in records:
+        sight = safe_json_dict(record.get("research_sight_json", "{}"))
+        if sight.get("why_not_good"):
+            critiques.append(normalize_space(sight["why_not_good"]))
+        if sight.get("better_angle"):
+            angles.append(normalize_space(sight["better_angle"]))
+    critique = first_nonempty(critiques)
+    angle = first_nonempty(angles)
+    if critique and angle:
+        return f"主要批判：{critique[:180]}；破局角度：{angle[:180]}"
+    return critique[:220] or angle[:220]
+
+
+def build_baseline_memory_note(baseline_map: dict[str, Any]) -> str:
+    if not baseline_map:
+        return "暂无 BaselineMap。"
+    recent = baseline_map.get("recent_strong_baselines") or []
+    alternatives = baseline_map.get("alternative_paradigms") or []
+    recent_titles = [item.get("title", "") for item in recent if isinstance(item, dict)][:2]
+    alternative_titles = [item.get("title", "") for item in alternatives if isinstance(item, dict)][:2]
+    pieces: list[str] = []
+    if recent_titles:
+        pieces.append(f"近三年强参照：{'; '.join(recent_titles)}")
+    if alternative_titles:
+        pieces.append(f"异质范式：{'; '.join(alternative_titles)}")
+    return "；".join(pieces) if pieces else "BaselineMap 已保存但候选参照不足。"
+
+
+def first_research_sight_value(hits: list[PaperMemoryHit], key: str) -> str:
+    for hit in hits:
+        sight = safe_json_dict(hit.memory.get("research_sight_json", "{}"))
+        value = normalize_space(sight.get(key, ""))
+        if value:
+            return value
+    return ""
 
 
 def first_nonempty(values) -> str:

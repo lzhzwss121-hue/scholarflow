@@ -99,6 +99,7 @@ def init_db() -> None:
                 sections_json TEXT NOT NULL DEFAULT '{}',
                 weakest_assumption TEXT NOT NULL DEFAULT '',
                 minimal_reproduction TEXT NOT NULL DEFAULT '',
+                research_sight_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
                 FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE SET NULL,
@@ -124,6 +125,7 @@ def init_db() -> None:
                 counterexample TEXT NOT NULL DEFAULT '',
                 follow_up_idea TEXT NOT NULL DEFAULT '',
                 why_selected TEXT NOT NULL DEFAULT '',
+                research_sight_json TEXT NOT NULL DEFAULT '{}',
                 memory_text TEXT NOT NULL DEFAULT '',
                 keywords_json TEXT NOT NULL DEFAULT '[]',
                 self_read_priority INTEGER NOT NULL DEFAULT 0,
@@ -141,6 +143,7 @@ def init_db() -> None:
                 round_count INTEGER NOT NULL DEFAULT 0,
                 summary TEXT NOT NULL DEFAULT '',
                 paper_ids_json TEXT NOT NULL DEFAULT '[]',
+                baseline_map_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
@@ -198,6 +201,9 @@ def init_db() -> None:
             """
         )
         ensure_paper_columns(connection)
+        ensure_paper_card_columns(connection)
+        ensure_paper_memory_columns(connection)
+        ensure_direction_memory_columns(connection)
         seed_demo_project(connection)
 
 
@@ -216,6 +222,45 @@ def ensure_paper_columns(connection: sqlite3.Connection) -> None:
     for name, definition in columns.items():
         if name not in existing_columns:
             connection.execute(f"ALTER TABLE papers ADD COLUMN {name} {definition}")
+
+
+def ensure_paper_card_columns(connection: sqlite3.Connection) -> None:
+    existing_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(paper_cards)").fetchall()
+    }
+    columns = {
+        "research_sight_json": "TEXT NOT NULL DEFAULT '{}'",
+    }
+    for name, definition in columns.items():
+        if name not in existing_columns:
+            connection.execute(f"ALTER TABLE paper_cards ADD COLUMN {name} {definition}")
+
+
+def ensure_paper_memory_columns(connection: sqlite3.Connection) -> None:
+    existing_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(paper_memories)").fetchall()
+    }
+    columns = {
+        "research_sight_json": "TEXT NOT NULL DEFAULT '{}'",
+    }
+    for name, definition in columns.items():
+        if name not in existing_columns:
+            connection.execute(f"ALTER TABLE paper_memories ADD COLUMN {name} {definition}")
+
+
+def ensure_direction_memory_columns(connection: sqlite3.Connection) -> None:
+    existing_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(direction_memories)").fetchall()
+    }
+    columns = {
+        "baseline_map_json": "TEXT NOT NULL DEFAULT '{}'",
+    }
+    for name, definition in columns.items():
+        if name not in existing_columns:
+            connection.execute(f"ALTER TABLE direction_memories ADD COLUMN {name} {definition}")
 
 
 def seed_demo_project(connection: sqlite3.Connection) -> None:

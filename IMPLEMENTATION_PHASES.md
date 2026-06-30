@@ -416,6 +416,53 @@ scholarflow/
 - Paper Memory 来自摘要和 12 条规则卡片，不等同于全文证据。
 - 正式写作和引用前仍需要回到原文核查。
 
+## Phase 13: BaselineMap 与 Research Sight 科研审美层
+
+目标：让方向精读不只总结论文，还能基于 baseline 背景判断“为什么好”“为什么不好”和“有什么更好角度”。
+
+当前状态：complete for heuristic first version。
+
+交付物：
+
+- `BaselineMap` 数据结构。
+- `ResearchSight` 数据结构。
+- Baseline Curator 启发式模块：
+  - 经典 baseline
+  - 近三年强 baseline
+  - 异质范式论文
+  - 常见 benchmark
+  - 评价风险
+  - 开放问题
+- Research Sight 生成模块：
+  - 动机锋利度
+  - 解法优雅性
+  - 评估真实性
+  - 范式启发性
+  - 为什么好
+  - 为什么不好
+  - 更好角度
+  - baseline 对比
+  - 下一步 proposal
+- Direction Review API 接入。
+- Paper Memory Bank 接入。
+- 方向精读 UI 增加 BaselineMap。
+- 论文详情 UI 增加 ResearchSight。
+
+验收标准：
+
+- 每轮方向精读先基于候选池生成 BaselineMap，再生成 10 张论文卡片。
+- 每张论文卡片包含 ResearchSight，而不是只包含 12 条规则精读。
+- Paper Memory 能保存 ResearchSight，并在后续问答中检索“审美批判”和“更好角度”。
+- Direction Memory 能保存 BaselineMap 线索。
+- 列表页不直接铺开长文本，用户点击论文卡片后查看细节。
+
+当前边界：
+
+- BaselineMap 当前来自检索候选池的启发式分类，不是严格 citation graph。
+- ResearchSight 当前为 deterministic rule-based generation，后续可替换为 OpenRouter 多角色 Agent。
+- 尚未接入 Best Paper / Meta Review RAG。
+- 尚未做全文 PDF 证据级引用，因此批判结论仍需用户回到原论文核查。
+
 ## 阶段推进规则
 
 每个阶段完成时必须回答：

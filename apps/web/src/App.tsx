@@ -1300,6 +1300,35 @@ function DirectionReviewView({
                 <span key={subtopic}>{subtopic}</span>
               ))}
             </div>
+            <div className="baseline-map-panel" aria-label="baseline map">
+              <div className="baseline-map-header">
+                <div>
+                  <p className="section-kicker">BaselineMap</p>
+                  <h3>方向背景与对比参照</h3>
+                </div>
+                <span>{review.baseline_map.generated_from.length} candidates</span>
+              </div>
+              <p>{review.baseline_map.task_definition}</p>
+              <div className="baseline-map-grid">
+                <BaselineReferenceList title="经典 baseline" references={review.baseline_map.classic_baselines} />
+                <BaselineReferenceList title="近三年强 baseline" references={review.baseline_map.recent_strong_baselines} />
+                <BaselineReferenceList title="异质范式" references={review.baseline_map.alternative_paradigms} />
+              </div>
+              <div className="baseline-risk-grid">
+                <div>
+                  <strong>常见 benchmark</strong>
+                  <span>{review.baseline_map.common_benchmarks.slice(0, 5).join(" / ")}</span>
+                </div>
+                <div>
+                  <strong>评价风险</strong>
+                  <span>{review.baseline_map.evaluation_risks.slice(0, 2).join("；")}</span>
+                </div>
+                <div>
+                  <strong>开放问题</strong>
+                  <span>{review.baseline_map.open_questions.slice(0, 2).join("；")}</span>
+                </div>
+              </div>
+            </div>
             {review.errors.length ? (
               <div className="retrieval-errors">
                 <strong>检索警告</strong>
@@ -1385,6 +1414,31 @@ function DirectionReviewView({
   );
 }
 
+function BaselineReferenceList({
+  references,
+  title,
+}: {
+  references: ApiDirectionReviewResponse["baseline_map"]["classic_baselines"];
+  title: string;
+}) {
+  return (
+    <div className="baseline-reference-list">
+      <strong>{title}</strong>
+      {references.length ? (
+        references.slice(0, 3).map((reference) => (
+          <article key={`${title}-${reference.title}`}>
+            <span>{reference.year || "year unknown"}</span>
+            <h4>{reference.title}</h4>
+            <p>{reference.reason}</p>
+          </article>
+        ))
+      ) : (
+        <p>当前候选池没有稳定参照。</p>
+      )}
+    </div>
+  );
+}
+
 function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }) {
   return (
     <section className="direction-detail" aria-label="selected paper detail">
@@ -1403,6 +1457,56 @@ function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }
       <article className="direction-abstract">
         <h3>摘要中文内容</h3>
         <p>{reading.abstract_translation}</p>
+      </article>
+
+      <article className="research-sight-panel">
+        <div className="research-sight-header">
+          <div>
+            <p className="section-kicker">Research Sight</p>
+            <h3>科研审美评价</h3>
+          </div>
+          <BrainCircuit size={18} />
+        </div>
+        <div className="research-sight-score-grid">
+          <div>
+            <strong>动机锋利度</strong>
+            <span>{reading.research_sight.motivation_sharpness}</span>
+          </div>
+          <div>
+            <strong>解法优雅性</strong>
+            <span>{reading.research_sight.solution_elegance}</span>
+          </div>
+          <div>
+            <strong>评估真实性</strong>
+            <span>{reading.research_sight.evaluation_integrity}</span>
+          </div>
+          <div>
+            <strong>范式启发性</strong>
+            <span>{reading.research_sight.paradigm_inspiration}</span>
+          </div>
+        </div>
+        <div className="research-sight-critique">
+          <div>
+            <strong>为什么好</strong>
+            <p>{reading.research_sight.why_good}</p>
+          </div>
+          <div>
+            <strong>为什么不好</strong>
+            <p>{reading.research_sight.why_not_good}</p>
+          </div>
+          <div>
+            <strong>更好角度</strong>
+            <p>{reading.research_sight.better_angle}</p>
+          </div>
+          <div>
+            <strong>Baseline 对比</strong>
+            <p>{reading.research_sight.baseline_comparison}</p>
+          </div>
+          <div>
+            <strong>下一步 proposal</strong>
+            <p>{reading.research_sight.next_step_proposal}</p>
+          </div>
+        </div>
       </article>
 
       <div className="direction-key-findings">
@@ -1518,6 +1622,15 @@ function ResearchMemoryView({
               <div className="memory-direction-box">
                 <strong>{result.direction_memory.direction}</strong>
                 <span>{result.direction_memory.summary}</span>
+                {result.direction_memory.baseline_map ? (
+                  <small>
+                    BaselineMap：
+                    {result.direction_memory.baseline_map.recent_strong_baselines
+                      .slice(0, 2)
+                      .map((reference) => reference.title)
+                      .join(" / ") || "暂无强参照"}
+                  </small>
+                ) : null}
               </div>
             ) : null}
             {result.warnings.length ? (
@@ -1555,6 +1668,14 @@ function ResearchMemoryView({
                   <div>
                     <dt>反例设计</dt>
                     <dd>{hit.counterexample}</dd>
+                  </div>
+                  <div>
+                    <dt>审美批判</dt>
+                    <dd>{hit.research_sight.why_not_good || "暂无 ResearchSight 批判字段"}</dd>
+                  </div>
+                  <div>
+                    <dt>更好角度</dt>
+                    <dd>{hit.research_sight.better_angle || "暂无 ResearchSight 破局视角"}</dd>
                   </div>
                 </dl>
               </article>

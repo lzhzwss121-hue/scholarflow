@@ -199,3 +199,23 @@ Planned deliverables:
 - Clear separation between planning, retrieval, memory, reading, and artifact-writing steps.
 
 Status: complete for the dashboard and timeline UI pass.
+
+## Phase 13: BaselineMap And Research Sight
+
+Goal: make direction review capable of comparative judgment, not only paper summarization.
+
+Reference:
+
+- `docs/claude-code-from-scratch-analysis.md`
+- Borrowed idea: keep intermediate agent artifacts visible and persistent, then write them into memory for later retrieval.
+- Not borrowed: CLI permission model and code-editing workflow, because ScholarFlow is a Web/API research product.
+
+Planned deliverables:
+
+- Direction-level `BaselineMap` with classic baselines, recent strong baselines, alternative paradigms, common benchmarks, evaluation risks, and open questions.
+- Paper-level `ResearchSight` with motivation sharpness, solution elegance, evaluation integrity, paradigm inspiration, why-good, why-not-good, better-angle, baseline comparison, and next-step proposal.
+- Direction Review API integration.
+- Paper Memory Bank integration so later questions can retrieve critique and better-angle fields.
+- React UI panels for BaselineMap and ResearchSight.
+
+Status: complete for heuristic candidate-pool based BaselineMap and deterministic ResearchSight generation. Citation-graph baseline discovery, Best Paper meta-review RAG, and LLM multi-agent execution remain future work.
