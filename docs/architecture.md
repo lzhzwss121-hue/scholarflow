@@ -61,7 +61,7 @@ Planned layout:
 - Artifact Preview: paper tables, paper cards, gap boards, experiment plans, diffs.
 - Tool Timeline: retrieval queries, filters, model calls, artifact writes, errors.
 
-The v0.1.0 implementation reads and writes local API data for projects, papers, artifacts, sessions, tool events, agent runs, paper cards, paper memories, and direction memories. It can retrieve paper candidates from arXiv/OpenAlex, run a direction-level review over 10 recent high-relevance papers per round, generate 12-section Deep Paper Cards, build a searchable Paper Memory Bank, retrieve 3-8 relevant paper memories for follow-up questions, and turn those assets into a Gap Board, Idea Validation Report, and Experiment Plan. It intentionally does not download PDFs, parse full-paper PDFs in bulk, or run training jobs yet.
+The v0.1.0 implementation reads and writes local API data for projects, papers, artifacts, sessions, tool events, agent runs, paper cards, paper memories, and direction memories. It can retrieve paper candidates from arXiv/OpenAlex, run a direction-level review over 10 recent high-relevance papers per round, extract PaperSignals from title/abstract/pasted text, generate 12-section Deep Paper Cards, build a searchable Paper Memory Bank, retrieve 3-8 relevant paper memories for follow-up questions, and turn those assets into a Gap Board, Idea Validation Report, and Experiment Plan. It intentionally does not download PDFs, parse full-paper PDFs in bulk, or run training jobs yet.
 
 The UI is Chinese-first. Technical terms such as Agent Loop, Artifact, Timeline, Gap, Claim, Baseline, and Ablation can remain in English when useful.
 
@@ -101,7 +101,7 @@ Current API capabilities:
 - Read session and project timelines.
 - Generate and execute minimal agent plans.
 - Retrieve and persist ranked paper tables from arXiv/OpenAlex.
-- Generate and persist single-paper Deep Paper Cards through `POST /projects/{project_id}/paper-cards`.
+- Generate and persist single-paper Deep Paper Cards with PaperSignals through `POST /projects/{project_id}/paper-cards`.
 - Generate direction reviews through `POST /projects/{project_id}/direction-reviews`, with 10 papers per round and three rounds maximum.
 - Query Paper Memory Bank through `POST /projects/{project_id}/research-memory/query`, retrieving 3-8 relevant paper memories before answering.
 - Generate research decision artifacts through `POST /projects/{project_id}/research-decisions`.
@@ -183,6 +183,7 @@ Initial tool categories:
 - Paper metadata normalization.
 - BaselineMap: direction-level comparison background with classic baselines, recent strong baselines, alternative paradigms, benchmark risks, and open questions.
 - ResearchSight: paper-level critique covering motivation sharpness, solution elegance, evaluation integrity, paradigm inspiration, why-good, why-not-good, better-angle, baseline comparison, and next-step proposal.
+- EvidencePack: evidence boundary for a baseline or critique, including snippets, confidence, and missing-evidence notes.
 - Paper memory retrieval: the memory bank stores structured readings and retrieves 3-8 relevant paper memories before answering follow-up questions.
 - PDF parsing.
 - Paper card generation: Phase 7 implements deterministic single-paper card generation with Markdown and JSON artifacts.
@@ -205,6 +206,7 @@ Planned entities:
 - PaperCard: structured deep analysis for one paper.
 - BaselineMap: comparative context used by direction review and memory.
 - ResearchSight: structured critique attached to one paper reading.
+- EvidenceSnippet / EvidencePack: metadata, abstract, and paper-card snippets that ground a critique, plus confidence and missing evidence.
 - PaperMemory: searchable compressed record created from a direction-review paper card.
 - DirectionMemory: cumulative summary over up to 30 paper memories for one research direction.
 - Session: one agent run or conversation.
@@ -221,10 +223,11 @@ Expected behavior:
 - Link claims to paper sections, metadata, code repositories, or experiment outputs.
 - Distinguish paper claims from the agent's interpretation.
 - Mark uncertain conclusions.
+- Surface confidence and missing evidence when a critique is based only on metadata, abstract, or generated paper-card content.
 - Preserve search queries and retrieval sources.
 - Avoid inventing citations, datasets, metrics, or experimental results.
 
-The Phase 6 paper table artifact preserves expanded queries, source API names, source URLs, relevance reasons, and retrieval warnings. Phase 7 paper-card artifacts preserve the 12 sections, weakest assumption, minimal reproduction, counterexample, and follow-up idea in structured JSON. Phase 8 decision artifacts preserve true/engineering/pseudo gap labels, novelty risk, feasibility, and experiment plans. Phase 9 adds public release documentation, contribution templates, CI, release notes, and synthetic example artifacts. Phase 10 direction-review artifacts preserve the scope, selected papers, abstract Chinese reading entry, 12-section card content, direction summary, and top-3 self-reading recommendation. Phase 11 memory artifacts preserve the user question, retrieved paper memories, direction memory snapshot, answer, and retrieval warnings. Phase 13 artifacts preserve the direction-level BaselineMap and paper-level ResearchSight critique, while still marking them as candidate-pool and abstract-level analysis unless full-paper evidence is available.
+The Phase 6 paper table artifact preserves expanded queries, source API names, source URLs, relevance reasons, and retrieval warnings. Phase 7 paper-card artifacts preserve the 12 sections, weakest assumption, minimal reproduction, counterexample, and follow-up idea in structured JSON. Phase 8 decision artifacts preserve true/engineering/pseudo gap labels, novelty risk, feasibility, and experiment plans. Phase 9 adds public release documentation, contribution templates, CI, release notes, and synthetic example artifacts. Phase 10 direction-review artifacts preserve the scope, selected papers, abstract Chinese reading entry, 12-section card content, direction summary, and top-3 self-reading recommendation. Phase 11 memory artifacts preserve the user question, retrieved paper memories, direction memory snapshot, answer, and retrieval warnings. Phase 13 artifacts preserve the direction-level BaselineMap and paper-level ResearchSight critique. Phase 14 adds EvidencePack boundaries to these critiques, making explicit whether a judgment is grounded in metadata, abstract, generated paper-card content, or still missing full-paper evidence.
 
 ## Local Data Policy
 

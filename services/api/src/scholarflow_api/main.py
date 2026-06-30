@@ -375,6 +375,7 @@ def create_project_paper_card(project_id: str, payload: PaperCardCreateRequest) 
             project_id=project_id,
             paper_id=payload.paper_id,
             artifact_id=artifact["id"],
+            signals=card.signals.to_dict(),
             sections=[section.to_dict() for section in card.sections],
             weakest_assumption=card.weakest_assumption,
             minimal_reproduction=card.minimal_reproduction,
@@ -576,6 +577,7 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
             DirectionPaperReading(
                 paper=Paper.model_validate(reading.paper),
                 abstract_translation=reading.abstract_translation,
+                signals=reading.card.signals.to_dict(),
                 sections=[section.to_dict() for section in reading.card.sections],
                 research_sight=ResearchSight(**reading.research_sight.to_dict()),
                 weakest_assumption=reading.card.weakest_assumption,
@@ -1147,6 +1149,10 @@ def to_paper_memory_hit(hit) -> PaperMemoryHit:
         direction=memory.get("direction", ""),
         round=int(memory.get("round_index") or 0),
         score=float(hit.score),
+        title_score=float(getattr(hit, "title_score", 0.0)),
+        keyword_score=float(getattr(hit, "keyword_score", 0.0)),
+        section_score=float(getattr(hit, "section_score", 0.0)),
+        priority_score=float(getattr(hit, "priority_score", 0.0)),
         snippets=hit.snippets,
         abstract_translation=memory.get("abstract_translation", ""),
         weakest_assumption=memory.get("weakest_assumption", ""),
@@ -1189,8 +1195,20 @@ def build_research_sight_response(value: str) -> ResearchSight:
         "better_angle": "",
         "baseline_comparison": "",
         "next_step_proposal": "",
+        "evidence_pack": {
+            "evidence_level": "",
+            "confidence": "",
+            "snippets": [],
+            "missing_evidence": [],
+            "grounding_summary": "",
+        },
     }
-    defaults.update({key: str(parsed.get(key, "")) for key in defaults})
+    for key, value in defaults.items():
+        if key == "evidence_pack":
+            if isinstance(parsed.get(key), dict):
+                defaults[key] = parsed[key]
+            continue
+        defaults[key] = str(parsed.get(key, value))
     return ResearchSight(**defaults)
 
 

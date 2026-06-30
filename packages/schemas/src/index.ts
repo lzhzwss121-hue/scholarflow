@@ -112,6 +112,34 @@ export interface ApiPaperCardSection {
   content: string;
 }
 
+export interface ApiPaperSignals {
+  task: string;
+  method: string;
+  dataset: string;
+  metric: string;
+  claim: string;
+  limitation: string;
+  contribution_type: string;
+  missing_signals: string[];
+}
+
+export interface ApiEvidenceSnippet {
+  id: string;
+  source: string;
+  kind: string;
+  text: string;
+  note: string;
+  confidence: string;
+}
+
+export interface ApiEvidencePack {
+  evidence_level: string;
+  confidence: string;
+  snippets: ApiEvidenceSnippet[];
+  missing_evidence: string[];
+  grounding_summary: string;
+}
+
 export interface ApiBaselineReference {
   title: string;
   year: string;
@@ -122,6 +150,9 @@ export interface ApiBaselineReference {
   reason: string;
   strengths: string;
   risks: string;
+  evidence_snippets: ApiEvidenceSnippet[];
+  confidence: string;
+  evidence_gap: string;
 }
 
 export interface ApiBaselineMap {
@@ -134,6 +165,7 @@ export interface ApiBaselineMap {
   evaluation_risks: string[];
   open_questions: string[];
   generated_from: string[];
+  evidence_summary: string;
   curator_notes: string;
 }
 
@@ -147,6 +179,7 @@ export interface ApiResearchSight {
   better_angle: string;
   baseline_comparison: string;
   next_step_proposal: string;
+  evidence_pack: ApiEvidencePack;
 }
 
 export interface ApiPaperCard {
@@ -154,6 +187,7 @@ export interface ApiPaperCard {
   project_id: string;
   paper_id: string | null;
   artifact_id: string | null;
+  signals?: ApiPaperSignals;
   sections: ApiPaperCardSection[];
   weakest_assumption: string;
   minimal_reproduction: string;
@@ -183,6 +217,7 @@ export interface ApiDirectionScope {
 export interface ApiDirectionPaperReading {
   paper: ApiPaper;
   abstract_translation: string;
+  signals?: ApiPaperSignals;
   sections: ApiPaperCardSection[];
   research_sight: ApiResearchSight;
   weakest_assumption: string;
@@ -261,6 +296,10 @@ export interface ApiPaperMemoryHit {
   direction: string;
   round: number;
   score: number;
+  title_score: number;
+  keyword_score: number;
+  section_score: number;
+  priority_score: number;
   snippets: string[];
   abstract_translation: string;
   weakest_assumption: string;

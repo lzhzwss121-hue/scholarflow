@@ -1316,6 +1316,10 @@ function DirectionReviewView({
               </div>
               <div className="baseline-risk-grid">
                 <div>
+                  <strong>证据约束</strong>
+                  <span>{review.baseline_map.evidence_summary}</span>
+                </div>
+                <div>
                   <strong>常见 benchmark</strong>
                   <span>{review.baseline_map.common_benchmarks.slice(0, 5).join(" / ")}</span>
                 </div>
@@ -1427,9 +1431,10 @@ function BaselineReferenceList({
       {references.length ? (
         references.slice(0, 3).map((reference) => (
           <article key={`${title}-${reference.title}`}>
-            <span>{reference.year || "year unknown"}</span>
+            <span>{reference.year || "year unknown"} · {reference.confidence || "unknown"} confidence</span>
             <h4>{reference.title}</h4>
             <p>{reference.reason}</p>
+            <small>{reference.evidence_gap}</small>
           </article>
         ))
       ) : (
@@ -1440,6 +1445,9 @@ function BaselineReferenceList({
 }
 
 function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }) {
+  const signals = reading.signals;
+  const missingSignals = signals?.missing_signals ?? [];
+
   return (
     <section className="direction-detail" aria-label="selected paper detail">
       <div className="direction-detail-header">
@@ -1459,6 +1467,52 @@ function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }
         <p>{reading.abstract_translation}</p>
       </article>
 
+      {signals ? (
+        <article className="paper-signals-panel" aria-label="paper evidence signals">
+          <div className="paper-signals-header">
+            <div>
+              <p className="section-kicker">Paper Signals</p>
+              <h3>论文证据信号</h3>
+            </div>
+            <FileText size={18} />
+          </div>
+          <div className="paper-signals-grid">
+            <div>
+              <strong>任务</strong>
+              <span>{signals.task || "暂无"}</span>
+            </div>
+            <div>
+              <strong>类型</strong>
+              <span>{signals.contribution_type || "unknown"}</span>
+            </div>
+            <div>
+              <strong>方法</strong>
+              <span>{signals.method || "暂无"}</span>
+            </div>
+            <div>
+              <strong>数据集</strong>
+              <span>{signals.dataset || "暂无"}</span>
+            </div>
+            <div>
+              <strong>指标</strong>
+              <span>{signals.metric || "暂无"}</span>
+            </div>
+            <div>
+              <strong>Claim</strong>
+              <span>{signals.claim || "暂无"}</span>
+            </div>
+            <div>
+              <strong>Limitation</strong>
+              <span>{signals.limitation || "暂无"}</span>
+            </div>
+            <div>
+              <strong>缺失字段</strong>
+              <span>{missingSignals.length ? missingSignals.join(", ") : "none"}</span>
+            </div>
+          </div>
+        </article>
+      ) : null}
+
       <article className="research-sight-panel">
         <div className="research-sight-header">
           <div>
@@ -1468,6 +1522,10 @@ function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }
           <BrainCircuit size={18} />
         </div>
         <div className="research-sight-score-grid">
+          <div>
+            <strong>证据等级</strong>
+            <span>{reading.research_sight.evidence_pack.grounding_summary}</span>
+          </div>
           <div>
             <strong>动机锋利度</strong>
             <span>{reading.research_sight.motivation_sharpness}</span>
@@ -1505,6 +1563,34 @@ function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }
           <div>
             <strong>下一步 proposal</strong>
             <p>{reading.research_sight.next_step_proposal}</p>
+          </div>
+        </div>
+        <div className="sight-evidence-grid" aria-label="research sight evidence">
+          <div>
+            <strong>证据片段</strong>
+            {reading.research_sight.evidence_pack.snippets.length ? (
+              reading.research_sight.evidence_pack.snippets.slice(0, 4).map((snippet) => (
+                <article key={`${snippet.source}-${snippet.id}`}>
+                  <span>{snippet.source} · {snippet.kind} · {snippet.confidence}</span>
+                  <p>{snippet.text}</p>
+                  <small>{snippet.note}</small>
+                </article>
+              ))
+            ) : (
+              <p>当前没有可用证据片段。</p>
+            )}
+          </div>
+          <div>
+            <strong>缺失证据</strong>
+            {reading.research_sight.evidence_pack.missing_evidence.length ? (
+              <ul>
+                {reading.research_sight.evidence_pack.missing_evidence.slice(0, 5).map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            ) : (
+              <p>当前没有显式缺失项。</p>
+            )}
           </div>
         </div>
       </article>
@@ -1655,6 +1741,12 @@ function ResearchMemoryView({
                   <span>{hit.paper.year || "year unknown"}</span>
                   <span>{hit.paper.venue || hit.paper.source || "source unknown"}</span>
                 </div>
+                <div className="memory-hit-score-grid" aria-label="memory score breakdown">
+                  <span>title {hit.title_score.toFixed(2)}</span>
+                  <span>keyword {hit.keyword_score.toFixed(2)}</span>
+                  <span>section {hit.section_score.toFixed(2)}</span>
+                  <span>priority {hit.priority_score.toFixed(2)}</span>
+                </div>
                 <p>{hit.snippets[0]}</p>
                 <dl>
                   <div>
@@ -1676,6 +1768,10 @@ function ResearchMemoryView({
                   <div>
                     <dt>更好角度</dt>
                     <dd>{hit.research_sight.better_angle || "暂无 ResearchSight 破局视角"}</dd>
+                  </div>
+                  <div>
+                    <dt>证据等级</dt>
+                    <dd>{hit.research_sight.evidence_pack.grounding_summary || "暂无 EvidencePack"}</dd>
                   </div>
                 </dl>
               </article>

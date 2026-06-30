@@ -11,6 +11,8 @@ ScholarFlow 是一个中文优先的 AI 科研任务流程 Agent，面向人工�
 - 构建 Paper Memory Bank，让后续问题按相关性检索 3-8 篇论文记忆后再回答。
 - 为每个研究方向构建 BaselineMap，整理经典 baseline、近三年强 baseline、异质范式、benchmark 风险和开放问题。
 - 为每篇论文生成 Research Sight，说明为什么好、为什么不好，以及是否存在更好的研究角度。
+- 为 Research Sight 和 BaselineMap 附加证据片段、置信度和缺失证据说明，区分有依据的判断和待验证假设。
+- 从论文标题、摘要和粘贴正文中抽取 PaperSignals：task、method、dataset、metric、claim、limitation 和贡献类型。
 - 生成结构化 Paper Table 和深度论文阅读笔记。
 - 从论文和任务中识别真正的 research gap。
 - 规划一周内可以完成的最小复现实验。
@@ -30,6 +32,8 @@ ScholarFlow 是一个中文优先的 AI 科研任务流程 Agent，面向人工�
   -> 生成结构化 Paper Table
   -> 生成可交互 Deep Paper Card
   -> 为每篇论文加入 Research Sight 科研审美评价
+  -> 附加证据等级、证据片段和缺失证据说明
+  -> 抽取 PaperSignals 并标记缺失证据
   -> 构建可检索 Paper Memory Bank
   -> 基于 3-8 篇命中论文记忆回答后续问题
   -> 分析 gap 和 novelty risk

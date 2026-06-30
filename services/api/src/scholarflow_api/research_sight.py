@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from scholarflow_api.baseline_map import BaselineMap
+from scholarflow_api.evidence import EvidencePack, build_paper_evidence_pack
 
 
 @dataclass
@@ -18,9 +19,12 @@ class ResearchSight:
     better_angle: str
     baseline_comparison: str
     next_step_proposal: str
+    evidence_pack: EvidencePack
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["evidence_pack"] = self.evidence_pack.to_dict()
+        return data
 
 
 def build_research_sight(
@@ -34,6 +38,7 @@ def build_research_sight(
     baseline_reference = pick_baseline_reference(paper, baseline_map)
     method_family = infer_method_family(text)
     benchmark_risk = baseline_map.evaluation_risks[0] if baseline_map.evaluation_risks else "当前评估风险需要继续补充。"
+    evidence_pack = build_paper_evidence_pack(paper, sections, direction)
 
     return ResearchSight(
         motivation_sharpness=build_motivation_sharpness(title, text, direction),
@@ -45,6 +50,7 @@ def build_research_sight(
         better_angle=build_better_angle(title, text, baseline_map, method_family),
         baseline_comparison=build_baseline_comparison(title, baseline_reference, method_family),
         next_step_proposal=build_next_step_proposal(title, direction, baseline_map, method_family),
+        evidence_pack=evidence_pack,
     )
 
 

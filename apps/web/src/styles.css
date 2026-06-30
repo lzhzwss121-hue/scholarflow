@@ -983,6 +983,7 @@ td a {
 }
 
 .baseline-map-panel,
+.paper-signals-panel,
 .research-sight-panel {
   border: 1px solid #dce3eb;
   border-radius: 8px;
@@ -993,6 +994,7 @@ td a {
 }
 
 .baseline-map-header,
+.paper-signals-header,
 .research-sight-header {
   display: flex;
   align-items: flex-start;
@@ -1001,6 +1003,7 @@ td a {
 }
 
 .baseline-map-header h3,
+.paper-signals-header h3,
 .research-sight-header h3 {
   margin: 0;
   color: #263545;
@@ -1043,6 +1046,7 @@ td a {
 
 .baseline-reference-list > strong,
 .baseline-risk-grid strong,
+.paper-signals-grid strong,
 .research-sight-score-grid strong,
 .research-sight-critique strong {
   color: #263545;
@@ -1080,11 +1084,24 @@ td a {
   line-height: 1.55;
 }
 
+.baseline-reference-list small {
+  display: block;
+  margin-top: 5px;
+  color: #7a8797;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .baseline-risk-grid,
+.paper-signals-grid,
 .research-sight-score-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+}
+
+.paper-signals-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .research-sight-score-grid {
@@ -1092,6 +1109,7 @@ td a {
 }
 
 .baseline-risk-grid div,
+.paper-signals-grid div,
 .research-sight-score-grid div,
 .research-sight-critique div {
   border: 1px solid #dce3eb;
@@ -1101,6 +1119,7 @@ td a {
 }
 
 .baseline-risk-grid span,
+.paper-signals-grid span,
 .research-sight-score-grid span,
 .research-sight-critique p {
   display: block;
@@ -1113,6 +1132,58 @@ td a {
 .research-sight-critique {
   display: grid;
   gap: 10px;
+}
+
+.sight-evidence-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  gap: 10px;
+}
+
+.sight-evidence-grid > div {
+  border: 1px solid #dce3eb;
+  border-radius: 8px;
+  padding: 10px;
+  background: #ffffff;
+}
+
+.sight-evidence-grid strong {
+  color: #263545;
+  font-size: 12px;
+}
+
+.sight-evidence-grid article {
+  border-top: 1px solid #e7ebf0;
+  padding-top: 8px;
+  margin-top: 8px;
+}
+
+.sight-evidence-grid article:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.sight-evidence-grid span,
+.sight-evidence-grid small {
+  display: block;
+  color: #7a8797;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.sight-evidence-grid p {
+  margin: 5px 0 0;
+  color: #526170;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.sight-evidence-grid ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: #526170;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .recommendation-panel {
@@ -1452,6 +1523,24 @@ td a {
   background: #edf1f6;
   font-size: 11px;
   font-weight: 800;
+}
+
+.memory-hit-score-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.memory-hit-score-grid span {
+  min-width: 0;
+  border-radius: 6px;
+  padding: 5px 6px;
+  color: #526170;
+  background: #f5f7fa;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .memory-answer-panel {
@@ -2151,7 +2240,9 @@ td a {
   .direction-scope-grid,
   .memory-control-grid,
   .memory-hit-list,
+  .paper-signals-grid,
   .research-sight-score-grid,
+  .sight-evidence-grid,
   .reader-layout,
   .paper-reader-grid,
   .experiment-detail dl,
@@ -2190,6 +2281,7 @@ td a {
   .direction-summary-header,
   .memory-answer-header,
   .memory-control-header,
+  .paper-signals-header,
   .research-sight-header,
   .runtime-heading,
   .paper-reader-header,
@@ -2217,6 +2309,10 @@ td a {
 
   .direction-stat-grid {
     justify-content: flex-start;
+  }
+
+  .memory-hit-score-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .toolbar {

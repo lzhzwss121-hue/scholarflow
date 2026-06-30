@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
+
+from scholarflow_api.evidence import EvidenceSnippet, build_baseline_reference_evidence
 
 
 TOP_VENUE_KEYWORDS = [
@@ -68,9 +70,25 @@ class BaselineReference:
     reason: str
     strengths: str
     risks: str
+    evidence_snippets: list[EvidenceSnippet]
+    confidence: str
+    evidence_gap: str
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "title": self.title,
+            "year": self.year,
+            "venue": self.venue,
+            "source": self.source,
+            "url": self.url,
+            "category": self.category,
+            "reason": self.reason,
+            "strengths": self.strengths,
+            "risks": self.risks,
+            "evidence_snippets": [snippet.to_dict() for snippet in self.evidence_snippets],
+            "confidence": self.confidence,
+            "evidence_gap": self.evidence_gap,
+        }
 
 
 @dataclass
@@ -84,6 +102,7 @@ class BaselineMap:
     evaluation_risks: list[str]
     open_questions: list[str]
     generated_from: list[str]
+    evidence_summary: str
     curator_notes: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -97,6 +116,7 @@ class BaselineMap:
             "evaluation_risks": self.evaluation_risks,
             "open_questions": self.open_questions,
             "generated_from": self.generated_from,
+            "evidence_summary": self.evidence_summary,
             "curator_notes": self.curator_notes,
         }
 
@@ -107,8 +127,8 @@ def build_baseline_map(direction: str, candidate_papers: list[dict[str, Any]], s
     scored = sorted(papers, key=lambda paper: score_reference_candidate(paper, normalized_direction), reverse=True)
     family_buckets = group_by_method_family(scored)
     recent = select_recent_strong_baselines(scored, normalized_direction, limit=5)
-    classic = select_classic_baselines(scored, recent, limit=4)
-    alternatives = select_alternative_paradigms(family_buckets, recent, classic, limit=5)
+    classic = select_classic_baselines(scored, recent, normalized_direction, limit=4)
+    alternatives = select_alternative_paradigms(family_buckets, recent, classic, normalized_direction, limit=5)
     benchmarks = infer_common_benchmarks(normalized_direction, scored)
     risks = infer_evaluation_risks(normalized_direction, benchmarks, scored)
     questions = infer_open_questions(normalized_direction, alternatives, risks)
@@ -124,6 +144,7 @@ def build_baseline_map(direction: str, candidate_papers: list[dict[str, Any]], s
         evaluation_risks=risks,
         open_questions=questions,
         generated_from=generated_from,
+        evidence_summary=build_baseline_evidence_summary(scored, recent, classic, alternatives),
         curator_notes=(
             "BaselineMap 当前由检索候选池和本轮入选论文启发式生成；它是可追溯的方向背景包，"
             "后续可替换为引用追踪、Best Paper 先验库和向量检索。"
@@ -148,6 +169,8 @@ def render_baseline_map_markdown(baseline_map: BaselineMap) -> str:
         "\n".join(f"- {item}" for item in baseline_map.evaluation_risks),
         "## Open Questions",
         "\n".join(f"- {item}" for item in baseline_map.open_questions),
+        "## Evidence Summary",
+        baseline_map.evidence_summary,
         "## Curator Notes",
         baseline_map.curator_notes,
     ]
@@ -158,7 +181,14 @@ def render_reference_list(references: list[BaselineReference]) -> str:
     if not references:
         return "- No reliable reference found in current candidate pool."
     return "\n".join(
-        f"- **{item.title}** ({item.year or 'year unknown'}, {item.venue or item.source or 'source unknown'}): {item.reason}"
+        " ".join(
+            [
+                f"- **{item.title}** ({item.year or 'year unknown'}, {item.venue or item.source or 'source unknown'}):",
+                item.reason,
+                f"Confidence: {item.confidence}.",
+                f"Evidence gap: {item.evidence_gap}",
+            ],
+        )
         for item in references
     )
 
@@ -185,6 +215,7 @@ def select_recent_strong_baselines(papers: list[dict[str, Any]], direction: str,
             paper,
             "recent_strong",
             build_reason(paper, direction, "近三年强相关候选，可作为当前路线的直接比较对象。"),
+            direction,
         )
         for paper in recent[:limit]
     ]
@@ -193,6 +224,7 @@ def select_recent_strong_baselines(papers: list[dict[str, Any]], direction: str,
 def select_classic_baselines(
     papers: list[dict[str, Any]],
     recent: list[BaselineReference],
+    direction: str,
     limit: int,
 ) -> list[BaselineReference]:
     recent_titles = {normalize_title_key(item.title) for item in recent}
@@ -210,6 +242,7 @@ def select_classic_baselines(
             paper,
             "classic",
             "在候选池中更像该方向的基础参照；用于判断新论文是否真的超越了已有问题定义或方法范式。",
+            direction,
         )
         for paper in older_or_foundational[:limit]
     ]
@@ -219,6 +252,7 @@ def select_alternative_paradigms(
     family_buckets: dict[str, list[dict[str, Any]]],
     recent: list[BaselineReference],
     classic: list[BaselineReference],
+    direction: str,
     limit: int,
 ) -> list[BaselineReference]:
     used = {normalize_title_key(item.title) for item in [*recent, *classic]}
@@ -233,6 +267,7 @@ def select_alternative_paradigms(
                     paper,
                     "alternative_paradigm",
                     f"代表 `{family}` 路线，可用于检查目标论文是否只是同范式内微调，或是否存在降维打击角度。",
+                    direction,
                 ),
             )
             used.add(key)
@@ -299,8 +334,9 @@ def infer_open_questions(direction: str, alternatives: list[BaselineReference], 
     return questions[:5]
 
 
-def to_reference(paper: dict[str, Any], category: str, reason: str) -> BaselineReference:
+def to_reference(paper: dict[str, Any], category: str, reason: str, direction: str) -> BaselineReference:
     text = paper_text(paper)
+    snippets, confidence, gap = build_baseline_reference_evidence(paper, direction, category)
     return BaselineReference(
         title=normalize_space(paper.get("title", "")) or "Untitled paper",
         year=normalize_space(str(paper.get("year", ""))),
@@ -311,6 +347,27 @@ def to_reference(paper: dict[str, Any], category: str, reason: str) -> BaselineR
         reason=reason,
         strengths=build_strength_signal(text),
         risks=build_risk_signal(text),
+        evidence_snippets=snippets,
+        confidence=confidence,
+        evidence_gap=gap,
+    )
+
+
+def build_baseline_evidence_summary(
+    scored: list[dict[str, Any]],
+    recent: list[BaselineReference],
+    classic: list[BaselineReference],
+    alternatives: list[BaselineReference],
+) -> str:
+    reference_count = len(recent) + len(classic) + len(alternatives)
+    confidence_counts: dict[str, int] = {"high": 0, "medium": 0, "low": 0}
+    for reference in [*recent, *classic, *alternatives]:
+        confidence_counts[reference.confidence] = confidence_counts.get(reference.confidence, 0) + 1
+    return (
+        f"BaselineMap 基于 {len(scored)} 篇候选论文生成，共形成 {reference_count} 个对比参照。"
+        f" 置信度分布：high={confidence_counts.get('high', 0)}, "
+        f"medium={confidence_counts.get('medium', 0)}, low={confidence_counts.get('low', 0)}。"
+        " 当前证据主要来自 metadata、abstract 和候选池相关性；尚未接入 citation graph、全文 PDF、代码仓库和 meta-review。"
     )
 
 

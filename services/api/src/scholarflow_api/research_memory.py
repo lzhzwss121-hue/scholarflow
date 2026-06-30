@@ -6,21 +6,41 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from scholarflow_api.direction_review import normalize_space, significant_terms
+from scholarflow_api.text_utils import extract_terms, normalize_space, normalize_terms, score_term_overlap
 
 
 @dataclass
 class PaperMemoryHit:
     memory: dict[str, Any]
     score: float
+    title_score: float
+    keyword_score: float
+    section_score: float
+    priority_score: float
     snippets: list[str]
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "memory": self.memory,
             "score": self.score,
+            "title_score": self.title_score,
+            "keyword_score": self.keyword_score,
+            "section_score": self.section_score,
+            "priority_score": self.priority_score,
             "snippets": self.snippets,
         }
+
+
+@dataclass
+class PaperMemoryScore:
+    title_score: float
+    keyword_score: float
+    section_score: float
+    priority_score: float
+
+    @property
+    def total(self) -> float:
+        return round(self.title_score + self.keyword_score + self.section_score + self.priority_score, 4)
 
 
 @dataclass
@@ -442,15 +462,19 @@ def search_memory_records(
     top_k: int,
     allow_weak: bool = False,
 ) -> list[PaperMemoryHit]:
-    terms = significant_terms(question)
+    terms = set(extract_terms(question, limit=16))
     scored: list[PaperMemoryHit] = []
     for record in records:
-        score = score_memory_record(record, terms, question)
-        if score > 0 or allow_weak:
+        breakdown = score_memory_record(record, terms, question)
+        if breakdown.total > 0 or allow_weak:
             scored.append(
                 PaperMemoryHit(
                     memory=record,
-                    score=score,
+                    score=breakdown.total,
+                    title_score=breakdown.title_score,
+                    keyword_score=breakdown.keyword_score,
+                    section_score=breakdown.section_score,
+                    priority_score=breakdown.priority_score,
                     snippets=build_memory_snippets(record, terms),
                 ),
             )
@@ -458,24 +482,29 @@ def search_memory_records(
     return scored[:top_k]
 
 
-def score_memory_record(record: dict[str, Any], terms: set[str], question: str) -> float:
-    text = str(record.get("memory_text", "")).lower()
-    title = str(record.get("title", "")).lower()
-    keywords = set(safe_json_list(record.get("keywords_json", "[]")))
-    score = 0.0
-    for term in terms:
-        if term in title:
-            score += 0.8
-        if term in keywords:
-            score += 0.55
-        occurrences = text.count(term)
-        if occurrences:
-            score += min(0.9, occurrences * 0.12)
-    if int(record.get("self_read_priority") or 0) == 1:
-        score += 0.15
-    if normalize_space(question).lower() in text:
-        score += 0.5
-    return round(score, 4)
+def score_memory_record(record: dict[str, Any], terms: set[str], question: str) -> PaperMemoryScore:
+    title = str(record.get("title", ""))
+    text = str(record.get("memory_text", ""))
+    keywords = normalize_terms(safe_json_list(record.get("keywords_json", "[]")))
+    title_overlap = score_term_overlap(title, terms, weight=0.42, max_score=1.6)
+    keyword_overlap = score_term_overlap(" ".join(sorted(keywords)), terms, weight=0.36, max_score=1.4)
+    section_overlap = score_term_overlap(text, terms, weight=0.08, max_score=1.4)
+    normalized_question = normalize_space(question)
+    if len(normalized_question) >= 12:
+        section_overlap.score = round(
+            min(
+                1.7,
+                section_overlap.score
+                + score_term_overlap(text, {normalized_question}, weight=0.3, max_score=0.3).score,
+            ),
+            4,
+        )
+    return PaperMemoryScore(
+        title_score=title_overlap.score,
+        keyword_score=keyword_overlap.score,
+        section_score=section_overlap.score,
+        priority_score=0.15 if int(record.get("self_read_priority") or 0) == 1 else 0.0,
+    )
 
 
 def build_memory_snippets(record: dict[str, Any], terms: set[str]) -> list[str]:
@@ -483,8 +512,7 @@ def build_memory_snippets(record: dict[str, Any], terms: set[str]) -> list[str]:
     sentences = re.split(r"(?<=[。！？.!?])\s+", text)
     snippets: list[str] = []
     for sentence in sentences:
-        lower = sentence.lower()
-        if terms and not any(term in lower for term in terms):
+        if terms and not score_term_overlap(sentence, terms, weight=0.1, max_score=1.0).matched_terms:
             continue
         snippets.append(sentence[:260])
         if len(snippets) >= 3:
@@ -528,8 +556,8 @@ def build_memory_answer(
 
 def render_research_memory_answer_markdown(answer: ResearchMemoryAnswer) -> str:
     rows = [
-        "| Rank | Paper | Score | Round | Snippet |",
-        "| --- | --- | --- | --- | --- |",
+        "| Rank | Paper | Score | Breakdown | Round | Snippet |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     for index, hit in enumerate(answer.hits, start=1):
         memory = hit.memory
@@ -539,6 +567,10 @@ def render_research_memory_answer_markdown(answer: ResearchMemoryAnswer) -> str:
                     f"| {index}",
                     escape_table(memory.get("title", "")),
                     f"{hit.score:.2f}",
+                    escape_table(
+                        f"title={hit.title_score:.2f}, keyword={hit.keyword_score:.2f}, "
+                        f"section={hit.section_score:.2f}, priority={hit.priority_score:.2f}",
+                    ),
                     str(memory.get("round_index", "")),
                     escape_table(hit.snippets[0] if hit.snippets else ""),
                 ],
@@ -638,9 +670,7 @@ def parse_round_index(title: str) -> int:
 
 
 def extract_memory_keywords(text: str, limit: int = 18) -> list[str]:
-    terms = significant_terms(text)
-    ranked = sorted(terms, key=lambda term: (-text.lower().count(term), term))
-    return ranked[:limit]
+    return extract_terms(text, limit=limit)
 
 
 def build_memory_id(project_id: str, paper_id: str, title: str, direction: str) -> str:

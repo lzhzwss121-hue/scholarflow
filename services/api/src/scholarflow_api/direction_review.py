@@ -67,6 +67,7 @@ class DirectionPaperReading:
         return {
             "paper": self.paper,
             "abstract_translation": self.abstract_translation,
+            "signals": self.card.signals.to_dict(),
             "card": self.card.to_dict(),
             "research_sight": self.research_sight.to_dict(),
             "why_selected": self.why_selected,

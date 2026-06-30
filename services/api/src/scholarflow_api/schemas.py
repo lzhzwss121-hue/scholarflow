@@ -100,6 +100,34 @@ class PaperCardSection(BaseModel):
     content: str
 
 
+class PaperSignals(BaseModel):
+    task: str = ""
+    method: str = ""
+    dataset: str = ""
+    metric: str = ""
+    claim: str = ""
+    limitation: str = ""
+    contribution_type: str = ""
+    missing_signals: list[str] = Field(default_factory=list)
+
+
+class EvidenceSnippet(BaseModel):
+    id: str = ""
+    source: str = ""
+    kind: str = ""
+    text: str = ""
+    note: str = ""
+    confidence: str = ""
+
+
+class EvidencePack(BaseModel):
+    evidence_level: str = ""
+    confidence: str = ""
+    snippets: list[EvidenceSnippet] = Field(default_factory=list)
+    missing_evidence: list[str] = Field(default_factory=list)
+    grounding_summary: str = ""
+
+
 class BaselineReference(BaseModel):
     title: str
     year: str
@@ -110,6 +138,9 @@ class BaselineReference(BaseModel):
     reason: str
     strengths: str
     risks: str
+    evidence_snippets: list[EvidenceSnippet] = Field(default_factory=list)
+    confidence: str = ""
+    evidence_gap: str = ""
 
 
 class BaselineMap(BaseModel):
@@ -122,6 +153,7 @@ class BaselineMap(BaseModel):
     evaluation_risks: list[str]
     open_questions: list[str]
     generated_from: list[str]
+    evidence_summary: str = ""
     curator_notes: str
 
 
@@ -135,6 +167,7 @@ class ResearchSight(BaseModel):
     better_angle: str
     baseline_comparison: str
     next_step_proposal: str
+    evidence_pack: EvidencePack = Field(default_factory=EvidencePack)
 
 
 class PaperCard(BaseModel):
@@ -142,6 +175,7 @@ class PaperCard(BaseModel):
     project_id: str
     paper_id: str | None
     artifact_id: str | None
+    signals: PaperSignals = Field(default_factory=PaperSignals)
     sections: list[PaperCardSection]
     weakest_assumption: str
     minimal_reproduction: str
@@ -171,6 +205,7 @@ class DirectionScope(BaseModel):
 class DirectionPaperReading(BaseModel):
     paper: Paper
     abstract_translation: str
+    signals: PaperSignals = Field(default_factory=PaperSignals)
     sections: list[PaperCardSection]
     research_sight: ResearchSight
     weakest_assumption: str
@@ -249,6 +284,10 @@ class PaperMemoryHit(BaseModel):
     direction: str
     round: int
     score: float
+    title_score: float = 0.0
+    keyword_score: float = 0.0
+    section_score: float = 0.0
+    priority_score: float = 0.0
     snippets: list[str]
     abstract_translation: str
     weakest_assumption: str

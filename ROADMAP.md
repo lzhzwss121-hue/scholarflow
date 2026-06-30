@@ -219,3 +219,32 @@ Planned deliverables:
 - React UI panels for BaselineMap and ResearchSight.
 
 Status: complete for heuristic candidate-pool based BaselineMap and deterministic ResearchSight generation. Citation-graph baseline discovery, Best Paper meta-review RAG, and LLM multi-agent execution remain future work.
+
+## Phase 14: Evidence-Grounded Sight
+
+Goal: prevent research-aesthetic critiques from being mistaken for fully verified claims.
+
+Planned deliverables:
+
+- Shared `EvidenceSnippet` and `EvidencePack` structures.
+- Baseline references with evidence snippets, confidence, and evidence gaps.
+- ResearchSight with evidence level, confidence, supporting snippets, and missing-evidence notes.
+- UI sections that show what each critique is grounded in.
+- Paper Memory integration so retrieved critique carries its evidence boundary.
+
+Status: complete for metadata/abstract/paper-card evidence packs. Full-PDF evidence extraction, citation graph grounding, code evidence, and venue verification remain future work.
+
+## Phase 15: Trustworthiness Hardening
+
+Goal: reduce template-like outputs and make ScholarFlow explain retrieval matches, evidence boundaries, and reproducibility anchors.
+
+Planned deliverables:
+
+- Shared text utilities for term extraction and word-boundary overlap scoring.
+- Paper Memory score breakdown for title, keyword, section, and priority signals.
+- Domain phrase whitelist for trustworthy AI and multimodal evaluation terms.
+- `PaperSignals` extraction for task, method, dataset, metric, claim, limitation, and contribution type.
+- Evidence-driven Deep Paper Card sections that degrade to "insufficient evidence" when method or experiment details are missing.
+- Paper detail UI that shows extracted paper signals before long-form analysis.
+
+Status: Phase 15.1 and 15.2 are complete for heuristic term extraction and abstract/metadata/pasted-text paper signals. ResearchSight signal integration, experiment-anchor selection, real agent tools, and project switching remain future phases.

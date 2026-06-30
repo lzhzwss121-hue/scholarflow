@@ -17,8 +17,24 @@ class PaperCardSection:
 
 
 @dataclass
+class PaperSignals:
+    task: str
+    method: str
+    dataset: str
+    metric: str
+    claim: str
+    limitation: str
+    contribution_type: str
+    missing_signals: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class DeepPaperCard:
     paper_title: str
+    signals: PaperSignals
     sections: list[PaperCardSection]
     weakest_assumption: str
     minimal_reproduction: str
@@ -28,6 +44,7 @@ class DeepPaperCard:
     def to_dict(self) -> dict[str, Any]:
         return {
             "paper_title": self.paper_title,
+            "signals": self.signals.to_dict(),
             "sections": [section.to_dict() for section in self.sections],
             "weakest_assumption": self.weakest_assumption,
             "minimal_reproduction": self.minimal_reproduction,
@@ -57,35 +74,36 @@ def generate_deep_paper_card(paper: dict[str, Any], extra_context: str = "") -> 
     abstract = normalize_space(paper.get("abstract") or "")
     venue = normalize_space(paper.get("venue") or paper.get("source") or "unknown venue")
     year = normalize_space(str(paper.get("year") or "unknown year"))
-    authors = normalize_space(paper.get("authors") or "unknown authors")
     context = normalize_space(f"{abstract} {extra_context}")
+    signals = extract_paper_signals(title=title, abstract=abstract, paper_text=extra_context, venue=venue)
     focus = infer_focus(title, context)
-    limitation = infer_limitation(focus)
-    weakest_assumption = infer_weakest_assumption(focus)
-    minimal_reproduction = build_minimal_reproduction(focus, title)
-    counterexample = build_counterexample(focus)
-    follow_up = build_follow_up_idea(focus)
+    limitation = signals.limitation if has_signal(signals.limitation) else infer_limitation(focus)
+    weakest_assumption = build_weakest_assumption(focus, signals)
+    minimal_reproduction = build_minimal_reproduction(signals, title)
+    counterexample = build_counterexample(signals, focus)
+    follow_up = build_follow_up_idea(signals, focus)
+    signal_summary = render_signal_summary(signals)
 
     sections = [
         PaperCardSection(
             "research_problem",
             "1. 研究问题与背景",
             (
-                f"论文 `{title}` ({year}, {venue}) 关注的问题可以先理解为：{focus}。"
-                f" 从背景上看，这类工作重要是因为 AI 系统的整体分数经常掩盖具体失败模式，"
-                f"而科研任务需要知道模型为什么成功、在哪里失败、失败是否可复现。"
-                f" 当前输入中的摘要线索为：{summarize_context(context)}"
-                f" 解决这个问题的价值在于把模糊的能力判断转成可比较、可验证、可复用的研究资产。"
+                f"论文 `{title}` ({year}, {venue}) 的可见任务信号是：{signals.task}。"
+                f" ScholarFlow 从标题、摘要和可选正文中抽到的关键信号为：{signal_summary}。"
+                "这个问题重要与否不应只看论文声称，而要看它是否能把一个真实失败模式、任务瓶颈或评价缺口变成可验证对象。"
+                f"当前摘要/正文线索为：{summarize_context(context)}"
             ),
         ),
         PaperCardSection(
             "prior_work",
             "2. 已有研究与不足",
             (
-                f"这个问题通常并不是完全没人做过，而是之前的解决方式存在 `{limitation}`。"
-                f" 典型 prior work 往往依赖单一 benchmark、最终准确率或粗粒度人工标签。"
-                f"这些做法可以回答“模型整体是否更强”，但不一定能回答“失败来自数据、证据、指标还是推理路径”。"
-                f"因此本论文真正要补的是一个更可诊断的研究切口，而不只是再报一个分数。"
+                f"当前可见不足信号：{limitation}。"
+                f"如果这篇论文是 `{signals.contribution_type}` 类型工作，需要检查它是否真的补上了 prior work 的关键缺口："
+                f"数据集/benchmark 是否明确（{signals.dataset}），指标是否能测到目标能力（{signals.metric}），"
+                f"核心 claim 是否能被实验闭环支持（{signals.claim}）。"
+                f"{missing_signal_sentence(signals, ['dataset', 'metric', 'claim'])}"
             ),
         ),
         PaperCardSection(
@@ -93,57 +111,41 @@ def generate_deep_paper_card(paper: dict[str, Any], extra_context: str = "") -> 
             "3. 作者可能的思考路径重建",
             (
                 "以下是 ScholarFlow 的推断性重建，不把论文自己的贡献倒用为前提："
-                f" 研究者可能先观察到 `{focus}` 中存在稳定但未被充分解释的失败模式；"
-                "再看到已有 benchmark 或方法只能给出粗粒度结论，无法定位具体失败原因；"
-                "于是自然会想到把问题拆成更小的可观测变量，例如输入条件、证据需求、输出质量、评价指标和反例集合。"
-                "这个思路的 inspiration 更可能来自 prior work 的盲点和实验观察，而不是突然提出一个全新模块。"
+                f"研究者可能先从 `{signals.task}` 中观察到 {limitation}；"
+                f"再发现已有工作无法同时解释任务、方法、数据、指标和 claim 的对应关系。"
+                f"在这种前提下，比较自然的思路是围绕 `{signals.claim}` 设计一个更可诊断的切口，"
+                "而不是先假设作者的方法一定正确。"
+                f"{missing_signal_sentence(signals, ['method', 'dataset', 'metric'])}"
             ),
         ),
         PaperCardSection(
             "intuition",
             "4. 核心 Intuition",
             (
-                f"核心 intuition 是：不要只问模型是否表现好，而要问 `{focus}` 是否能被明确暴露、测量和反驳。"
-                "换句话说，论文的本质不是“让模型更大”，而是让研究对象变得更可诊断。"
-                "这个 idea 合理，是因为很多 AI 失败并不会体现在最终平均分上，而会体现在特定输入、证据链或评价切片中。"
+                f"核心 intuition：用 `{signals.method}` 去处理 `{signals.task}`，并通过 `{signals.metric}` 在 `{signals.dataset}` 上验证 `{signals.claim}`。"
+                "如果上述四个环节都清楚，这篇论文的 idea 才能从“看起来合理”变成“可验证”。"
+                f"{missing_signal_sentence(signals, ['method', 'dataset', 'metric', 'claim'])}"
             ),
         ),
         PaperCardSection(
             "method_pipeline",
             "5. 方法 Pipeline 与真实例子",
-            (
-                "Input: 一篇论文的任务设定、摘要、实验 claim 和候选样本。\n"
-                f"Processing: 先识别 `{focus}`，再拆出该问题依赖的输入条件、模型行为、评价标准和失败模式。\n"
-                "Intermediate states: 形成 paper table、claim list、failure-mode list、可复现实验子集。\n"
-                "Output: 一个能够说明问题、方法、实验逻辑和弱点的 structured paper card。\n"
-                "例子：如果输入是一篇 VLM hallucination benchmark 论文，处理过程应把“答案是否正确”和“视觉证据是否被正确使用”分开，"
-                "输出则应包含哪些样本最能暴露幻觉、哪些指标可能失真，以及怎样用一周时间验证一个核心 claim。"
-            ),
+            build_method_pipeline_section(signals),
         ),
         PaperCardSection(
             "math_theory",
             "6. 数学与理论解释",
-            build_math_section(focus),
+            build_math_section(focus, signals),
         ),
         PaperCardSection(
             "experiment_logic",
             "7. 实验逻辑与 Claim 验证",
-            (
-                "Question: 论文提出的诊断切口是否真的能暴露原有方法看不到的问题？\n"
-                "Experiment: 应设计对照实验，把整体指标、分层指标、失败样本和 baseline 行为分开观察。\n"
-                "Answer: 如果新切口能稳定发现 baseline 的隐藏失败，并且这些失败不是标注噪声或数据偶然性造成的，"
-                "那么实验支持论文 claim；否则 claim 只说明该数据集上有现象，并不足以证明方法具有一般性。"
-            ),
+            build_experiment_logic_section(signals),
         ),
         PaperCardSection(
             "takeaways",
             "8. Take-aways",
-            (
-                f"方法层面：围绕 `{focus}` 的工作应优先建立可诊断对象，而不是只优化平均分。"
-                " 实验层面：claim 需要用对照、分层和反例来验证。"
-                " 研究定位层面：强 idea 往往来自“已有评价无法暴露某类失败”的具体缺口。"
-                " 可迁移经验：把复杂能力拆成可观测变量，是从读论文走向做研究的重要步骤。"
-            ),
+            build_takeaways_section(signals, focus),
         ),
         PaperCardSection(
             "weakest_assumption",
@@ -169,12 +171,283 @@ def generate_deep_paper_card(paper: dict[str, Any], extra_context: str = "") -> 
 
     return DeepPaperCard(
         paper_title=title,
+        signals=signals,
         sections=sections,
         weakest_assumption=weakest_assumption,
         minimal_reproduction=minimal_reproduction,
         counterexample=counterexample,
         follow_up_idea=follow_up,
     )
+
+
+INSUFFICIENT_PREFIX = "当前证据不足"
+
+DATASET_NAMES = [
+    "MMBench",
+    "MMMU",
+    "MM-Vet",
+    "POPE",
+    "HallusionBench",
+    "LLaVA-Bench",
+    "SEED-Bench",
+    "RealWorldQA",
+    "ScienceQA",
+    "MathVista",
+    "ChartQA",
+    "DocVQA",
+    "TextVQA",
+    "VizWiz",
+    "VQA v2",
+    "OK-VQA",
+    "A-OKVQA",
+    "GQA",
+    "RefCOCO",
+    "COCO",
+    "ImageNet",
+    "Set5",
+    "Set14",
+    "BSD100",
+    "Urban100",
+    "Manga109",
+    "DIV2K",
+]
+
+METRIC_NAMES = [
+    "accuracy",
+    "acc",
+    "F1",
+    "precision",
+    "recall",
+    "AUC",
+    "mAP",
+    "IoU",
+    "win rate",
+    "human evaluation",
+    "PSNR",
+    "SSIM",
+    "LPIPS",
+    "FID",
+    "BLEU",
+    "ROUGE",
+    "CIDEr",
+    "faithfulness",
+    "grounding accuracy",
+    "hallucination rate",
+]
+
+METHOD_MARKERS = [
+    "we propose",
+    "we introduce",
+    "we present",
+    "our method",
+    "our framework",
+    "our model",
+    "architecture",
+    "algorithm",
+    "pipeline",
+    "training",
+    "decoding",
+    "prompt",
+]
+
+CLAIM_MARKERS = [
+    "we show",
+    "we demonstrate",
+    "outperform",
+    "improve",
+    "achieve",
+    "state-of-the-art",
+    "sota",
+    "effective",
+    "robust",
+    "reveals",
+    "find that",
+    "we find",
+]
+
+LIMITATION_MARKERS = [
+    "limitation",
+    "limited",
+    "however",
+    "challenge",
+    "failure",
+    "fails",
+    "bias",
+    "shortcut",
+    "spurious",
+    "mismatch",
+    "hides",
+    "brittle",
+    "inadequate",
+    "gap",
+]
+
+
+def extract_paper_signals(title: str, abstract: str, paper_text: str = "", venue: str = "") -> PaperSignals:
+    combined = normalize_space(f"{title}. {abstract} {paper_text}")
+    evidence_text = normalize_space(f"{abstract} {paper_text}") or combined
+    contribution_type = infer_contribution_type(title, combined, venue)
+    task = extract_task_signal(title, abstract, combined, contribution_type)
+    method = extract_method_signal(evidence_text, contribution_type)
+    dataset = extract_named_signal(combined, DATASET_NAMES, "未发现明确 dataset/benchmark 名称")
+    metric = extract_named_signal(combined, METRIC_NAMES, "未发现明确 metric/evaluation 指标")
+    claim = extract_claim_signal(evidence_text, title)
+    limitation = extract_limitation_signal(evidence_text)
+    signals = PaperSignals(
+        task=task,
+        method=method,
+        dataset=dataset,
+        metric=metric,
+        claim=claim,
+        limitation=limitation,
+        contribution_type=contribution_type,
+        missing_signals=[],
+    )
+    signals.missing_signals = [
+        field
+        for field in ["method", "dataset", "metric", "claim", "limitation"]
+        if not has_signal(getattr(signals, field))
+    ]
+    return signals
+
+
+def infer_contribution_type(title: str, text: str, venue: str) -> str:
+    lower = f"{title} {text} {venue}".lower()
+    if any(marker in lower for marker in ["survey", "review", "overview", "taxonomy"]):
+        return "survey"
+    if any(marker in lower for marker in ["benchmark", "dataset", "evaluation", "eval"]):
+        return "benchmark"
+    if any(marker in lower for marker in ["model", "architecture", "framework", "method", "algorithm", "training", "decoding"]):
+        return "method"
+    if any(marker in lower for marker in ["agent", "workflow", "system"]):
+        return "system"
+    return "unknown"
+
+
+def extract_task_signal(title: str, abstract: str, text: str, contribution_type: str) -> str:
+    lower = text.lower()
+    if contribution_type == "survey":
+        return f"围绕 `{title}` 的文献图谱、问题分类或研究脉络梳理"
+    match = re.search(r"\bfor\s+([^:.;!?]{4,120})", title, flags=re.IGNORECASE)
+    if match:
+        return truncate_text(match.group(1))
+    if "hallucination" in lower or "幻觉" in lower:
+        return "vision-language model hallucination 的检测、评估或缓解"
+    if "visual grounding" in lower or "grounded" in lower or "evidence" in lower or "faithful" in lower:
+        return "模型输出是否与可验证视觉证据一致"
+    if "benchmark" in lower or "evaluation" in lower:
+        return "benchmark/evaluation 是否真实测到目标 AI 能力"
+    if "super-resolution" in lower or "image restoration" in lower:
+        return "图像恢复/超分辨率中的质量提升与可部署性问题"
+    if "agent" in lower or "workflow" in lower:
+        return "科研 agent 的流程规划、工具调用与结果追踪"
+    return infer_focus(title, abstract)
+
+
+def extract_method_signal(text: str, contribution_type: str) -> str:
+    if contribution_type == "survey":
+        return "综述/调研型贡献：主要方法应是组织、比较和归纳已有文献，而不是提出可训练模型。"
+    sentence = find_sentence(text, METHOD_MARKERS)
+    if sentence:
+        return f"方法证据：{sentence}"
+    if contribution_type == "benchmark":
+        benchmark_sentence = find_sentence(text, ["benchmark", "dataset", "evaluation", "protocol"])
+        if benchmark_sentence:
+            return f"评测/benchmark 构造方法：{benchmark_sentence}"
+    return insufficient("摘要/正文中没有抽到明确方法机制、模型结构、训练策略或评测协议")
+
+
+def extract_claim_signal(text: str, title: str) -> str:
+    sentence = find_sentence(text, CLAIM_MARKERS)
+    if sentence:
+        return f"核心 claim 证据：{sentence}"
+    if "?" in title:
+        return insufficient("标题更像研究问题，摘要/正文未给出明确结论型 claim")
+    return insufficient("未发现 we show/demonstrate/outperform/improve 等明确 claim 句")
+
+
+def extract_limitation_signal(text: str) -> str:
+    sentence = find_sentence(text, LIMITATION_MARKERS)
+    if sentence:
+        return f"显式或隐含不足：{sentence}"
+    return insufficient("摘要/正文未明确说明已有方法不足或 failure mode")
+
+
+def extract_named_signal(text: str, names: list[str], missing_reason: str) -> str:
+    found: list[str] = []
+    for name in names:
+        pattern = r"(?<![A-Za-z0-9])" + re.escape(name) + r"(?![A-Za-z0-9])"
+        if re.search(pattern, text, flags=re.IGNORECASE):
+            found.append(name)
+    if found:
+        return ", ".join(unique_preserve_order(found))
+    return insufficient(missing_reason)
+
+
+def find_sentence(text: str, markers: list[str]) -> str:
+    for sentence in split_sentences(text):
+        lower = sentence.lower()
+        if any(marker.lower() in lower for marker in markers):
+            return truncate_text(sentence)
+    return ""
+
+
+def split_sentences(text: str) -> list[str]:
+    normalized = normalize_space(text)
+    if not normalized:
+        return []
+    sentences = re.split(r"(?<=[.!?。！？])\s+", normalized)
+    return [sentence.strip() for sentence in sentences if sentence.strip()]
+
+
+def truncate_text(value: str, limit: int = 260) -> str:
+    normalized = normalize_space(value)
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[: limit - 3]}..."
+
+
+def insufficient(reason: str) -> str:
+    return f"{INSUFFICIENT_PREFIX}：{reason}。"
+
+
+def has_signal(value: str) -> bool:
+    normalized = normalize_space(value)
+    return bool(normalized) and not normalized.startswith(INSUFFICIENT_PREFIX)
+
+
+def render_signal_summary(signals: PaperSignals) -> str:
+    return (
+        f"task={signals.task}; method={signals.method}; dataset={signals.dataset}; "
+        f"metric={signals.metric}; claim={signals.claim}; limitation={signals.limitation}; "
+        f"type={signals.contribution_type}"
+    )
+
+
+def missing_signal_sentence(signals: PaperSignals, fields: list[str]) -> str:
+    labels = {
+        "method": "方法机制",
+        "dataset": "数据集/benchmark",
+        "metric": "评价指标",
+        "claim": "核心 claim",
+        "limitation": "已有不足",
+    }
+    missing = [labels[field] for field in fields if field in signals.missing_signals]
+    if not missing:
+        return ""
+    return f" 证据边界：当前缺少 {', '.join(missing)}，因此这一段只能给出保守判断，不能补写成论文已验证的结论。"
+
+
+def unique_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
 
 
 def infer_focus(title: str, context: str) -> str:
@@ -210,14 +483,90 @@ def infer_weakest_assumption(focus: str) -> str:
     return "最脆弱假设：论文定义的评价对象和真实目标能力一致。只要二者错位，实验结论就会变得不可泛化。"
 
 
-def build_math_section(focus: str) -> str:
-    if "hallucination" in focus or "证据" in focus or "benchmark" in focus:
+def build_method_pipeline_section(signals: PaperSignals) -> str:
+    if not has_signal(signals.method):
         return (
-            "这类论文通常不一定依赖复杂数学推导，更关键的是指标定义。"
-            "可以从 0 基础理解为：最终分数不是一个单独数字，而应拆成多个可解释变量，"
-            "例如 answer accuracy、evidence consistency、failure rate、分层样本难度。"
-            "直觉上，平均准确率像总成绩，证据一致性像解题过程；总成绩高但过程错，说明模型能力判断不可靠。"
-            "如果论文有公式，应重点检查公式是否真的对应它声称要测的能力。"
+            "当前证据不足：标题、摘要和可选正文没有给出明确方法机制。"
+            "因此不能把这篇论文写成完整 pipeline。需要补充 PDF 中的方法/实验段后，再拆成："
+            "Input（任务输入与数据来源）-> Processing（模型、训练、prompt、评测协议或数据构造步骤）-> "
+            "Output（预测、指标、错误类型或分析结论）。"
+        )
+    return (
+        f"Input: 面向 `{signals.task}` 的样本或实验设置，当前数据集信号为 `{signals.dataset}`。\n"
+        f"Processing: {signals.method}\n"
+        f"Output: 用 `{signals.metric}` 支撑或反驳 `{signals.claim}`。\n"
+        "真实例子：如果输入是一篇 VLM hallucination benchmark 论文，不能只记录最终答案是否正确，"
+        "还要记录视觉证据是否被使用、负样本如何构造、指标是否能暴露 answer-correct-evidence-wrong 的失败模式。"
+        f"{missing_signal_sentence(signals, ['dataset', 'metric', 'claim'])}"
+    )
+
+
+def build_experiment_logic_section(signals: PaperSignals) -> str:
+    if signals.contribution_type == "survey":
+        return (
+            "这篇论文更像 survey/review，不适合按方法论文写“复现实验”。"
+            "实验层面应改为验证它的文献图谱是否完整：它覆盖了哪些范式，遗漏了哪些近三年关键 baseline，"
+            "以及分类轴是否能帮助研究者定位真实 gap。"
+        )
+    if not all(has_signal(getattr(signals, field)) for field in ["claim", "dataset", "metric"]):
+        return (
+            f"Question: {signals.claim}\n"
+            "Experiment: 当前证据不足，缺少可闭环的 claim/dataset/metric 组合。"
+            f"{missing_signal_sentence(signals, ['claim', 'dataset', 'metric'])}\n"
+            "Answer: 不能直接判断论文实验是否支持 claim；需要补充 PDF 实验表、ablation、baseline 和数据构造细节后再评估。"
+        )
+    return (
+        f"提出了什么问题 -> `{signals.task}` 是否被论文方法真正改善或更好测量。\n"
+        f"设计了什么实验 -> 在 `{signals.dataset}` 上使用 `{signals.metric}`，对照 baseline 来验证 `{signals.claim}`。\n"
+        "问题的答案是什么 -> 如果指标提升来自核心机制且失败样本分析能支持 claim，则实验较可信；"
+        "如果只在有利 benchmark 上提升或缺少反例切片，则 claim 仍然脆弱。"
+    )
+
+
+def build_takeaways_section(signals: PaperSignals, focus: str) -> str:
+    if signals.contribution_type == "survey":
+        return (
+            "Take-away 不是复现某个模型，而是提取它的文献组织价值：它如何划分问题空间、哪些范式被认为重要、"
+            "哪些失败模式仍未解决。读这类论文时要特别警惕：survey 的覆盖面和分类轴本身就是它的证据边界。"
+        )
+    return (
+        f"任务层面：这篇论文应被理解为 `{signals.task}` 下的 `{signals.contribution_type}` 工作。"
+        f" 证据层面：可信判断依赖 `{signals.claim}`、`{signals.dataset}` 和 `{signals.metric}` 是否形成闭环。"
+        f" 方法层面：{signals.method}"
+        f" 迁移层面：围绕 `{focus}` 做后续研究时，应优先攻击最脆弱假设，而不是只延续论文的平均指标。"
+        f"{missing_signal_sentence(signals, ['method', 'dataset', 'metric', 'claim'])}"
+    )
+
+
+def build_weakest_assumption(focus: str, signals: PaperSignals) -> str:
+    if has_signal(signals.claim) and has_signal(signals.dataset) and has_signal(signals.metric):
+        return (
+            f"最脆弱假设：`{signals.metric}` 在 `{signals.dataset}` 上足以支持 `{signals.claim}`。"
+            "只要数据分布、负样本构造、标注规则或指标与真实任务错位，论文的核心结论就可能被高估。"
+        )
+    if has_signal(signals.claim):
+        return (
+            f"最脆弱假设：`{signals.claim}` 可以在当前可见证据下成立。"
+            f"{missing_signal_sentence(signals, ['dataset', 'metric'])}"
+            "如果后续找不到清晰数据集和指标，这个 claim 只能被视作待验证假设。"
+        )
+    return (
+        f"最脆弱假设：论文定义的评价对象和真实目标能力一致。当前围绕 `{focus}` 的证据链不完整，"
+        f"{missing_signal_sentence(signals, ['claim', 'dataset', 'metric'])}"
+    )
+
+
+def build_math_section(focus: str, signals: PaperSignals) -> str:
+    if not has_signal(signals.metric) and not has_signal(signals.method):
+        return (
+            "当前证据不足：摘要/正文没有提供可解释的公式、指标或方法机制，因此不应编造数学推导。"
+            "补充 PDF 后，应优先解释：每个变量代表什么、优化目标和任务 claim 如何对应、指标是否真的测到目标能力。"
+        )
+    if "hallucination" in focus or "证据" in focus or "benchmark" in focus or has_signal(signals.metric):
+        return (
+            f"理论上先把论文目标拆成三个变量：任务对象 `{signals.task}`、评价指标 `{signals.metric}`、核心 claim `{signals.claim}`。"
+            "0 基础可以这样理解：平均准确率像总成绩，证据一致性、failure rate 或分层指标像解题过程；"
+            "总成绩高但过程错，说明模型能力判断不可靠。若论文有公式，重点检查公式是否真的对应它声称要测的能力。"
         )
     if "agent" in focus:
         return (
@@ -226,25 +575,43 @@ def build_math_section(focus: str) -> str:
             "理论直觉是把不可控的长回答拆成可检查的中间状态，从而降低幻觉和不可追踪风险。"
         )
     return (
-        "当前输入没有足够信息判断论文是否包含关键数学推导。Phase 7 不应编造公式。"
-        "如果后续提供论文正文或公式段落，ScholarFlow 再解释每个变量、目标函数和理论假设。"
+        "当前输入没有足够信息判断论文是否包含关键数学推导。ScholarFlow 只保留证据边界："
+        "如果后续提供论文正文或公式段落，再解释每个变量、目标函数和理论假设。"
     )
 
 
-def build_minimal_reproduction(focus: str, title: str) -> str:
+def build_minimal_reproduction(signals: PaperSignals, title: str) -> str:
+    if signals.contribution_type == "survey":
+        return (
+            "这篇论文更像 survey/review，不应作为一周复现实验 anchor。"
+            "更合适的一周任务是：用它的分类轴抽取 10 篇候选方法/benchmark 论文，检查是否遗漏近三年关键 baseline，"
+            "并产出一个可复现论文图谱，而不是复现模型性能。"
+        )
+    missing = [field for field in ["claim", "dataset", "metric"] if not has_signal(getattr(signals, field))]
+    if missing:
+        return (
+            f"需要补充 PDF/实验细节：当前缺少 {', '.join(missing)}，无法设计可信的一周最小复现实验。"
+            "补齐后，最小复现必须绑定一个具体 claim、一个具体 dataset/benchmark 和一个具体 metric，"
+            "否则会退化成泛泛跑 baseline。"
+        )
     return (
-        f"Claim to test: `{title}` 中最核心的一个 claim 是否能在小规模设置下复现。\n"
-        "Minimal dataset/subset: 50-100 条与核心失败模式直接相关的样本。\n"
+        f"Claim to test: `{signals.claim}`\n"
+        f"Minimal dataset/subset: 从 `{signals.dataset}` 中抽 50-100 条与核心失败模式直接相关的样本。\n"
         "Baseline: 选择一个公开可调用的强 baseline 和一个简单 baseline。\n"
         "Compute: 优先单卡推理或 API 推理，不做大规模训练。\n"
-        "Steps: 1) 复现输入格式；2) 跑 baseline；3) 按论文指标和一个反例指标同时评价；4) 手动检查失败样本；5) 写出复现实验报告。\n"
-        "Success criterion: 能观察到论文 claim 中描述的核心现象，并能定位至少一类稳定失败模式。\n"
-        "Failure criterion: 现象只出现在少量样本或高度依赖人工挑选，无法支持论文主张。\n"
-        f"Expected risks: `{focus}` 可能依赖原论文未公开的标注、过滤规则或 prompt 细节。"
+        f"Metric: 同时记录论文指标 `{signals.metric}` 和一个反例指标。\n"
+        "Steps: 1) 复现输入格式；2) 跑 baseline；3) 按论文指标和反例指标同时评价；4) 手动检查失败样本；5) 写出复现实验报告。\n"
+        f"Success criterion: 在小规模设置下观察到 `{title}` 的核心现象，并能定位至少一类稳定失败模式。\n"
+        "Failure criterion: 现象只出现在少量样本或高度依赖人工挑选，无法支持论文主张。"
     )
 
 
-def build_counterexample(focus: str) -> str:
+def build_counterexample(signals: PaperSignals, focus: str) -> str:
+    if has_signal(signals.dataset) and has_signal(signals.metric):
+        return (
+            f"围绕 `{signals.dataset}` 构造目标不变但分布、证据或模板被破坏的样本，再继续用 `{signals.metric}` 评估。"
+            "如果模型或方法在原设置中表现好，但在这些反例上崩溃，就能反驳论文 claim 的泛化假设。"
+        )
     if "hallucination" in focus or "证据" in focus:
         return (
             "设计一个答案容易猜对但视觉证据被遮挡、冲突或替换的样本集。"
@@ -262,10 +629,11 @@ def build_counterexample(focus: str) -> str:
     )
 
 
-def build_follow_up_idea(focus: str) -> str:
+def build_follow_up_idea(signals: PaperSignals, focus: str) -> str:
+    limitation = signals.limitation if has_signal(signals.limitation) else infer_limitation(focus)
     return (
-        f"Follow-up idea: 从 `{focus}` 出发，建立一个“反例优先”的诊断协议：先生成能攻击核心假设的样本，"
-        "再反向设计评价指标和最小实验，而不是先固定 benchmark 再报告平均分。"
+        f"Follow-up idea: 从 `{limitation}` 出发，建立一个“反例优先”的诊断协议：先生成能攻击核心假设的样本，"
+        f"再反向设计 `{signals.metric}` 或新的证据一致性指标，而不是先固定 benchmark 再报告平均分。"
         "它不是简单增量，因为它改变了研究问题的入口：从优化已有指标，转向发现并形式化最脆弱失败模式。"
         "潜在价值是让后续方法必须解释为什么能通过反例，而不只是为什么在标准数据上更高分。"
     )
@@ -277,6 +645,16 @@ def render_card_markdown(card: DeepPaperCard, paper: dict[str, Any]) -> str:
         f"Paper: {card.paper_title}",
         f"Authors: {paper.get('authors') or 'unknown'}",
         f"Venue/Year: {paper.get('venue') or paper.get('source') or 'unknown'} / {paper.get('year') or 'unknown'}",
+        "",
+        "## Paper Signals",
+        f"- Task: {card.signals.task}",
+        f"- Contribution type: {card.signals.contribution_type}",
+        f"- Method: {card.signals.method}",
+        f"- Dataset: {card.signals.dataset}",
+        f"- Metric: {card.signals.metric}",
+        f"- Claim: {card.signals.claim}",
+        f"- Limitation: {card.signals.limitation}",
+        f"- Missing signals: {', '.join(card.signals.missing_signals) if card.signals.missing_signals else 'none'}",
         "",
     ]
     sections = [f"## {section.title}\n\n{section.content}" for section in card.sections]

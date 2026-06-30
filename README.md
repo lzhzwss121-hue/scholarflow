@@ -11,6 +11,8 @@ The project is designed for workflows such as:
 - Building a Paper Memory Bank so later questions retrieve 3-8 relevant paper memories instead of relying on chat context.
 - Building a BaselineMap for each direction, including classic baselines, recent strong baselines, alternative paradigms, benchmark risks, and open questions.
 - Producing Research Sight critiques that explain why a paper is good, why it may be weak, and what better research angle may exist.
+- Attaching evidence packs, confidence levels, and missing-evidence notes to critiques so users can separate grounded claims from hypotheses.
+- Extracting PaperSignals from titles, abstracts, and pasted paper text: task, method, dataset, metric, claim, limitation, and contribution type.
 - Producing structured paper tables and deep paper-reading notes.
 - Identifying real research gaps instead of vague topic ideas.
 - Planning one-week reproduction experiments.
@@ -30,6 +32,8 @@ Keyword / rough idea
   -> generate a structured paper table
   -> create interactive deep paper cards
   -> add Research Sight critique to each paper card
+  -> attach evidence level, evidence snippets, and missing-evidence notes
+  -> extract PaperSignals and mark missing evidence
   -> build a searchable paper memory bank
   -> answer follow-up questions from 3-8 retrieved paper memories
   -> analyze gaps and novelty risk

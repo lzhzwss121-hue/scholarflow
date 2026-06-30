@@ -1,6 +1,6 @@
 # ScholarFlow 分阶段实现计划
 
-更新时间：2026-06-29
+更新时间：2026-06-30
 
 原则：ScholarFlow 按阶段推进。每个阶段只完成本阶段定义的目标，完成后先验收，再进入下一阶段。不要一口气实现完整产品。
 
@@ -462,6 +462,102 @@ scholarflow/
 - ResearchSight 当前为 deterministic rule-based generation，后续可替换为 OpenRouter 多角色 Agent。
 - 尚未接入 Best Paper / Meta Review RAG。
 - 尚未做全文 PDF 证据级引用，因此批判结论仍需用户回到原论文核查。
+
+## Phase 14: Evidence-Grounded Sight 证据约束层
+
+目标：让 ScholarFlow 的“科研审美评价”不再像无依据定论，而是明确展示每个判断基于什么证据、置信度多高、还缺什么证据。
+
+当前状态：complete for metadata/abstract/paper-card evidence packs。
+
+交付物：
+
+- `EvidenceSnippet` 数据结构。
+- `EvidencePack` 数据结构。
+- BaselineReference 增加：
+  - evidence snippets
+  - confidence
+  - evidence gap
+- BaselineMap 增加 evidence summary。
+- ResearchSight 增加：
+  - evidence level
+  - confidence
+  - supporting snippets
+  - missing evidence
+  - grounding summary
+- Direction Review UI 增加证据等级和缺失证据展示。
+- Paper Memory UI 增加命中论文的 EvidencePack 摘要。
+
+验收标准：
+
+- 每个 baseline 参照都显示置信度和证据缺口。
+- 每篇论文的 ResearchSight 都显示证据等级、证据片段和缺失证据。
+- 旧 memory / 旧 artifact 没有 evidence 字段时仍能被 API 兼容读取。
+- 证据描述明确区分 metadata、abstract、generated paper card 和缺失的全文证据。
+
+当前边界：
+
+- EvidencePack 当前来自 metadata、abstract 和 ScholarFlow 生成的 paper card。
+- 证据片段不是 PDF 原文逐段引用。
+- 尚未接入 citation graph、venue verification、代码仓库证据或 Best Paper meta-review RAG。
+- 批判性结论仍需用户回到原论文核查后才能用于正式写作。
+
+## Phase 15: 科研可信度与产品体验加固
+
+目标：先提高系统判断的可信度，再提高产品体验。重点是减少模板化输出，让 ScholarFlow 明确说明“基于什么证据判断、缺什么证据、为什么命中这篇论文”。
+
+当前状态：in progress。
+
+### Phase 15.1: Paper Memory 检索质量
+
+当前状态：complete。
+
+交付物：
+
+- 新增 `text_utils.py`，统一提供 `extract_terms()`、`score_term_overlap()`。
+- 英文 token 至少 3 个字符，过滤常见 stopwords。
+- 匹配时使用词边界，避免 `text.count(term)` 造成 `in`、`on`、`at`、`te` 等噪声命中。
+- 加入领域短语白名单，例如 evidence faithfulness、visual grounding、object hallucination、counterexample evaluation。
+- `PaperMemoryHit.score` 拆成 title / keyword / section / priority 分数。
+- Paper Memory UI 显示命中分数来源。
+
+验收标准：
+
+- Memory summary 关键词应接近 hallucination、evidence、faithfulness、grounding、benchmark，而不是碎片字符。
+- Paper Memory 命中能解释为什么相关。
+
+### Phase 15.2: PaperSignals 与证据驱动 Paper Card
+
+当前状态：complete for abstract/metadata/pasted-text signals。
+
+交付物：
+
+- 新增 `PaperSignals` 数据结构：
+  - task
+  - method
+  - dataset
+  - metric
+  - claim
+  - limitation
+  - contribution type
+  - missing signals
+- Deep Paper Card 先抽取 signals，再生成 12 个 section。
+- 方法、实验和最小复现段落绑定具体 claim / dataset / metric。
+- 如果方法或实验信息缺失，明确写“当前证据不足”，不补写泛泛解释。
+- survey / review 论文不再被包装成可复现实验论文。
+- Direction Review 和单篇 Paper Card API 返回 signals。
+- 前端论文详情页显示 Paper Signals。
+
+验收标准：
+
+- Paper Card 能说明“这篇论文提供了什么证据，缺什么证据”。
+- minimal reproduction 必须绑定具体 claim / dataset / metric；缺失时降级为“需要补充 PDF/实验细节”。
+- 旧 artifact / 旧数据库记录没有 signals 时不影响读取。
+
+当前边界：
+
+- PaperSignals 当前为启发式抽取，来源于 title、abstract 和用户粘贴的 `paper_text`。
+- 尚未做 PDF 结构化解析、表格抽取或实验章节定位。
+- ResearchSight 仍未完全接入 PaperSignals，这将在 Phase 15.3 完成。
 
 ## 阶段推进规则
 
