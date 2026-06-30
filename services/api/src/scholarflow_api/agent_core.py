@@ -66,13 +66,11 @@ class OpenRouterProvider:
     name = "openrouter"
 
     def __init__(self) -> None:
-        self.model = os.getenv("OPENROUTER_MODEL") or os.getenv("DDO_LLM_MODEL") or DEFAULT_OPENROUTER_MODEL
+        self.model = os.getenv("OPENROUTER_MODEL") or DEFAULT_OPENROUTER_MODEL
         self.fast_model = os.getenv("OPENROUTER_FAST_MODEL", self.model)
-        self.rag_model = (
-            os.getenv("OPENROUTER_RAG_MODEL") or os.getenv("DDO_LLM_RAG_MODEL") or DEFAULT_OPENROUTER_RAG_MODEL
-        )
+        self.rag_model = os.getenv("OPENROUTER_RAG_MODEL") or DEFAULT_OPENROUTER_RAG_MODEL
         self.base_url = os.getenv("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL).rstrip("/")
-        self.api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("DDO_OPENROUTER_API_KEY") or ""
+        self.api_key = os.getenv("OPENROUTER_API_KEY") or ""
         self.app_url = os.getenv("OPENROUTER_APP_URL", DEFAULT_OPENROUTER_APP_URL)
         self.app_title = os.getenv("OPENROUTER_APP_TITLE", DEFAULT_OPENROUTER_APP_TITLE)
         self.timeout_seconds = _parse_timeout(os.getenv("OPENROUTER_TIMEOUT_SECONDS", "40"))

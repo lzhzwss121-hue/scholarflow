@@ -36,9 +36,9 @@ ScholarFlow 不是一个单纯的论文搜索工具，而是一个面向人工�
 
 所以产品应该帮助用户从“论文消费者”变成“可执行研究计划的制定者”。
 
-## 3. 参考 Ddo 的产品形态
+## 3. 产品形态参考
 
-可以参考 `Djhhhhhh/Ddo` 的整体呈现方式，但不要照搬它的功能领域。Ddo 的可借鉴点主要是产品组织方式：
+ScholarFlow 的产品形态应围绕科研任务组织，而不是只做单点工具。可借鉴成熟开发者工具的产品组织方式：
 
 - 一个 CLI 作为统一入口，负责初始化、启动、停止、状态查看和 REPL 交互。
 - 多服务架构清晰解耦，CLI、后端 API、LLM 服务、Web UI 分层。
@@ -76,7 +76,7 @@ scholarflow review ./results.csv
 
 ## 3.1 参考 Claude Code From Scratch 的 Agent 原理
 
-除 Ddo 的产品形态外，ScholarFlow 的 Agent 内核和前端工作流应重点借鉴 `Windy3f3f3f3f/claude-code-from-scratch`。
+除基础产品形态外，ScholarFlow 的 Agent 内核和前端工作流应重点借鉴 `Windy3f3f3f3f/claude-code-from-scratch`。
 
 该项目复现的是 Claude Code 的核心机制：Agent Loop、工具系统、权限检查、Plan Mode、上下文压缩、记忆、技能、多 Agent 和 MCP。对 ScholarFlow 的启发是：
 
@@ -440,9 +440,9 @@ MVP 功能：
 
 这版就已经明显强于“论文搜索工具”。
 
-## 8. Ddo 式技术架构
+## 8. 技术架构
 
-建议采用多服务架构，但比 Ddo 更贴近 AI 科研任务。
+建议采用多服务架构，但所有服务边界都应贴近 AI 科研任务。
 
 ```text
 User Layer
@@ -491,7 +491,7 @@ ScholarFlow 应采用“双入口、同一后端”的产品设计：
    大多数用户不应该被迫使用 CLI。硕士研究生的核心操作包括创建研究项目、查看论文表格、阅读 deep paper card、比较 gap、选择 idea、查看实验计划，这些都更适合在 Web UI 中完成。
 
 2. **CLI 是开发者和高级用户入口**
-   CLI 负责初始化、启动服务、批量导入论文、查看状态、运行批处理任务。它参考 Ddo 的统一入口设计，但不作为普通用户的唯一入口。
+   CLI 负责初始化、启动服务、批量导入论文、查看状态、运行批处理任务。它提供统一入口，但不作为普通用户的唯一入口。
 
 推荐使用路径：
 
@@ -1014,7 +1014,7 @@ research-feedback
 
 | 模块 | 推荐技术 | 原因 |
 |------|----------|------|
-| CLI | Node.js + Commander | 参考 Ddo，便于 npm 分发 |
+| CLI | Node.js + Commander | 便于 npm 分发和本地工作区管理 |
 | Web UI | React + Vite | 展示工作流和项目资产 |
 | Agent 服务 | Python + FastAPI | AI 生态完整，方便接 API |
 | 数据库 | SQLite 起步，后续 PostgreSQL | MVP 简单，后续可扩展 |
@@ -1028,7 +1028,7 @@ research-feedback
 
 ## 10. Web UI 页面设计
 
-参考 Ddo 的简洁工作台，但你的 UI 应围绕科研对象组织。
+UI 应保持简洁工作台形态，但必须围绕科研对象组织。
 
 推荐页面：
 
