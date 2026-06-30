@@ -1148,6 +1148,225 @@ td a {
   white-space: pre-wrap;
 }
 
+.memory-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.memory-control-panel,
+.memory-answer-panel,
+.memory-empty-state,
+.memory-hit-card {
+  border: 1px solid #d9dee6;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 18px;
+}
+
+.memory-control-header,
+.memory-answer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.memory-control-header h2,
+.memory-answer-header h2,
+.memory-empty-state h2,
+.memory-hit-card h3 {
+  margin: 0;
+  color: #1d2733;
+  letter-spacing: 0;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.memory-control-header h2,
+.memory-answer-header h2,
+.memory-empty-state h2 {
+  font-size: 18px;
+}
+
+.memory-hit-card h3 {
+  font-size: 15px;
+}
+
+.memory-control-grid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px;
+  gap: 12px;
+}
+
+.memory-control-grid label {
+  display: grid;
+  gap: 8px;
+  color: #344256;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.memory-control-grid textarea,
+.memory-control-grid select {
+  width: 100%;
+  border: 1px solid #d8dee7;
+  border-radius: 8px;
+  background: #fbfcfd;
+  color: #1d2733;
+}
+
+.memory-control-grid textarea {
+  min-height: 88px;
+  padding: 12px;
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.memory-control-grid select {
+  min-height: 40px;
+  padding: 0 10px;
+}
+
+.memory-chip-row,
+.memory-stat-grid,
+.memory-hit-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.memory-chip-row {
+  margin-top: 12px;
+}
+
+.memory-chip-row span,
+.memory-stat-grid span,
+.memory-hit-meta span {
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #526170;
+  background: #edf1f6;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.memory-answer-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.memory-answer-panel > p {
+  margin: 0;
+  color: #344256;
+  line-height: 1.75;
+}
+
+.memory-direction-box {
+  border: 1px solid #dce3eb;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fbfcfd;
+}
+
+.memory-direction-box strong,
+.memory-direction-box span {
+  display: block;
+}
+
+.memory-direction-box strong {
+  color: #263545;
+  font-size: 13px;
+}
+
+.memory-direction-box span {
+  margin-top: 6px;
+  color: #526170;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.memory-hit-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.memory-hit-card {
+  display: grid;
+  gap: 10px;
+}
+
+.memory-hit-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.memory-hit-header span,
+.memory-hit-header strong,
+.memory-hit-header small {
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.memory-hit-header span {
+  color: #526170;
+  background: #edf1f6;
+}
+
+.memory-hit-header strong {
+  color: #174f67;
+  background: #eef7fa;
+}
+
+.memory-hit-header small {
+  color: #1f7a4d;
+  background: #e6f5ee;
+}
+
+.memory-hit-card p {
+  margin: 0;
+  color: #344256;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.memory-hit-card dl {
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.memory-hit-card dt {
+  color: #667789;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.memory-hit-card dd {
+  margin: 4px 0 0;
+  color: #526170;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.memory-empty-state {
+  min-height: 168px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.memory-empty-state p {
+  margin: 8px 0 0;
+  color: #526170;
+  line-height: 1.7;
+}
+
 .reader-layout {
   display: grid;
   grid-template-columns: minmax(0, 0.9fr) minmax(260px, 0.7fr);
@@ -1697,6 +1916,8 @@ td a {
   .direction-key-findings,
   .direction-reader-layout,
   .direction-scope-grid,
+  .memory-control-grid,
+  .memory-hit-list,
   .reader-layout,
   .paper-reader-grid,
   .experiment-detail dl,
@@ -1731,6 +1952,8 @@ td a {
   .direction-control-header,
   .direction-detail-header,
   .direction-summary-header,
+  .memory-answer-header,
+  .memory-control-header,
   .paper-reader-header,
   .decision-header,
   .search-control,
@@ -1745,7 +1968,9 @@ td a {
 
   .direction-control-header,
   .direction-detail-header,
-  .direction-summary-header {
+  .direction-summary-header,
+  .memory-answer-header,
+  .memory-control-header {
     flex-direction: column;
   }
 

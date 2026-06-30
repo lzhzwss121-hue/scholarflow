@@ -7,6 +7,7 @@ export type ResearchStage =
   | "agent-loop"
   | "literature-retrieval"
   | "direction-review"
+  | "research-memory"
   | "paper-card"
   | "experiment-planning";
 
@@ -208,6 +209,47 @@ export interface ApiResearchDecisionResponse {
   validation: ApiIdeaValidation;
   experiment: ApiExperimentPlan;
   artifacts: ApiArtifact[];
+}
+
+export interface ApiResearchMemoryQueryRequest {
+  question: string;
+  direction?: string;
+  top_k?: number;
+}
+
+export interface ApiPaperMemoryHit {
+  paper: ApiPaper;
+  direction: string;
+  round: number;
+  score: number;
+  snippets: string[];
+  abstract_translation: string;
+  weakest_assumption: string;
+  minimal_reproduction: string;
+  counterexample: string;
+  follow_up_idea: string;
+  why_selected: string;
+  self_read_priority: boolean;
+}
+
+export interface ApiDirectionMemory {
+  direction: string;
+  total_papers: number;
+  round_count: number;
+  summary: string;
+  paper_ids: string[];
+  updated_at: string;
+}
+
+export interface ApiResearchMemoryQueryResponse {
+  question: string;
+  top_k: number;
+  answer: string;
+  hits: ApiPaperMemoryHit[];
+  direction_memory: ApiDirectionMemory | null;
+  total_memories: number;
+  artifact: ApiArtifact;
+  warnings: string[];
 }
 
 export interface ApiAgentPlanRequest {

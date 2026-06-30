@@ -387,6 +387,35 @@ scholarflow/
 - 尚未实现 PDF 全文批量下载、解析和逐段证据引用。
 - 顶会/顶刊过滤是启发式 venue/source 信号，需要后续接入更严格的 venue metadata。
 
+## Phase 11: Paper Memory Bank
+
+目标：让系统长期记住方向精读生成的 30 篇论文结构化结果，并在用户后续提问时按相关性检索 3-8 篇论文后回答。
+
+当前状态：complete。
+
+交付物：
+
+- `paper_memories` 数据表。
+- `direction_memories` 数据表。
+- Paper Memory Query API。
+- Paper Memory React 页面。
+- 方向精读完成后自动写入 memory bank。
+- 支持从旧的 direction review artifact 回填 memory。
+- 每次问答保存 memory-grounded answer artifact。
+
+验收标准：
+
+- 不依赖聊天上下文保存 30 篇论文。
+- 用户提问时检索 3-8 篇相关论文记忆。
+- 回答中保留命中论文、分数、片段、最脆弱假设、一周验证和反例设计。
+- Direction Memory 说明累计覆盖论文数量和轮次。
+
+当前边界：
+
+- 当前检索是结构化关键词排序，不是 embedding 向量检索。
+- Paper Memory 来自摘要和 12 条规则卡片，不等同于全文证据。
+- 正式写作和引用前仍需要回到原文核查。
+
 ## 阶段推进规则
 
 每个阶段完成时必须回答：

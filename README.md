@@ -8,6 +8,7 @@ The project is designed for workflows such as:
 
 - Finding and organizing papers for an AI research direction.
 - Running a direction review: 10 recent high-relevance papers per round, up to 30 papers across three rounds.
+- Building a Paper Memory Bank so later questions retrieve 3-8 relevant paper memories instead of relying on chat context.
 - Producing structured paper tables and deep paper-reading notes.
 - Identifying real research gaps instead of vague topic ideas.
 - Planning one-week reproduction experiments.
@@ -25,6 +26,8 @@ Keyword / rough idea
   -> select 10 recent high-relevance papers for each review round
   -> generate a structured paper table
   -> create interactive deep paper cards
+  -> build a searchable paper memory bank
+  -> answer follow-up questions from 3-8 retrieved paper memories
   -> analyze gaps and novelty risk
   -> plan a minimal reproduction
   -> design an experiment plan

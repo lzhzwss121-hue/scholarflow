@@ -8,6 +8,7 @@ ScholarFlow 是一个中文优先的 AI 科研任务流程 Agent，面向人工�
 
 - 根据 AI 研究关键词查找和整理相关论文。
 - 执行方向级论文精读：每轮读取近三年高相关论文 10 篇，最多三轮累计 30 篇。
+- 构建 Paper Memory Bank，让后续问题按相关性检索 3-8 篇论文记忆后再回答。
 - 生成结构化 Paper Table 和深度论文阅读笔记。
 - 从论文和任务中识别真正的 research gap。
 - 规划一周内可以完成的最小复现实验。
@@ -25,6 +26,8 @@ ScholarFlow 是一个中文优先的 AI 科研任务流程 Agent，面向人工�
   -> 每轮筛选 10 篇近三年高相关论文
   -> 生成结构化 Paper Table
   -> 生成可交互 Deep Paper Card
+  -> 构建可检索 Paper Memory Bank
+  -> 基于 3-8 篇命中论文记忆回答后续问题
   -> 分析 gap 和 novelty risk
   -> 规划最小复现实验
   -> 设计实验计划

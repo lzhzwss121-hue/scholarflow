@@ -167,3 +167,19 @@ Planned deliverables:
 - Click-to-expand paper cards for abstract Chinese reading entry and the 12-section protocol.
 
 Status: complete for metadata-and-abstract based review. Full-PDF batch parsing remains future work.
+
+## Phase 11: Paper Memory Bank
+
+Goal: make the 30-paper direction review usable after the initial reading round.
+
+Planned deliverables:
+
+- Persistent `paper_memories` and `direction_memories` tables.
+- Automatic memory writes after each direction review.
+- Backfill from existing direction-review artifacts.
+- Research memory query API.
+- React Paper Memory view.
+- Retrieve 3-8 relevant paper memories for follow-up questions.
+- Save memory-grounded answers as artifacts.
+
+Status: complete for structured keyword retrieval. Embedding/vector retrieval remains future work.

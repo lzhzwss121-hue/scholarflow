@@ -29,6 +29,7 @@ import {
   type ApiPaperCard,
   type ApiProject,
   type ApiResearchDecisionResponse,
+  type ApiResearchMemoryQueryResponse,
   type ApiToolEvent,
 } from "@scholarflow/schemas";
 import {
@@ -59,6 +60,7 @@ import {
   listProjectArtifacts,
   listProjectPapers,
   listProjects,
+  queryResearchMemory,
   saveArtifact,
   searchProjectLiterature,
 } from "./apiClient";
@@ -72,6 +74,7 @@ const navIcons: Record<ViewId, LucideIcon> = {
   "new-project": Plus,
   "paper-table": Table2,
   "direction-review": FileText,
+  "paper-memory": BrainCircuit,
   "paper-reader": BookOpen,
   "gap-board": GitBranch,
   "experiment-planner": FlaskConical,
@@ -82,6 +85,7 @@ const viewTitles: Record<ViewId, string> = {
   "new-project": "新建科研项目",
   "paper-table": "论文表格",
   "direction-review": "方向精读",
+  "paper-memory": "论文记忆",
   "paper-reader": "论文精读",
   "gap-board": "Gap Board",
   "experiment-planner": "实验计划",
@@ -111,6 +115,10 @@ export function App() {
   const [directionBusy, setDirectionBusy] = useState(false);
   const [directionReview, setDirectionReview] = useState<ApiDirectionReviewResponse | null>(null);
   const [selectedDirectionPaperId, setSelectedDirectionPaperId] = useState("");
+  const [memoryQuestion, setMemoryQuestion] = useState("这个方向最值得做的一周验证实验是什么？");
+  const [memoryTopK, setMemoryTopK] = useState(5);
+  const [memoryBusy, setMemoryBusy] = useState(false);
+  const [memoryResult, setMemoryResult] = useState<ApiResearchMemoryQueryResponse | null>(null);
   const [selectedPaperId, setSelectedPaperId] = useState("");
   const [paperCardInput, setPaperCardInput] = useState("");
   const [paperCardBusy, setPaperCardBusy] = useState(false);
@@ -172,6 +180,7 @@ export function App() {
     }
     setDirectionReview(null);
     setSelectedDirectionPaperId("");
+    setMemoryResult(null);
   }, [activeProject?.id, activeProject?.keyword]);
 
   useEffect(() => {
@@ -386,6 +395,31 @@ export function App() {
     }
   }
 
+  async function handleQueryResearchMemory() {
+    if (!activeProject) {
+      setApiMessage("没有可写入的后端项目，请先创建或启动 API。");
+      return;
+    }
+
+    setMemoryBusy(true);
+    setApiMessage(`正在从 Paper Memory Bank 检索 ${memoryTopK} 篇相关论文...`);
+    try {
+      const result = await queryResearchMemory(activeProject.id, {
+        question: memoryQuestion,
+        direction: directionInput,
+        top_k: memoryTopK,
+      });
+      setMemoryResult(result);
+      setLastSavedArtifact(result.artifact);
+      setApiMessage(`论文记忆回答已生成：命中 ${result.hits.length} 篇，memory bank 总量 ${result.total_memories}。`);
+      await loadProjectResources(activeProject.id);
+    } catch (error) {
+      setApiMessage("论文记忆检索失败，请先执行方向精读，或检查 API 日志。");
+    } finally {
+      setMemoryBusy(false);
+    }
+  }
+
   async function handleCreateResearchDecision() {
     if (!activeProject) {
       setApiMessage("没有可写入的后端项目，请先创建或启动 API。");
@@ -464,6 +498,10 @@ export function App() {
               literatureBusy={literatureBusy}
               literatureErrors={literatureErrors}
               literatureQuery={literatureQuery}
+              memoryBusy={memoryBusy}
+              memoryQuestion={memoryQuestion}
+              memoryResult={memoryResult}
+              memoryTopK={memoryTopK}
               onAgentTaskChange={setAgentTask}
               onCreateProject={handleCreateProject}
               onCreateAgentPlan={handleCreateAgentPlan}
@@ -475,7 +513,10 @@ export function App() {
               onDirectionInputChange={setDirectionInput}
               onDirectionRoundChange={setDirectionRound}
               onLiteratureQueryChange={setLiteratureQuery}
+              onMemoryQuestionChange={setMemoryQuestion}
+              onMemoryTopKChange={setMemoryTopK}
               onPaperCardInputChange={setPaperCardInput}
+              onQueryResearchMemory={handleQueryResearchMemory}
               onSearchLiterature={handleSearchLiterature}
               onSelectedDirectionPaperChange={setSelectedDirectionPaperId}
               onSelectedPaperChange={setSelectedPaperId}
@@ -612,6 +653,10 @@ interface ActiveViewProps {
   literatureErrors: string[];
   literatureQuery: string;
   latestPaperCard: ApiPaperCard | null;
+  memoryBusy: boolean;
+  memoryQuestion: string;
+  memoryResult: ApiResearchMemoryQueryResponse | null;
+  memoryTopK: number;
   onAgentTaskChange: (task: string) => void;
   onCreateAgentPlan: () => void;
   onCreateDirectionReview: () => void;
@@ -623,7 +668,10 @@ interface ActiveViewProps {
   onExecuteAgentRun: () => void;
   onGeneratePaperCard: () => void;
   onLiteratureQueryChange: (query: string) => void;
+  onMemoryQuestionChange: (question: string) => void;
+  onMemoryTopKChange: (topK: number) => void;
   onPaperCardInputChange: (value: string) => void;
+  onQueryResearchMemory: () => void;
   onSearchLiterature: () => void;
   onSelectedDirectionPaperChange: (paperId: string) => void;
   onSelectedPaperChange: (paperId: string) => void;
@@ -655,6 +703,10 @@ function ActiveView({
   literatureErrors,
   literatureQuery,
   latestPaperCard,
+  memoryBusy,
+  memoryQuestion,
+  memoryResult,
+  memoryTopK,
   onAgentTaskChange,
   onCreateAgentPlan,
   onCreateDirectionReview,
@@ -666,7 +718,10 @@ function ActiveView({
   onExecuteAgentRun,
   onGeneratePaperCard,
   onLiteratureQueryChange,
+  onMemoryQuestionChange,
+  onMemoryTopKChange,
   onPaperCardInputChange,
+  onQueryResearchMemory,
   onSearchLiterature,
   onSelectedDirectionPaperChange,
   onSelectedPaperChange,
@@ -721,6 +776,20 @@ function ActiveView({
           review={directionReview}
           round={directionRound}
           selectedPaperId={selectedDirectionPaperId}
+        />
+      );
+    case "paper-memory":
+      return (
+        <ResearchMemoryView
+          apiStatus={apiStatus}
+          direction={directionInput}
+          isQuerying={memoryBusy}
+          onQuestionChange={onMemoryQuestionChange}
+          onQuery={onQueryResearchMemory}
+          onTopKChange={onMemoryTopKChange}
+          question={memoryQuestion}
+          result={memoryResult}
+          topK={memoryTopK}
         />
       );
     case "gap-board":
@@ -1292,6 +1361,144 @@ function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }
         ))}
       </div>
     </section>
+  );
+}
+
+function ResearchMemoryView({
+  apiStatus,
+  direction,
+  isQuerying,
+  onQuestionChange,
+  onQuery,
+  onTopKChange,
+  question,
+  result,
+  topK,
+}: {
+  apiStatus: ApiStatus;
+  direction: string;
+  isQuerying: boolean;
+  onQuestionChange: (question: string) => void;
+  onQuery: () => void;
+  onTopKChange: (topK: number) => void;
+  question: string;
+  result: ApiResearchMemoryQueryResponse | null;
+  topK: number;
+}) {
+  const canQuery = apiStatus === "online" && !isQuerying && question.trim().length > 0;
+
+  return (
+    <div className="memory-stack">
+      <section className="memory-control-panel" aria-label="paper memory query">
+        <div className="memory-control-header">
+          <div>
+            <p className="section-kicker">Paper Memory Bank</p>
+            <h2>基于已读论文的长期记忆问答</h2>
+          </div>
+          <button className="secondary-command" disabled={!canQuery} type="button" onClick={onQuery}>
+            <Search size={17} />
+            {isQuerying ? "检索中" : "检索记忆并回答"}
+          </button>
+        </div>
+
+        <div className="memory-control-grid">
+          <label>
+            用户问题
+            <textarea value={question} onChange={(event) => onQuestionChange(event.target.value)} />
+          </label>
+          <label>
+            检索论文数
+            <select value={topK} onChange={(event) => onTopKChange(Number(event.target.value))}>
+              <option value={3}>3 篇</option>
+              <option value={5}>5 篇</option>
+              <option value={8}>8 篇</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="memory-chip-row">
+          <span>当前方向：{direction || "未指定"}</span>
+          <span>每轮 10 篇</span>
+          <span>30 篇上限</span>
+          <span>检索 3-8 篇后回答</span>
+        </div>
+      </section>
+
+      {result ? (
+        <>
+          <section className="memory-answer-panel" aria-label="memory answer">
+            <div className="memory-answer-header">
+              <div>
+                <p className="section-kicker">Memory-Grounded Answer</p>
+                <h2>{result.question}</h2>
+              </div>
+              <div className="memory-stat-grid">
+                <span>{result.total_memories} memories</span>
+                <span>{result.hits.length} hits</span>
+                <span>top {result.top_k}</span>
+              </div>
+            </div>
+            <p>{result.answer}</p>
+            {result.direction_memory ? (
+              <div className="memory-direction-box">
+                <strong>{result.direction_memory.direction}</strong>
+                <span>{result.direction_memory.summary}</span>
+              </div>
+            ) : null}
+            {result.warnings.length ? (
+              <div className="retrieval-errors">
+                <strong>Memory 警告</strong>
+                <p>{result.warnings.join(" / ")}</p>
+              </div>
+            ) : null}
+          </section>
+
+          <section className="memory-hit-list" aria-label="retrieved paper memories">
+            {result.hits.map((hit, index) => (
+              <article className="memory-hit-card" key={`${hit.paper.id}-${index}`}>
+                <div className="memory-hit-header">
+                  <span>{String(index + 1).padStart(2, "0")}</span>
+                  <strong>{hit.score.toFixed(2)}</strong>
+                  {hit.self_read_priority ? <small>推荐精读</small> : null}
+                </div>
+                <h3>{hit.paper.title}</h3>
+                <div className="memory-hit-meta">
+                  <span>Round {hit.round}</span>
+                  <span>{hit.paper.year || "year unknown"}</span>
+                  <span>{hit.paper.venue || hit.paper.source || "source unknown"}</span>
+                </div>
+                <p>{hit.snippets[0]}</p>
+                <dl>
+                  <div>
+                    <dt>最脆弱假设</dt>
+                    <dd>{hit.weakest_assumption}</dd>
+                  </div>
+                  <div>
+                    <dt>一周验证</dt>
+                    <dd>{hit.minimal_reproduction}</dd>
+                  </div>
+                  <div>
+                    <dt>反例设计</dt>
+                    <dd>{hit.counterexample}</dd>
+                  </div>
+                </dl>
+              </article>
+            ))}
+          </section>
+        </>
+      ) : (
+        <section className="memory-empty-state">
+          <BrainCircuit size={22} />
+          <div>
+            <h2>先执行方向精读，再提问</h2>
+            <p>
+              Paper Memory Bank 会从方向精读生成的论文卡片中提取结构化记忆。用户提问时，系统只检索最相关的
+              3-8 篇论文，再基于这些命中回答。
+            </p>
+          </div>
+        </section>
+      )}
+    </div>
   );
 }
 

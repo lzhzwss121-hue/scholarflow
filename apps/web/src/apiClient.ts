@@ -17,6 +17,8 @@ import type {
   ApiProjectCreate,
   ApiResearchDecisionRequest,
   ApiResearchDecisionResponse,
+  ApiResearchMemoryQueryRequest,
+  ApiResearchMemoryQueryResponse,
   ApiToolEvent,
 } from "@scholarflow/schemas";
 
@@ -81,6 +83,13 @@ export function createDirectionReview(projectId: string, payload: ApiDirectionRe
 
 export function createResearchDecisions(projectId: string, payload: ApiResearchDecisionRequest = {}) {
   return request<ApiResearchDecisionResponse>(`/projects/${projectId}/research-decisions`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function queryResearchMemory(projectId: string, payload: ApiResearchMemoryQueryRequest) {
+  return request<ApiResearchMemoryQueryResponse>(`/projects/${projectId}/research-memory/query`, {
     method: "POST",
     body: JSON.stringify(payload),
   });

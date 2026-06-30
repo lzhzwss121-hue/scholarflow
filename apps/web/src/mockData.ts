@@ -3,6 +3,7 @@ export type ViewId =
   | "new-project"
   | "paper-table"
   | "direction-review"
+  | "paper-memory"
   | "paper-reader"
   | "gap-board"
   | "experiment-planner";
@@ -71,6 +72,7 @@ export const navItems: NavItem[] = [
   { id: "new-project", label: "New Project" },
   { id: "paper-table", label: "Paper Table", count: 18 },
   { id: "direction-review", label: "方向精读", count: 10 },
+  { id: "paper-memory", label: "论文记忆", count: 30 },
   { id: "paper-reader", label: "Paper Reader", count: 3 },
   { id: "gap-board", label: "Gap Board", count: 5 },
   { id: "experiment-planner", label: "Experiment Planner", count: 2 },
@@ -283,6 +285,15 @@ export const artifacts: Record<ViewId, ArtifactContent> = {
       '{\n  "round": 1,\n  "papers": 10,\n  "max_rounds": 3,\n  "total_limit": 30\n}',
     diff:
       "+ Added ten-paper direction review workflow\n+ Added interactive paper cards",
+  },
+  "paper-memory": {
+    title: "research_memory_answer.md",
+    markdown:
+      "# Research Memory Answer\n\n基于 Paper Memory Bank 检索 3-8 篇相关论文后回答用户问题。\n\n- 每篇论文来自方向精读的结构化 Paper Card\n- 每 10 篇保留 round summary\n- 累计 30 篇形成 direction memory",
+    json:
+      '{\n  "top_k": 5,\n  "total_memories": 30,\n  "retrieval": "keyword-ranked paper memory"\n}',
+    diff:
+      "+ Added paper memory retrieval\n+ Added memory-grounded answer artifact",
   },
   "paper-reader": {
     title: "paper_card.md",

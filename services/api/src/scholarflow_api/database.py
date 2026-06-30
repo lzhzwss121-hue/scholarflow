@@ -105,6 +105,47 @@ def init_db() -> None:
                 FOREIGN KEY (artifact_id) REFERENCES artifacts(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS paper_memories (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                paper_id TEXT,
+                direction TEXT NOT NULL DEFAULT '',
+                round_index INTEGER NOT NULL DEFAULT 0,
+                title TEXT NOT NULL,
+                authors TEXT NOT NULL DEFAULT '',
+                year TEXT NOT NULL DEFAULT '',
+                venue TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                url TEXT NOT NULL DEFAULT '',
+                abstract_translation TEXT NOT NULL DEFAULT '',
+                sections_json TEXT NOT NULL DEFAULT '[]',
+                weakest_assumption TEXT NOT NULL DEFAULT '',
+                minimal_reproduction TEXT NOT NULL DEFAULT '',
+                counterexample TEXT NOT NULL DEFAULT '',
+                follow_up_idea TEXT NOT NULL DEFAULT '',
+                why_selected TEXT NOT NULL DEFAULT '',
+                memory_text TEXT NOT NULL DEFAULT '',
+                keywords_json TEXT NOT NULL DEFAULT '[]',
+                self_read_priority INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS direction_memories (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                total_papers INTEGER NOT NULL DEFAULT 0,
+                round_count INTEGER NOT NULL DEFAULT 0,
+                summary TEXT NOT NULL DEFAULT '',
+                paper_ids_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
@@ -147,6 +188,9 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_papers_project_id ON papers(project_id);
             CREATE INDEX IF NOT EXISTS idx_artifacts_project_id ON artifacts(project_id);
+            CREATE INDEX IF NOT EXISTS idx_paper_memories_project_id ON paper_memories(project_id);
+            CREATE INDEX IF NOT EXISTS idx_paper_memories_direction ON paper_memories(project_id, direction);
+            CREATE INDEX IF NOT EXISTS idx_direction_memories_project_id ON direction_memories(project_id);
             CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id);
             CREATE INDEX IF NOT EXISTS idx_agent_runs_project_id ON agent_runs(project_id);
             CREATE INDEX IF NOT EXISTS idx_agent_runs_session_id ON agent_runs(session_id);

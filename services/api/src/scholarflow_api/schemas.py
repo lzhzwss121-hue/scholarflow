@@ -199,6 +199,47 @@ class ResearchDecisionResponse(BaseModel):
     artifacts: list[Artifact]
 
 
+class ResearchMemoryQueryRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=1000)
+    direction: str = Field(default="", max_length=500)
+    top_k: int = Field(default=5, ge=3, le=8)
+
+
+class PaperMemoryHit(BaseModel):
+    paper: Paper
+    direction: str
+    round: int
+    score: float
+    snippets: list[str]
+    abstract_translation: str
+    weakest_assumption: str
+    minimal_reproduction: str
+    counterexample: str
+    follow_up_idea: str
+    why_selected: str
+    self_read_priority: bool
+
+
+class DirectionMemory(BaseModel):
+    direction: str
+    total_papers: int
+    round_count: int
+    summary: str
+    paper_ids: list[str]
+    updated_at: str
+
+
+class ResearchMemoryQueryResponse(BaseModel):
+    question: str
+    top_k: int
+    answer: str
+    hits: list[PaperMemoryHit]
+    direction_memory: DirectionMemory | None
+    total_memories: int
+    artifact: Artifact
+    warnings: list[str]
+
+
 class AgentPlanRequest(BaseModel):
     project_id: str
     task: str = Field(min_length=1, max_length=1000)

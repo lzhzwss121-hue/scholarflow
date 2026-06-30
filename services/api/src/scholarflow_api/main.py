@@ -38,6 +38,12 @@ from scholarflow_api.research_decisions import (
     render_gap_board_markdown,
     render_validation_markdown,
 )
+from scholarflow_api.research_memory import (
+    query_research_memory,
+    render_research_memory_answer_markdown,
+    upsert_direction_memory_snapshot,
+    upsert_direction_reading_memories,
+)
 from scholarflow_api.schemas import (
     AgentExecuteRequest,
     AgentExecuteResponse,
@@ -60,6 +66,10 @@ from scholarflow_api.schemas import (
     ProjectCreate,
     ResearchDecisionRequest,
     ResearchDecisionResponse,
+    DirectionMemory,
+    PaperMemoryHit,
+    ResearchMemoryQueryRequest,
+    ResearchMemoryQueryResponse,
     Session,
     ToolEvent,
 )
@@ -448,6 +458,34 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
                 ),
             )
 
+        upsert_direction_reading_memories(
+            connection,
+            project_id,
+            payload.direction,
+            payload.round,
+            readings,
+            completed_at,
+        )
+        direction_memory = upsert_direction_memory_snapshot(connection, project_id, payload.direction, completed_at)
+        memory_artifact = insert_artifact_row(
+            connection=connection,
+            project_id=project_id,
+            title=f"direction_memory_{paper_slug(payload.direction)}.md",
+            kind="markdown",
+            content_markdown="\n\n".join(
+                [
+                    f"# Direction Memory: {direction_memory.direction}",
+                    direction_memory.summary,
+                    f"Total papers: {direction_memory.total_papers}",
+                    f"Rounds: {direction_memory.round_count}",
+                ],
+            ),
+            content_json=json.dumps(direction_memory.to_dict(), ensure_ascii=False, indent=2),
+            diff="+ Updated paper memory bank\n+ Updated cumulative direction memory snapshot",
+            now=completed_at,
+        )
+        artifacts.append(memory_artifact)
+
         insert_tool_event(
             connection,
             session_id,
@@ -478,6 +516,14 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
             "direction.summarize",
             "done",
             f"已生成方向总结，并推荐 {len(bundle.recommended_paper_ids)} 篇用户亲自精读论文。",
+            completed_at,
+        )
+        insert_tool_event(
+            connection,
+            session_id,
+            "memory.write",
+            "done",
+            f"已写入 Paper Memory Bank：累计 {direction_memory.total_papers} 篇，轮次 {direction_memory.round_count}。",
             completed_at,
         )
         connection.execute(
@@ -588,6 +634,72 @@ def create_project_research_decisions(project_id: str, payload: ResearchDecision
         validation=bundle.validation.to_dict(),
         experiment=bundle.experiment.to_dict(),
         artifacts=[Artifact.model_validate(artifact) for artifact in artifacts],
+    )
+
+
+@app.post("/projects/{project_id}/research-memory/query", response_model=ResearchMemoryQueryResponse, status_code=201)
+def query_project_research_memory(project_id: str, payload: ResearchMemoryQueryRequest) -> ResearchMemoryQueryResponse:
+    now = utc_now()
+    with get_connection() as connection:
+        project = fetch_project_dict(connection, project_id)
+        session_id = ensure_active_session(connection, project, now)
+        insert_tool_event(
+            connection,
+            session_id,
+            "memory.retrieve",
+            "running",
+            f"正在从 Paper Memory Bank 检索 {payload.top_k} 篇相关论文。",
+            now,
+        )
+        answer = query_research_memory(
+            connection,
+            project_id=project_id,
+            question=payload.question,
+            top_k=payload.top_k,
+            now=now,
+            direction=payload.direction,
+        )
+        answer_json = json.dumps(answer.to_dict(), ensure_ascii=False, indent=2)
+        artifact = insert_artifact_row(
+            connection=connection,
+            project_id=project_id,
+            title=f"research_memory_answer_{paper_slug(payload.question)}.md",
+            kind="markdown",
+            content_markdown=render_research_memory_answer_markdown(answer),
+            content_json=answer_json,
+            diff="+ Retrieved 3-8 paper memories\n+ Generated memory-grounded answer",
+            now=now,
+        )
+        insert_tool_event(
+            connection,
+            session_id,
+            "memory.retrieve",
+            "done" if answer.hits else "queued",
+            f"命中 {len(answer.hits)} 篇论文记忆；memory bank 总量 {answer.total_memories}。",
+            now,
+        )
+        insert_tool_event(
+            connection,
+            session_id,
+            "memory.answer",
+            "done",
+            f"已生成基于 {len(answer.hits)} 篇论文记忆的回答 artifact。",
+            now,
+        )
+        connection.execute(
+            "UPDATE projects SET stage = ?, updated_at = ? WHERE id = ?",
+            ("research-memory", now, project_id),
+        )
+
+    return ResearchMemoryQueryResponse(
+        question=answer.question,
+        top_k=answer.top_k,
+        answer=answer.answer,
+        hits=[to_paper_memory_hit(hit) for hit in answer.hits],
+        direction_memory=DirectionMemory(**answer.direction_memory.to_dict()) if answer.direction_memory else None,
+        total_memories=answer.total_memories,
+        artifact=Artifact.model_validate(artifact),
+        warnings=answer.warnings,
     )
 
 
@@ -972,6 +1084,41 @@ def fetch_read_paper_titles(connection, project_id: str) -> list[str]:
         (project_id,),
     ).fetchall()
     return [row["title"] for row in rows if row["title"]]
+
+
+def to_paper_memory_hit(hit) -> PaperMemoryHit:
+    memory = hit.memory
+    paper = Paper(
+        id=memory.get("paper_id") or memory.get("id"),
+        project_id=memory.get("project_id", ""),
+        title=memory.get("title", ""),
+        authors=memory.get("authors", ""),
+        abstract="",
+        year=memory.get("year", ""),
+        type="memory",
+        venue=memory.get("venue", ""),
+        source=memory.get("source", ""),
+        url=memory.get("url", ""),
+        relation=memory.get("why_selected", ""),
+        priority="High" if int(memory.get("self_read_priority") or 0) == 1 else "Medium",
+        code="unknown",
+        relevance_score=float(hit.score),
+        created_at=memory.get("created_at", ""),
+    )
+    return PaperMemoryHit(
+        paper=paper,
+        direction=memory.get("direction", ""),
+        round=int(memory.get("round_index") or 0),
+        score=float(hit.score),
+        snippets=hit.snippets,
+        abstract_translation=memory.get("abstract_translation", ""),
+        weakest_assumption=memory.get("weakest_assumption", ""),
+        minimal_reproduction=memory.get("minimal_reproduction", ""),
+        counterexample=memory.get("counterexample", ""),
+        follow_up_idea=memory.get("follow_up_idea", ""),
+        why_selected=memory.get("why_selected", ""),
+        self_read_priority=bool(int(memory.get("self_read_priority") or 0)),
+    )
 
 
 def build_paper_card_source(connection, project_id: str, payload: PaperCardCreateRequest) -> dict:
