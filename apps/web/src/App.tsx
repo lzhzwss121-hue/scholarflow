@@ -872,6 +872,13 @@ function DashboardView({
         </p>
       </section>
 
+      <AgentRuntimePanel
+        apiStatus={apiStatus}
+        artifactCount={artifactCount}
+        paperCount={paperCount}
+        stage={activeProject?.stage ?? "mock"}
+      />
+
       <AgentRunPanel
         agentBusy={agentBusy}
         agentPlan={agentPlan}
@@ -898,6 +905,74 @@ function DashboardView({
         ))}
       </section>
     </div>
+  );
+}
+
+function AgentRuntimePanel({
+  apiStatus,
+  artifactCount,
+  paperCount,
+  stage,
+}: {
+  apiStatus: ApiStatus;
+  artifactCount: number;
+  paperCount: number;
+  stage: string;
+}) {
+  const items = [
+    {
+      icon: BrainCircuit,
+      label: "Plan Mode",
+      value: stage === "agent-loop" ? "planning" : "ready",
+      detail: "生成计划后再确认执行",
+    },
+    {
+      icon: Search,
+      label: "Paper Memory",
+      value: `${paperCount} papers`,
+      detail: "按问题检索 3-8 篇论文记忆",
+    },
+    {
+      icon: FileText,
+      label: "Context",
+      value: "structured",
+      detail: "论文卡片、round summary、direction memory 分层保存",
+    },
+    {
+      icon: Save,
+      label: "Artifacts",
+      value: String(artifactCount),
+      detail: apiStatus === "online" ? "SQLite 持久化" : "mock preview",
+    },
+  ];
+
+  return (
+    <section className="runtime-panel" aria-label="agent runtime">
+      <div className="runtime-heading">
+        <div>
+          <p className="section-kicker">Agent Runtime</p>
+          <h2>运行状态</h2>
+        </div>
+        <span className={`run-status ${apiStatus === "online" ? "completed" : "queued"}`}>
+          {apiStatus === "online" ? "online" : apiStatus}
+        </span>
+      </div>
+      <div className="runtime-grid">
+        {items.map((item) => {
+          const Icon = item.icon;
+          return (
+            <article className="runtime-card" key={item.label}>
+              <Icon size={17} />
+              <div>
+                <strong>{item.label}</strong>
+                <span>{item.value}</span>
+                <p>{item.detail}</p>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -1861,18 +1936,49 @@ function ToolTimeline({ events }: { events: TimelineEvent[] }) {
         <FileText size={17} />
       </div>
       <div className="timeline-list">
-        {events.map((event) => (
-          <article className={`timeline-event ${event.status}`} key={`${event.time}-${event.tool}-${event.summary}`}>
-            <time>{event.time}</time>
-            <div>
-              <strong>{event.tool}</strong>
-              <p>{event.summary}</p>
-            </div>
-          </article>
-        ))}
+        {events.map((event) => {
+          const Icon = getToolEventIcon(event.tool);
+          return (
+            <article className={`timeline-event ${event.status}`} key={`${event.time}-${event.tool}-${event.summary}`}>
+              <time>{event.time}</time>
+              <div className="timeline-icon">
+                <Icon size={15} />
+              </div>
+              <div>
+                <strong>{event.tool}</strong>
+                <p>{event.summary}</p>
+              </div>
+            </article>
+          );
+        })}
       </div>
     </section>
   );
+}
+
+function getToolEventIcon(tool: string): LucideIcon {
+  if (tool.includes("memory")) {
+    return BrainCircuit;
+  }
+  if (tool.includes("literature") || tool.includes("retrieve") || tool.includes("query")) {
+    return Search;
+  }
+  if (tool.includes("paper") || tool.includes("read")) {
+    return BookOpen;
+  }
+  if (tool.includes("artifact") || tool.includes("save")) {
+    return Save;
+  }
+  if (tool.includes("gap") || tool.includes("novelty")) {
+    return GitBranch;
+  }
+  if (tool.includes("experiment")) {
+    return FlaskConical;
+  }
+  if (tool.includes("plan") || tool.includes("agent")) {
+    return BrainCircuit;
+  }
+  return FileText;
 }
 
 interface ArtifactPreviewProps {

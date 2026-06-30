@@ -183,3 +183,19 @@ Planned deliverables:
 - Save memory-grounded answers as artifacts.
 
 Status: complete for structured keyword retrieval. Embedding/vector retrieval remains future work.
+
+## Phase 12: Agent Runtime UX
+
+Goal: borrow proven interaction patterns from coding-agent systems while adapting them to research workflows.
+
+Reference:
+
+- `docs/claude-code-from-scratch-analysis.md`
+
+Planned deliverables:
+
+- Runtime status panel for plan mode, memory recall, context strategy, and artifact persistence.
+- Tool timeline entries with readable tool-specific icons.
+- Clear separation between planning, retrieval, memory, reading, and artifact-writing steps.
+
+Status: complete for the dashboard and timeline UI pass.

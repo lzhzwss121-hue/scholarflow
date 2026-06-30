@@ -376,6 +376,76 @@ button {
   gap: 14px;
 }
 
+.runtime-panel {
+  border: 1px solid #d9dee6;
+  border-radius: 8px;
+  padding: 18px;
+  background: #ffffff;
+  display: grid;
+  gap: 14px;
+}
+
+.runtime-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.runtime-heading h2 {
+  margin: 0;
+  color: #1d2733;
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.runtime-card {
+  min-height: 118px;
+  border: 1px solid #dce3eb;
+  border-radius: 8px;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
+  background: #fbfcfd;
+}
+
+.runtime-card svg {
+  color: #1f6f8b;
+  margin-top: 2px;
+}
+
+.runtime-card strong,
+.runtime-card span {
+  display: block;
+}
+
+.runtime-card strong {
+  color: #263545;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.runtime-card span {
+  margin-top: 4px;
+  color: #174f67;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.runtime-card p {
+  margin: 8px 0 0;
+  color: #667789;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .agent-run-header {
   display: flex;
   align-items: flex-start;
@@ -1803,7 +1873,7 @@ td a {
 
 .timeline-event {
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
+  grid-template-columns: 48px 28px minmax(0, 1fr);
   gap: 10px;
   border-left: 3px solid #d8dee7;
   padding-left: 10px;
@@ -1825,6 +1895,26 @@ td a {
   color: #667789;
   font-size: 12px;
   font-weight: 800;
+}
+
+.timeline-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: #f1f4f7;
+  color: #526170;
+}
+
+.timeline-event.done .timeline-icon {
+  color: #1f7a4d;
+  background: #e6f5ee;
+}
+
+.timeline-event.running .timeline-icon {
+  color: #174f67;
+  background: #eef7fa;
 }
 
 .artifact-preview {
@@ -1936,6 +2026,7 @@ td a {
 
   .metric-grid,
   .agent-plan-list,
+  .runtime-grid,
   .workflow-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1954,6 +2045,7 @@ td a {
   .direction-summary-header,
   .memory-answer-header,
   .memory-control-header,
+  .runtime-heading,
   .paper-reader-header,
   .decision-header,
   .search-control,
@@ -1970,7 +2062,8 @@ td a {
   .direction-detail-header,
   .direction-summary-header,
   .memory-answer-header,
-  .memory-control-header {
+  .memory-control-header,
+  .runtime-heading {
     flex-direction: column;
   }
 
@@ -1989,6 +2082,7 @@ td a {
   .nav-list,
   .metric-grid,
   .agent-plan-list,
+  .runtime-grid,
   .workflow-strip,
   .form-grid,
   .api-action-row {
