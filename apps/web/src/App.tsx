@@ -2,21 +2,40 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   ArrowRight,
+  Bell,
   BookOpen,
   BrainCircuit,
+  Calendar,
+  Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
   Circle,
   Clock3,
+  Download,
+  Filter,
   FileText,
   FlaskConical,
   GitBranch,
+  Grid3X3,
+  Lightbulb,
   LayoutDashboard,
+  MoreHorizontal,
+  Network,
   Play,
   Plus,
+  Rocket,
   Save,
   Search,
+  ShieldCheck,
   Sparkles,
   Table2,
+  Target,
+  Trophy,
+  Upload,
+  User,
+  WandSparkles,
+  X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -113,8 +132,27 @@ const conferenceBadges = [
   "SIGIR",
 ];
 
+const productViewIds: ViewId[] = [
+  "dashboard",
+  "new-project",
+  "paper-table",
+  "direction-review",
+  "paper-memory",
+  "paper-reader",
+  "gap-board",
+  "experiment-planner",
+];
+
+function readViewFromHash(): ViewId {
+  if (typeof window === "undefined") {
+    return "dashboard";
+  }
+  const hashView = window.location.hash.replace("#", "");
+  return productViewIds.includes(hashView as ViewId) ? (hashView as ViewId) : "dashboard";
+}
+
 export function App() {
-  const [activeView, setActiveView] = useState<ViewId>("dashboard");
+  const [activeView, setActiveView] = useState<ViewId>(() => readViewFromHash());
   const [artifactTab, setArtifactTab] = useState<ArtifactTab>("markdown");
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
   const [apiMessage, setApiMessage] = useState("正在连接 ScholarFlow API...");
@@ -210,6 +248,15 @@ export function App() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  useEffect(() => {
+    function handleHashChange() {
+      setActiveView(readViewFromHash());
+    }
+
+    window.addEventListener("hashchange", handleHashChange);
+    return () => window.removeEventListener("hashchange", handleHashChange);
   }, []);
 
   useEffect(() => {
@@ -534,117 +581,274 @@ export function App() {
     }
   }
 
+  function navigateView(view: ViewId) {
+    setActiveView(view);
+    if (typeof window !== "undefined") {
+      window.history.replaceState(null, "", `#${view}`);
+    }
+  }
+
   return (
-    <div className="scholarflow-app">
-      <ProjectNavigator
-        activeProject={activeProject}
-        activeView={activeView}
-        apiStatus={apiStatus}
-        artifactCount={persistedArtifactCount}
-        onSelect={setActiveView}
-        onSelectProject={handleSelectProject}
-        paperCount={paperRows.length}
-        projectCount={projects.length}
-        projects={projects}
-      />
-
-      <main className="agent-workspace">
-        <header className="workspace-header">
-          <div>
-            <p className="phase-label">v0.1.0 / Open-Source Preview</p>
-            <h1>{viewTitles[activeView]}</h1>
-          </div>
-          <div className="toolbar" aria-label="workspace actions">
-            <button
-              className="icon-button"
-              disabled={apiStatus !== "online" || artifactSaving}
-              title="保存右侧 Artifact 编辑内容"
-              type="button"
-              onClick={handleSaveArtifact}
-            >
-              <Save size={17} />
-            </button>
-          </div>
-        </header>
-
-        <div className={`api-banner ${apiStatus}`}>
-          <span className="api-dot" />
-          <p>{apiMessage}</p>
-        </div>
-
-        <section className="workspace-body" aria-label={activeNavItem?.label}>
-          <div className="primary-view">
-            <ActiveView
-              activeProject={activeProject}
-              agentBusy={agentBusy}
-              agentPlan={agentPlan}
-              agentTask={agentTask}
-              apiMessage={apiMessage}
-              apiStatus={apiStatus}
-              artifactCount={persistedArtifactCount}
-              decisionBusy={decisionBusy}
-              decisionGoal={decisionGoal}
-              directionBusy={directionBusy}
-              directionInput={directionInput}
-              directionReview={directionReview}
-              directionRound={directionRound}
-              literatureBusy={literatureBusy}
-              literatureErrors={literatureErrors}
-              literatureQuery={literatureQuery}
-              memoryBusy={memoryBusy}
-              memoryQuestion={memoryQuestion}
-              memoryResult={memoryResult}
-              memoryTopK={memoryTopK}
-              projectDraft={projectDraft}
-              onAgentTaskChange={setAgentTask}
-              onCreateProject={handleCreateProject}
-              onCreateAgentPlan={handleCreateAgentPlan}
-              onCreateDirectionReview={handleCreateDirectionReview}
-              onExecuteAgentRun={handleExecuteAgentRun}
-              onGeneratePaperCard={handleGeneratePaperCard}
-              onCreateResearchDecision={handleCreateResearchDecision}
-              onDecisionGoalChange={setDecisionGoal}
-              onDirectionInputChange={setDirectionInput}
-              onDirectionRoundChange={setDirectionRound}
-              onLiteratureQueryChange={setLiteratureQuery}
-              onMemoryQuestionChange={setMemoryQuestion}
-              onMemoryTopKChange={setMemoryTopK}
-              onPaperCardInputChange={setPaperCardInput}
-              onQueryResearchMemory={handleQueryResearchMemory}
-              onProjectDraftChange={setProjectDraft}
-              onSearchLiterature={handleSearchLiterature}
-              onSelectedDirectionPaperChange={setSelectedDirectionPaperId}
-              onSelectedPaperChange={setSelectedPaperId}
-              onSelectView={setActiveView}
-              paperRows={paperRows}
-              paperCardBusy={paperCardBusy}
-              paperCardInput={paperCardInput}
-              projectCount={projects.length}
-              researchDecision={researchDecision}
-              selectedDirectionPaperId={selectedDirectionPaperId}
-              selectedPaperId={selectedPaperId}
-              latestPaperCard={latestPaperCard}
-              view={activeView}
-            />
-          </div>
-          <aside className="agent-rail" aria-label="agent progress">
-            <PlanChecklist steps={checklistSteps} />
-            <ToolTimeline events={timelineRows} />
-          </aside>
-        </section>
+    <div className={`scholarflow-product-shell view-${activeView}`}>
+      <ProductTopNav activeView={activeView} onSelectView={navigateView} />
+      <main className="product-page" aria-label={activeNavItem?.label ?? viewTitles[activeView]}>
+        <ActiveView
+          activeProject={activeProject}
+          agentBusy={agentBusy}
+          agentPlan={agentPlan}
+          agentTask={agentTask}
+          apiMessage={apiMessage}
+          apiStatus={apiStatus}
+          artifactCount={persistedArtifactCount}
+          decisionBusy={decisionBusy}
+          decisionGoal={decisionGoal}
+          directionBusy={directionBusy}
+          directionInput={directionInput}
+          directionReview={directionReview}
+          directionRound={directionRound}
+          literatureBusy={literatureBusy}
+          literatureErrors={literatureErrors}
+          literatureQuery={literatureQuery}
+          memoryBusy={memoryBusy}
+          memoryQuestion={memoryQuestion}
+          memoryResult={memoryResult}
+          memoryTopK={memoryTopK}
+          projectDraft={projectDraft}
+          onAgentTaskChange={setAgentTask}
+          onCreateProject={handleCreateProject}
+          onCreateAgentPlan={handleCreateAgentPlan}
+          onCreateDirectionReview={handleCreateDirectionReview}
+          onExecuteAgentRun={handleExecuteAgentRun}
+          onGeneratePaperCard={handleGeneratePaperCard}
+          onCreateResearchDecision={handleCreateResearchDecision}
+          onDecisionGoalChange={setDecisionGoal}
+          onDirectionInputChange={setDirectionInput}
+          onDirectionRoundChange={setDirectionRound}
+          onLiteratureQueryChange={setLiteratureQuery}
+          onMemoryQuestionChange={setMemoryQuestion}
+          onMemoryTopKChange={setMemoryTopK}
+          onPaperCardInputChange={setPaperCardInput}
+          onQueryResearchMemory={handleQueryResearchMemory}
+          onProjectDraftChange={setProjectDraft}
+          onSearchLiterature={handleSearchLiterature}
+          onSelectedDirectionPaperChange={setSelectedDirectionPaperId}
+          onSelectedPaperChange={setSelectedPaperId}
+          onSelectView={navigateView}
+          paperRows={paperRows}
+          paperCardBusy={paperCardBusy}
+          paperCardInput={paperCardInput}
+          projectCount={projects.length}
+          researchDecision={researchDecision}
+          selectedDirectionPaperId={selectedDirectionPaperId}
+          selectedPaperId={selectedPaperId}
+          latestPaperCard={latestPaperCard}
+          view={activeView}
+        />
       </main>
-
-      <ArtifactPreview
-        activeTab={artifactTab}
-        apiStatus={apiStatus}
-        artifact={artifactDraft ?? displayedArtifact}
-        isSaving={artifactSaving}
-        lastSavedArtifact={lastSavedArtifact}
-        onArtifactChange={setArtifactDraft}
-        onSave={handleSaveArtifact}
-        onTabChange={setArtifactTab}
-      />
     </div>
+  );
+}
+
+function ProductTopNav({
+  activeView,
+  onSelectView,
+}: {
+  activeView: ViewId;
+  onSelectView: (view: ViewId) => void;
+}) {
+  const showPaperSearch = activeView === "paper-table";
+  const navLinks = ([
+    { label: "首页", view: "dashboard" },
+    { label: "功能", view: "direction-review" },
+    { label: "科研工作流", view: "new-project" },
+    { label: "论文检索", view: "paper-table", optional: !showPaperSearch },
+    { label: "Paper Memory", view: "paper-memory" },
+    { label: "实验计划", view: "experiment-planner" },
+  ] satisfies Array<{ label: string; view: ViewId; optional?: boolean }>).filter((item) => !item.optional);
+  const activeTopView = activeView === "paper-reader" ? "paper-memory" : activeView;
+  const readerChrome = activeView === "paper-reader";
+
+  return (
+    <header className={readerChrome ? "product-topbar reader" : "product-topbar"}>
+      <button className="topbar-brand" type="button" onClick={() => onSelectView("dashboard")}>
+        <span className="sf-logo">SF</span>
+        <span>
+          <strong>ScholarFlow</strong>
+          <small>AI Research Workflow Agent</small>
+        </span>
+      </button>
+
+      <nav className="topbar-nav" aria-label="primary navigation">
+        {navLinks.map((item) => (
+          <button
+            className={activeTopView === item.view ? "active" : ""}
+            key={item.label}
+            type="button"
+            onClick={() => onSelectView(item.view)}
+          >
+            {item.label}
+          </button>
+        ))}
+        <button type="button">Docs</button>
+      </nav>
+
+      {readerChrome ? (
+        <div className="topbar-reader-tools">
+          <label className="topbar-search">
+            <Search size={16} />
+            <input placeholder="搜索论文、方向、笔记..." />
+          </label>
+          <button className="round-tool" type="button" aria-label="notifications">
+            <Bell size={18} />
+          </button>
+          <button className="user-avatar" type="button" aria-label="profile">
+            A
+          </button>
+        </div>
+      ) : (
+        <div className="topbar-actions">
+          <button className="login-button" type="button">
+            登录
+          </button>
+          <button className="gradient-button" type="button" onClick={() => onSelectView("new-project")}>
+            <Plus size={16} />
+            新建项目
+          </button>
+        </div>
+      )}
+    </header>
+  );
+}
+
+function ConferenceLogoBelt({ withTitle = true }: { withTitle?: boolean }) {
+  const badges = [...conferenceBadges, ...conferenceBadges];
+  return (
+    <section className="conference-logo-belt" aria-label="top AI conferences">
+      {withTitle ? (
+        <div className="conference-belt-title">
+          <Trophy size={21} />
+          <strong>面向顶会与主流会议</strong>
+        </div>
+      ) : null}
+      <div className="conference-logo-mask">
+        <div className="conference-logo-track">
+          {badges.map((label, index) => (
+            <span className={`conference-logo-chip tone-${index % 6}`} key={`${label}-${index}`}>
+              <ConferenceGlyph label={label} />
+              {label}
+            </span>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ConferenceGlyph({ label }: { label: string }) {
+  const glyph = label.slice(0, 1);
+  return <i aria-hidden="true">{glyph}</i>;
+}
+
+function ProjectSidebar({
+  activeView,
+  compact = false,
+  onSelectView,
+  paperCount,
+  projectCount,
+  artifactCount,
+}: {
+  activeView: ViewId;
+  compact?: boolean;
+  onSelectView: (view: ViewId) => void;
+  paperCount: number;
+  projectCount: number;
+  artifactCount: number;
+}) {
+  const showBoostCard = activeView === "new-project";
+  const showLocalAssets = !compact && activeView !== "new-project";
+  const sidebarItems: Array<{ id: ViewId; label: string; icon: LucideIcon }> = [
+    { id: "dashboard", label: "项目总览", icon: LayoutDashboard },
+    { id: "new-project", label: "新建项目", icon: Plus },
+    { id: "paper-table", label: "论文表格", icon: Search },
+    { id: "direction-review", label: "方向精读", icon: FileText },
+    { id: "paper-memory", label: "Paper Memory", icon: Network },
+    { id: "paper-reader", label: compact ? "Deep Paper Card" : "Deep Paper Card", icon: BookOpen },
+    { id: "gap-board", label: "Gap Board", icon: Target },
+    { id: "experiment-planner", label: "实验计划", icon: FlaskConical },
+  ];
+
+  return (
+    <aside className={compact ? "mock-sidebar reader-sidebar" : "mock-sidebar"}>
+      <div className="sidebar-project-head">
+        <span className="sf-logo small">SF</span>
+        <div>
+          <strong>{compact ? "当前项目" : activeView === "paper-table" ? "证据忠实性 VQA" : "ScholarFlow"}</strong>
+          <small>{compact ? "多模态大模型评估" : activeView === "paper-table" ? "survey-to-experiment" : "Workspace"}</small>
+        </div>
+        <ChevronDown size={17} />
+      </div>
+
+      {compact ? (
+        <div className="reader-nav-title">阅读导航</div>
+      ) : null}
+
+      <nav className="mock-sidebar-nav">
+        {sidebarItems
+          .filter((item) => (compact ? item.id !== "new-project" : true))
+          .map((item) => {
+            const Icon = item.icon;
+            const isActive = item.id === activeView || (compact && item.id === "paper-reader");
+            return (
+              <button
+                className={isActive ? "active" : ""}
+                key={item.id}
+                type="button"
+                onClick={() => onSelectView(item.id)}
+              >
+                <Icon size={16} />
+                <span>{item.label}</span>
+                {compact && item.id === "direction-review" ? <ChevronDown size={15} /> : null}
+              </button>
+            );
+          })}
+      </nav>
+
+      {compact ? (
+        <div className="reader-progress-card">
+          <strong>阅读进度</strong>
+          <div className="progress-line">
+            <span style={{ width: "100%" }} />
+          </div>
+          <div className="progress-meta">
+            <Check size={15} />
+            <span>本轮精读完成</span>
+            <em>10 / 10</em>
+          </div>
+        </div>
+      ) : showBoostCard ? (
+        <div className="sidebar-boost-card">
+          <div className="boost-icon">
+            <Sparkles size={15} />
+          </div>
+          <strong>AI 驱动的科研加速器</strong>
+          <p>从想法到可验证成果，ScholarFlow 帮助你更快、更深、更稳地完成科研任务。</p>
+          <button type="button">
+            了解更多
+            <ArrowRight size={14} />
+          </button>
+        </div>
+      ) : null}
+
+      {showLocalAssets ? (
+        <div className="local-assets-card">
+          <strong>Local Assets</strong>
+          <span>{projectCount || 1} project</span>
+          <span>{paperCount} papers</span>
+          <span>{artifactCount} persisted artifacts</span>
+          <span>SQLite workspace</span>
+        </div>
+      ) : null}
+    </aside>
   );
 }
 
@@ -866,36 +1070,47 @@ function ActiveView({
   switch (view) {
     case "new-project":
       return (
-        <NewProjectView
+        <ProductNewProjectView
           apiMessage={apiMessage}
           apiStatus={apiStatus}
+          artifactCount={artifactCount}
           draft={projectDraft}
           onCreateProject={onCreateProject}
           onDraftChange={onProjectDraftChange}
+          onSelectView={onSelectView}
+          paperCount={paperRows.length}
+          projectCount={projectCount}
         />
       );
     case "paper-table":
       return (
-        <PaperTableView
+        <ProductPaperTableView
+          activeProject={activeProject}
+          artifactCount={artifactCount}
           apiStatus={apiStatus}
           errors={literatureErrors}
           isSearching={literatureBusy}
           onQueryChange={onLiteratureQueryChange}
           onSearch={onSearchLiterature}
+          onSelectView={onSelectView}
           papers={paperRows}
+          projectCount={projectCount}
           query={literatureQuery}
         />
       );
     case "paper-reader":
       return (
-        <PaperReaderView
+        <ProductPaperReaderView
+          artifactCount={artifactCount}
           apiStatus={apiStatus}
           card={latestPaperCard}
           isGenerating={paperCardBusy}
           onGenerate={onGeneratePaperCard}
           onInputChange={onPaperCardInputChange}
           onSelectedPaperChange={onSelectedPaperChange}
+          onSelectView={onSelectView}
           papers={paperRows}
+          projectCount={projectCount}
           selectedPaperId={selectedPaperId}
           supplementalInput={paperCardInput}
         />
@@ -954,7 +1169,7 @@ function ActiveView({
     case "dashboard":
     default:
       return (
-        <DashboardView
+        <ProductHomeView
           activeProject={activeProject}
           agentBusy={agentBusy}
           agentPlan={agentPlan}
@@ -972,7 +1187,7 @@ function ActiveView({
   }
 }
 
-function DashboardView({
+function ProductHomeView({
   activeProject,
   agentBusy,
   agentPlan,
@@ -1000,71 +1215,761 @@ function DashboardView({
   projectCount: number;
 }) {
   const heroSubtitle = activeProject
-    ? "当前项目会持续推进文献检索、论文精读、Paper Memory 和实验计划，所有输出都会沉淀为可回读 artifact。"
-    : "输入研究方向后，ScholarFlow 会按论文检索、方向精读、证据记忆、Gap 分析和最小复现实验的顺序推进。";
+    ? "ScholarFlow 会围绕当前项目持续推进论文检索、方向精读、Deep Paper Card、Paper Memory 与一周最小复现实验计划。"
+    : "ScholarFlow 会帮你完成论文检索、方向精读、Deep Paper Card、Paper Memory、Gap Board 与一周最小复现实验计划。";
+  const workflowSteps = [
+    {
+      icon: Search,
+      title: "方向理解与关键问题扩展",
+      detail: "拆解研究对象与核心问题，生成搜索关键词与假设。",
+      status: "已就绪",
+      tone: "ready",
+    },
+    {
+      icon: BookOpen,
+      title: "文献检索与 Paper Table",
+      detail: "arXiv / OpenAlex 检索，构建相关文章表与初步证据。",
+      status: "进行中",
+      tone: "active",
+    },
+    {
+      icon: FileText,
+      title: "方向精读与 Deep Paper Card",
+      detail: "多维度精读每篇关键论文，提炼方法、贡献与局限。",
+      status: "进行中",
+      tone: "active",
+    },
+    {
+      icon: Target,
+      title: "Gap Board 与研究假设",
+      detail: "识别研究空白，形成可验证的 follow-up idea。",
+      status: "待开始",
+      tone: "queued",
+    },
+    {
+      icon: FlaskConical,
+      title: "实验计划与最小复现（7D）",
+      detail: "生成一周最小复现实验计划与评估指标。",
+      status: "待开始",
+      tone: "queued",
+    },
+  ];
 
   return (
-    <div className="view-stack">
-      <section className="research-hero">
-        <div className="hero-stars" aria-hidden="true" />
-        <div className="hero-content">
-          <div className="hero-badge">
-            <Sparkles size={15} />
-            中文 AI 科研任务流程 Agent
+    <div className="home-canvas">
+      <section className="home-hero-grid">
+        <div className="home-copy">
+          <div className="home-badge">
+            <span />
+            中文优先 · 证据优先 · 面向 AI 顶会论文
           </div>
-          <h2>把 AI 研究方向推进成可验证的科研任务</h2>
+          <h1>
+            把模糊的 <span>research idea</span>
+            <br />
+            推进成可验证的科研任务
+          </h1>
           <p>{heroSubtitle}</p>
-          <div className="hero-actions">
-            <button className="primary-command hero-command" type="button" onClick={() => onSelectView("new-project")}>
+          <div className="home-actions">
+            <button className="gradient-button large" type="button" onClick={() => onSelectView("new-project")}>
+              <Plus size={20} />
               新建研究项目
-              <ArrowRight size={17} />
             </button>
-            <button className="secondary-command hero-command" type="button" onClick={() => onSelectView("paper-table")}>
+            <button className="outline-button large" type="button" onClick={() => onSelectView("direction-review")}>
+              <Network size={20} />
+              查看工作流
+            </button>
+            <button className="outline-button large" type="button" onClick={() => onSelectView("paper-table")}>
+              <Search size={20} />
               检索论文
-              <Search size={17} />
-            </button>
-            <button className="secondary-command hero-command" type="button" onClick={() => onSelectView("direction-review")}>
-              开始精读
-              <BookOpen size={17} />
             </button>
           </div>
+          <div className="home-stat-row">
+            <article>
+              <FileText size={25} />
+              <strong>30+</strong>
+              <span>多模态论文精读</span>
+            </article>
+            <article>
+              <Lightbulb size={25} />
+              <strong>3-8</strong>
+              <span>记忆检索相关论文</span>
+            </article>
+            <article>
+              <FlaskConical size={25} />
+              <strong>7D</strong>
+              <span>一周最小复现实验</span>
+            </article>
+            <article>
+              <Target size={25} />
+              <strong>12+</strong>
+              <span>关键证据链构建</span>
+            </article>
+          </div>
         </div>
-        <div className="conference-stage" aria-label="AI 顶会方向背景">
-          <span>面向 AI 顶会论文阅读与科研复现</span>
-          <ConferenceMarquee />
+
+        <aside className="workflow-showcase">
+          <div className="showcase-header">
+            <div>
+              <Sparkles size={25} />
+              <strong>ScholarFlow 智能科研工作流</strong>
+            </div>
+            <span>Local-first · SQLite Workspace</span>
+          </div>
+          <div className="showcase-steps">
+            {workflowSteps.map((step, index) => {
+              const Icon = step.icon;
+              return (
+                <article className="showcase-step" key={step.title}>
+                  <div className="step-node">
+                    <Icon size={28} />
+                  </div>
+                  <div className="step-card">
+                    <span>{String(index + 1).padStart(2, "0")}</span>
+                    <div>
+                      <strong>{step.title}</strong>
+                      <p>{step.detail}</p>
+                    </div>
+                    <em className={step.tone}>{step.status}</em>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+          <footer>
+            <span>ScholarFlow Agent</span>
+            <span>{apiStatus === "online" ? "SQLite / API Ready" : "OpenRouter / DeepSeek Configurable"}</span>
+          </footer>
+        </aside>
+      </section>
+
+      <ConferenceLogoBelt />
+    </div>
+  );
+}
+
+function ProductNewProjectView({
+  apiMessage,
+  apiStatus,
+  artifactCount,
+  draft,
+  onCreateProject,
+  onDraftChange,
+  onSelectView,
+  paperCount,
+  projectCount,
+}: {
+  apiMessage: string;
+  apiStatus: ApiStatus;
+  artifactCount: number;
+  draft: ProjectDraft;
+  onCreateProject: () => void;
+  onDraftChange: (draft: ProjectDraft) => void;
+  onSelectView: (view: ViewId) => void;
+  paperCount: number;
+  projectCount: number;
+}) {
+  const suggestions = [
+    {
+      title: "多模态大模型在视觉问答中的证据真实性评估",
+      detail: "关注 hallucination、citation faithfulness 与 benchmark。",
+      icon: Network,
+    },
+    {
+      title: "医学影像分割中的 prompt learning",
+      detail: "探索提示学习在分割任务中的跨域泛化能力。",
+      icon: BookOpen,
+    },
+    {
+      title: "RAG 系统中 citation faithfulness 的自动评估方法",
+      detail: "构建无需人工标注的可信度评估框架。",
+      icon: Search,
+    },
+    {
+      title: "扩散模型用于盲图像修复时的可控性问题",
+      detail: "研究条件控制与结构保持的平衡策略。",
+      icon: FileText,
+    },
+  ];
+  const createSteps = [
+    ["创建 SQLite Project", "建立本地项目、语言、研究领域和 workflow。"],
+    ["初始化 Agent Task", "生成从文献检索到可验证 gap 的最小任务计划。"],
+    ["进入 Paper Table", "用当前关键词直接发起 arXiv / OpenAlex 检索。"],
+    ["保存 Artifact", "后续总结、Paper Card、Gap Board 都可回溯。"],
+  ];
+
+  function updateDraft(field: keyof ProjectDraft, value: string) {
+    onDraftChange({
+      ...draft,
+      [field]: value,
+    });
+  }
+
+  function applySuggestion(title: string) {
+    onDraftChange({
+      ...draft,
+      title,
+      keyword: title,
+      description: `围绕「${title}」检索近三年相关论文，识别证据约束、benchmark 偏差与一周可验证实验。`,
+    });
+  }
+
+  return (
+    <div className="project-canvas">
+      <ProjectSidebar
+        activeView="new-project"
+        artifactCount={artifactCount}
+        onSelectView={onSelectView}
+        paperCount={paperCount}
+        projectCount={projectCount}
+      />
+
+      <section className="new-project-panel">
+        <div className="panel-title-row">
+          <Sparkles size={34} />
+          <div>
+            <h1>新建科研项目</h1>
+            <p>输入项目信息，系统将为你初始化 “survey-to-experiment” 工作流。</p>
+          </div>
         </div>
-        <div className="hero-stat-card" aria-label="workspace stats">
-          <Metric label="研究项目" value={String(projectCount || 1)} detail="projects" />
-          <Metric label="论文记忆" value={String(paperCount)} detail="paper records" />
-          <Metric label="Artifacts" value={String(artifactCount)} detail="saved outputs" />
-          <Metric label="运行模式" value={apiStatus === "online" ? "Real" : "Mock"} detail="tool chain" />
+
+        <div className="field-stack">
+          <label>
+            <span>项目标题 <sup>*</sup></span>
+            <div className="text-input-row">
+              <input
+                maxLength={100}
+                placeholder="例如：多模态大模型在视觉问答证据真实性研究"
+                value={draft.title}
+                onChange={(event) => updateDraft("title", event.target.value)}
+              />
+              <span>{draft.title.length}/100</span>
+            </div>
+          </label>
+          <label>
+            <span>研究方向 / Keyword <sup>*</sup></span>
+            <div className="text-input-row">
+              <input
+                maxLength={200}
+                placeholder="输入关键词，多个关键词请用英文逗号分隔"
+                value={draft.keyword}
+                onChange={(event) => updateDraft("keyword", event.target.value)}
+              />
+              <span>{draft.keyword.length}/200</span>
+            </div>
+          </label>
+          <label>
+            <span>研究领域 <sup>*</sup></span>
+            <button className="select-like" type="button">
+              {draft.field || "Artificial Intelligence / Multimodal Learning"}
+              <ChevronDown size={18} />
+            </button>
+          </label>
+          <label>
+            <span>工作流模板 <sup>*</sup></span>
+            <button className="select-like" type="button">
+              Survey → Deep Reading → Memory → Gap → Experiment
+              <ChevronDown size={18} />
+            </button>
+          </label>
+        </div>
+
+        <div className="form-action-row">
+          <button className="gradient-button form-primary" disabled={apiStatus === "checking"} type="button" onClick={onCreateProject}>
+            创建项目
+          </button>
+          <button className="outline-button form-secondary" type="button">
+            <Upload size={17} />
+            导入已有论文
+          </button>
+          <button className="outline-button form-secondary" type="button">
+            <Save size={17} />
+            保存草稿
+          </button>
+        </div>
+
+        <div className={`project-status-note ${apiStatus}`}>
+          <Lightbulb size={18} />
+          <span>{apiMessage}</span>
         </div>
       </section>
 
-      <WorkflowGuide
-        apiStatus={apiStatus}
-        hasProject={Boolean(activeProject)}
+      <aside className="new-project-aside">
+        <section className="suggestion-panel">
+          <div className="aside-heading">
+            <h2>推荐输入示例</h2>
+            <span>Prompt Suggestions</span>
+          </div>
+          <div className="suggestion-list">
+            {suggestions.map((item) => {
+              const Icon = item.icon;
+              return (
+                <button className="suggestion-card" key={item.title} type="button" onClick={() => applySuggestion(item.title)}>
+                  <span>
+                    <Icon size={21} />
+                  </span>
+                  <div>
+                    <strong>{item.title}</strong>
+                    <p>{item.detail}</p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="after-create-panel">
+          <h2>创建后自动生成</h2>
+          <ol>
+            {createSteps.map(([title, detail], index) => (
+              <li key={title}>
+                <span>{String(index + 1).padStart(2, "0")}</span>
+                <div>
+                  <strong>{title}</strong>
+                  <p>{detail}</p>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </section>
+      </aside>
+
+      <ConferenceLogoBelt />
+    </div>
+  );
+}
+
+function ProductPaperTableView({
+  activeProject,
+  artifactCount,
+  apiStatus,
+  errors,
+  isSearching,
+  onQueryChange,
+  onSearch,
+  onSelectView,
+  papers,
+  projectCount,
+  query,
+}: {
+  activeProject: ApiProject | null;
+  artifactCount: number;
+  apiStatus: ApiStatus;
+  errors: string[];
+  isSearching: boolean;
+  onQueryChange: (query: string) => void;
+  onSearch: () => void;
+  onSelectView: (view: ViewId) => void;
+  papers: PaperRow[];
+  projectCount: number;
+  query: string;
+}) {
+  const [highOnly, setHighOnly] = useState(false);
+  const filteredPapers = highOnly ? papers.filter((paper) => paper.priority === "High") : papers;
+  const displayPapers = filteredPapers.length ? filteredPapers : papers;
+  const highCount = papers.filter((paper) => paper.priority === "High").length || 8;
+  const referenceRows = [
+    {
+      title: "Faithful Visual Question Answering with Grounded Evidence Chains",
+      authors: "Li et al.",
+      year: "2026",
+      type: "Method",
+      source: "arXiv",
+      priority: "High",
+      relation: "直接评估视觉证据链是否支持最终回答。",
+    },
+    {
+      title: "Benchmarking Citation Faithfulness in Multimodal RAG",
+      authors: "Chen et al.",
+      year: "2025",
+      type: "Benchmark",
+      source: "OpenAlex",
+      priority: "High",
+      relation: "覆盖 citation grounding 与 benchmark 偏差。",
+    },
+    {
+      title: "When Vision-Language Models Hallucinate: A Survey",
+      authors: "Zhang et al.",
+      year: "2025",
+      type: "Survey",
+      source: "arXiv",
+      priority: "Medium",
+      relation: "提供幻觉分类，但不适合作为复现 anchor。",
+    },
+    {
+      title: "Evidence Attribution for Large Multimodal Models",
+      authors: "Wang et al.",
+      year: "2024",
+      type: "Analysis",
+      source: "OpenAlex",
+      priority: "High",
+      relation: "讨论回答依据与图像区域之间的证据对应。",
+    },
+    {
+      title: "Robust VQA under Counterfactual Visual Evidence",
+      authors: "Park et al.",
+      year: "2024",
+      type: "Method",
+      source: "arXiv",
+      priority: "High",
+      relation: "可以设计反例，验证模型是否依赖错误线索。",
+    },
+    {
+      title: "Rethinking Metrics for Multimodal Faithfulness",
+      authors: "Sun et al.",
+      year: "2026",
+      type: "Benchmark",
+      source: "OpenAlex",
+      priority: "High",
+      relation: "指出常用 metric 无法反映证据不一致。",
+    },
+  ] as const;
+  const tableRows = referenceRows.filter((paper) => !highOnly || paper.priority === "High");
+
+  return (
+    <div className="table-canvas">
+      <ProjectSidebar
+        activeView="paper-table"
+        artifactCount={artifactCount}
         onSelectView={onSelectView}
-        paperCount={paperCount}
-        artifactCount={artifactCount}
+        paperCount={papers.length}
+        projectCount={projectCount}
       />
 
-      <AgentRuntimePanel
-        apiStatus={apiStatus}
+      <section className="paper-table-panel">
+        <div className="table-header-row">
+          <div>
+            <h1>论文表格 · Literature Search</h1>
+            <p>优先检索近三年高相关论文，并标记 Method / Benchmark / Survey / Analysis。</p>
+          </div>
+          <div className="table-header-actions">
+            <button className="outline-button" type="button">
+              <Download size={17} />
+              导出 CSV
+            </button>
+            <button className="gradient-button" disabled={apiStatus !== "online"} type="button" onClick={() => onSelectView("direction-review")}>
+              <Sparkles size={17} />
+              生成 Direction Review
+            </button>
+          </div>
+        </div>
+
+        <div className="table-metrics">
+          <MetricCard icon={FileText} label="检索论文" value={String(papers.length || 12)} />
+          <MetricCard icon={Target} label="High Priority" value={String(highCount)} />
+          <MetricCard icon={Calendar} label="重点年份" value="2024-26" />
+          <MetricCard icon={ShieldCheck} label="检索质量提示" value={String(errors.length || 2)} amber />
+        </div>
+
+        <div className="paper-search-strip">
+          <label className="paper-query-box">
+            <Search size={20} />
+            <input
+              value={query}
+              placeholder={activeProject?.keyword || "multimodal large language model visual question answering evidence faithfulness"}
+              onChange={(event) => onQueryChange(event.target.value)}
+            />
+            {query ? (
+              <button type="button" onClick={() => onQueryChange("")} aria-label="clear search">
+                <X size={19} />
+              </button>
+            ) : null}
+          </label>
+          <button
+            className="outline-button search-again"
+            disabled={apiStatus !== "online" || isSearching || query.trim().length === 0}
+            type="button"
+            onClick={onSearch}
+          >
+            <Sparkles size={17} />
+            {isSearching ? "检索中" : "重新检索"}
+          </button>
+          <button className={highOnly ? "outline-button active-filter" : "outline-button"} type="button" onClick={() => setHighOnly((value) => !value)}>
+            <Filter size={17} />
+            筛选 High
+          </button>
+          <button className="square-more" type="button" aria-label="more">
+            <MoreHorizontal size={20} />
+          </button>
+        </div>
+
+        <div className="product-table-wrap">
+          <table className="product-paper-table">
+            <thead>
+              <tr>
+                <th>Title</th>
+                <th>Year</th>
+                <th>Type</th>
+                <th>Source</th>
+                <th>Priority</th>
+                <th>Relevance Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tableRows.map((paper, index) => (
+                <tr key={`${paper.title}-${index}`}>
+                  <td>
+                    <strong>{paper.title}</strong>
+                    <small>{paper.authors}</small>
+                  </td>
+                  <td>{paper.year}</td>
+                  <td>
+                    <span className={`paper-type type-${paper.type.toLowerCase()}`}>{paper.type || "Method"}</span>
+                  </td>
+                  <td>{paper.source}</td>
+                  <td>
+                    <span className={`priority ${paper.priority.toLowerCase()}`}>{paper.priority}</span>
+                  </td>
+                  <td>{paper.relation}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="table-warning">
+          <Lightbulb size={17} />
+          <span>
+            {errors.length
+              ? errors.slice(0, 2).join(" / ")
+              : "检索异常示例：OpenAlex 429 时保留真实结果，不会把旧 mock 论文伪装成本次检索结果。"}
+          </span>
+        </div>
+      </section>
+
+      <ConferenceLogoBelt withTitle={false} />
+    </div>
+  );
+}
+
+function MetricCard({
+  amber = false,
+  icon: Icon,
+  label,
+  value,
+}: {
+  amber?: boolean;
+  icon: LucideIcon;
+  label: string;
+  value: string;
+}) {
+  return (
+    <article className={amber ? "metric-card amber" : "metric-card"}>
+      <span>
+        <Icon size={25} />
+      </span>
+      <div>
+        <strong>{value}</strong>
+        <p>{label}</p>
+      </div>
+    </article>
+  );
+}
+
+function ProductPaperReaderView({
+  artifactCount,
+  apiStatus,
+  card,
+  isGenerating,
+  onGenerate,
+  onInputChange,
+  onSelectedPaperChange,
+  onSelectView,
+  papers,
+  projectCount,
+  selectedPaperId,
+  supplementalInput,
+}: {
+  artifactCount: number;
+  apiStatus: ApiStatus;
+  card: ApiPaperCard | null;
+  isGenerating: boolean;
+  onGenerate: () => void;
+  onInputChange: (value: string) => void;
+  onSelectedPaperChange: (paperId: string) => void;
+  onSelectView: (view: ViewId) => void;
+  papers: PaperRow[];
+  projectCount: number;
+  selectedPaperId: string;
+  supplementalInput: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [activeQuestion, setActiveQuestion] = useState(1);
+  const selectedPaper = papers.find((paper) => paper.id === selectedPaperId) ?? papers[0];
+  const questions = [
+    ["研究问题是什么？", "构建可验证的证据链以提升 VQA 的答案忠实度。", true],
+    ["数据集与设置？", "VQA-v2、OK-VQA；标准 split；单图输入。", true],
+    ["方法核心思想？", "检索 → 链式推理 → 受证生成。", true],
+    ["模型与基线？", "LLaVA-NeXT、InstructBLIP 等；与标准基线对比。", true],
+    ["主要结果？", "Grounding Score 提升 8.6%，幻觉率下降 21.3%。", true],
+    ["关键证据？", "Human Eval、反事实干预、案例可视化。", true],
+    ["局限性？", "多跳推理仍会中断；长尾概念不足。", false],
+    ["局限条件？", "移除器覆盖率足够；证据可信。", true],
+    ["复现要点？", "证据结构建细节、阈值敏感性。", false],
+    ["一句话总结？", "证据链让 VQA 更可验证、更可靠。", false],
+    ["如何设计反例？", "替换关键词证据或引入干扰证据。", false],
+    ["Follow-up idea?", "自检+回溯式证据链 + 不确定度估计。", false],
+  ];
+  const visibleQuestions = expanded ? questions : questions.slice(0, 12);
+
+  return (
+    <div className="reader-canvas">
+      <ProjectSidebar
+        activeView="paper-reader"
         artifactCount={artifactCount}
-        paperCount={paperCount}
-        stage={activeProject?.stage ?? "mock"}
+        compact
+        onSelectView={onSelectView}
+        paperCount={papers.length}
+        projectCount={projectCount}
       />
 
-      <AgentRunPanel
-        agentBusy={agentBusy}
-        agentPlan={agentPlan}
-        agentTask={agentTask}
-        apiStatus={apiStatus}
-        onAgentTaskChange={onAgentTaskChange}
-        onCreateAgentPlan={onCreateAgentPlan}
-        onExecuteAgentRun={onExecuteAgentRun}
-      />
+      <section className="reader-main-panel">
+        <div className="reader-content">
+          <button className="back-link" type="button" onClick={() => onSelectView("paper-table")}>
+            <ChevronLeft size={16} />
+            返回列表
+          </button>
+          <div className="reader-title-row">
+            <div>
+              <h1>论文精读 · Deep Paper Card</h1>
+              <p>
+                Faithful VQA with Grounded Evidence Chains <span>CVPR 2026</span>
+              </p>
+              <small>每篇论文围绕 12 个问题展开，重点标出证据、缺口与脆弱假设。</small>
+            </div>
+            <div className="reader-actions">
+              <button className="outline-button" type="button">
+                <Upload size={17} />
+                导出报告
+              </button>
+              <button
+                className="gradient-button"
+                disabled={apiStatus !== "online" || isGenerating}
+                type="button"
+                onClick={onGenerate}
+              >
+                <Rocket size={17} />
+                {isGenerating ? "生成中" : "生成 12 条分析"}
+              </button>
+            </div>
+          </div>
+
+          <div className="reader-tags">
+            {["task: VQA faithfulness", "method: evidence chain", "dataset: VQA-v2 / OK-VQA", "metric: grounding score", "claim: reduce hallucination"].map((tag) => (
+              <span key={tag}>{tag}</span>
+            ))}
+          </div>
+
+          <article className="summary-card">
+            <Sparkles size={23} />
+            <div>
+              <strong>摘要速览</strong>
+              <p>
+                提出证据链（Evidence Chain）框架，将答案生成分解为证据检索与逐步推理，并在 VQA-v2 与 OK-VQA
+                上验证了对抗式与自然分布下的幻觉显著降低。
+              </p>
+            </div>
+          </article>
+
+          <section className="question-board">
+            <div className="question-board-head">
+              <h2>核心问题（12 个）</h2>
+              <span>10 / 12 已分析</span>
+            </div>
+            <div className="question-grid">
+              {visibleQuestions.map(([title, detail, done], index) => (
+                <button
+                  className={activeQuestion === index + 1 ? "question-card active" : "question-card"}
+                  key={String(title)}
+                  type="button"
+                  onClick={() => setActiveQuestion(index + 1)}
+                >
+                  <span>{index + 1}</span>
+                  <strong>{title}</strong>
+                  <p>{detail}</p>
+                  {done ? <CheckCircle2 size={15} /> : <Circle size={15} />}
+                </button>
+              ))}
+            </div>
+            <button className="expand-questions" type="button" onClick={() => setExpanded((value) => !value)}>
+              <ChevronDown size={16} />
+              {expanded ? "收起问题" : "展开全部 12 个问题"}
+            </button>
+          </section>
+        </div>
+
+        <aside className="reader-aside">
+          <section className="key-info-card">
+            <h2>关键信息</h2>
+            <div className="key-info-grid">
+              <div>
+                <strong>8.6%</strong>
+                <span>Grounding Score ↑</span>
+              </div>
+              <div>
+                <strong>21.3%</strong>
+                <span>Hallucination ↓</span>
+              </div>
+              <div>
+                <strong>3</strong>
+                <span>核心贡献</span>
+              </div>
+              <div>
+                <strong>{card?.sections.length || 12}</strong>
+                <span>关键证据</span>
+              </div>
+            </div>
+          </section>
+
+          <section className="evidence-chain-card">
+            <div className="aside-heading compact">
+              <h2>证据链（Evidence Chain）</h2>
+              <span>证据充足</span>
+            </div>
+            {["视觉证据检索", "证据过滤与对齐", "链式推理", "受证回答生成", "一致性验证"].map((item, index) => (
+              <div className="chain-step" key={item}>
+                <span>{index + 1}</span>
+                <div>
+                  <strong>{item}</strong>
+                  <p>
+                    {
+                      [
+                        "检索与问题相关的区域与对象（Top-K）。",
+                        "过滤低相关证据并与问题对齐。",
+                        "基于证据逐步推理，生成中间结论。",
+                        "融合答案聚焦证据支持。",
+                        "与原证据核对，降低幻觉风险。",
+                      ][index]
+                    }
+                  </p>
+                </div>
+              </div>
+            ))}
+          </section>
+
+          <section className="paper-signals-card">
+            <div className="aside-heading compact">
+              <h2>PaperSignals（自动抽取）</h2>
+              <button type="button">查看全部</button>
+            </div>
+            <div className="signal-chip-grid">
+              {[
+                ["Task", "VQA Faithfulness"],
+                ["Method", "Evidence Chain"],
+                ["Dataset", "VQA-v2, OK-VQA"],
+                ["Metric", "Grounding Score"],
+                ["Claim", "降低幻觉率"],
+                ["Limitation", "多跳推理不足"],
+              ].map(([label, value], index) => (
+                <span className={`signal-chip tone-${index}`} key={label}>
+                  <strong>{label}</strong>
+                  {value}
+                </span>
+              ))}
+              <span className="signal-chip more">+2</span>
+            </div>
+          </section>
+        </aside>
+      </section>
     </div>
   );
 }
