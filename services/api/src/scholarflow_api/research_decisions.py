@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -63,6 +63,7 @@ class ExperimentPlan:
     timeline: list[str]
     success_criterion: str
     failure_criterion: str
+    unblock_suggestions: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -112,6 +113,7 @@ def generate_research_decisions(
     top_papers = ", ".join(paper.get("title", "") for paper in papers[:3] if paper.get("title")) or "当前 paper table"
     weakest = first_nonempty([card.get("weakest_assumption", "") for card in paper_cards])
     anchor = select_experiment_anchor(papers, paper_cards)
+    unblock_suggestions = build_unblock_suggestions(papers, paper_cards) if anchor is None else []
 
     gaps = [
         GapDecision(
@@ -166,7 +168,7 @@ def generate_research_decisions(
         ],
     )
 
-    experiment = build_experiment_plan_from_anchor(anchor, focus)
+    experiment = build_experiment_plan_from_anchor(anchor, focus, unblock_suggestions)
 
     return ResearchDecisionBundle(
         project_title=project.get("title") or "ScholarFlow Project",
@@ -263,7 +265,7 @@ def build_experiment_anchor_candidate(paper: dict[str, Any], card: dict[str, Any
         score += 0.2
         reasons.append("High priority paper")
 
-    if not ((claim and dataset and metrics) or (has_benchmark_signal(combined) and baseline)):
+    if not (dataset and metrics and baseline and (claim or has_benchmark_signal(combined))):
         return None
     return ExperimentAnchor(
         paper_title=title,
@@ -280,8 +282,76 @@ def build_experiment_anchor_candidate(paper: dict[str, Any], card: dict[str, Any
     )
 
 
-def build_experiment_plan_from_anchor(anchor: ExperimentAnchor | None, focus: str) -> ExperimentPlan:
+def build_unblock_suggestions(papers: list[dict[str, Any]], paper_cards: list[dict[str, Any]]) -> list[str]:
+    suggestions: list[str] = []
+    if not papers:
+        suggestions.append("先运行 Literature Search，补充至少 5 篇非 survey/review 的候选论文。")
+    if not paper_cards:
+        suggestions.append("先为 1-3 篇 method/benchmark paper 生成 Paper Card，再抽取 claim、dataset、metric、baseline。")
+        suggestions.append("缺 dataset：补充 `Dataset: ...` 或 `Minimal dataset/subset: ...`，至少给出可抽样的 benchmark/subset。")
+        suggestions.append("缺 baseline：补充 `Baseline: ...`，至少包含一个公开强 baseline 和一个 simple/no-op baseline。")
+        suggestions.append("缺 metric：补充 `Metric: ...`，至少包含论文主指标和一个 failure/counterexample 指标。")
+        return suggestions
+
+    usable_cards = [
+        (merge_card_paper(card, {paper.get("id", ""): paper for paper in papers if paper.get("id")}.get(card.get("paper_id", "") or "", {})), card)
+        for card in paper_cards
+    ]
+    usable_cards = [(paper, card) for paper, card in usable_cards if not is_survey_like(paper, card)]
+    if not usable_cards:
+        suggestions.append("当前 Paper Card 全部像 survey/review/overview；请补充一篇明确提出方法或 benchmark 的论文。")
+        return suggestions
+
+    dataset_count = 0
+    baseline_count = 0
+    metric_count = 0
+    claim_count = 0
+    for paper, card in usable_cards:
+        minimal = normalize_space(card.get("minimal_reproduction", ""))
+        combined = normalize_space(
+            " ".join(
+                [
+                    paper.get("title", ""),
+                    paper.get("type", ""),
+                    paper.get("abstract", ""),
+                    card.get("weakest_assumption", ""),
+                    card.get("sections_json", ""),
+                    minimal,
+                ],
+            ),
+        )
+        if extract_anchor_claim(minimal, combined):
+            claim_count += 1
+        if extract_anchor_dataset(minimal, combined):
+            dataset_count += 1
+        if extract_anchor_baseline(minimal, combined):
+            baseline_count += 1
+        if extract_anchor_metrics(minimal, combined):
+            metric_count += 1
+
+    if claim_count == 0:
+        suggestions.append("缺 claim：在 Paper Card 的 minimal_reproduction 中补充 `Claim: ...`，明确一周内要验证哪一个主张。")
+    if dataset_count == 0:
+        suggestions.append("缺 dataset：补充 `Dataset: ...` 或 `Minimal dataset/subset: ...`，至少给出可抽样的 benchmark/subset。")
+    if baseline_count == 0:
+        suggestions.append("缺 baseline：补充 `Baseline: ...`，至少包含一个公开强 baseline 和一个 simple/no-op baseline。")
+    if metric_count == 0:
+        suggestions.append("缺 metric：补充 `Metric: ...`，至少包含论文主指标和一个 failure/counterexample 指标。")
+    if not suggestions:
+        suggestions.append("字段基本存在但仍未形成 anchor：请检查 minimal_reproduction 是否被标记为需要补充 PDF/实验细节，或是否是 survey/review。")
+    return suggestions
+
+
+def build_experiment_plan_from_anchor(
+    anchor: ExperimentAnchor | None,
+    focus: str,
+    unblock_suggestions: list[str] | None = None,
+) -> ExperimentPlan:
     if anchor is None:
+        suggestions = unblock_suggestions or [
+            "补充一篇非 survey/review 的方法或 benchmark 论文。",
+            "在 Paper Card 中显式写出 claim、dataset、metric 和 baseline。",
+        ]
         return ExperimentPlan(
             status="blocked",
             anchor_paper_id="",
@@ -298,9 +368,11 @@ def build_experiment_plan_from_anchor(anchor: ExperimentAnchor | None, focus: st
             resources="需要先补充至少一篇非 survey/review 的方法或 benchmark 论文，且 Paper Card 明确包含 claim、dataset、metric 或 benchmark+baseline。",
             timeline=[
                 "Blocked: 需要先补充一篇非 survey/review 的方法或 benchmark 论文。",
+                *[f"Unblock: {suggestion}" for suggestion in suggestions],
             ],
             success_criterion="找到一篇可实验论文，其 Paper Card 明确包含 claim、dataset、metric 或 benchmark+baseline。",
             failure_criterion="继续只能命中 survey/review/overview，或 Paper Card 明确写着需要补充 PDF/实验细节。",
+            unblock_suggestions=suggestions,
         )
 
     return ExperimentPlan(
@@ -329,6 +401,7 @@ def build_experiment_plan_from_anchor(anchor: ExperimentAnchor | None, focus: st
         ],
         success_criterion=f"在 `{anchor.paper_title}` 的小规模设置下复现 claim 相关现象，并定位至少一个稳定失败模式。",
         failure_criterion="现象只来自个别样本、标注争议、prompt 不稳定或 benchmark-specific tuning，无法支持 anchor claim。",
+        unblock_suggestions=[],
     )
 
 
@@ -451,8 +524,6 @@ def extract_anchor_baseline(minimal: str, combined: str) -> str:
     if names:
         return ", ".join(names[:4])
 
-    if has_benchmark_signal(combined):
-        return "公开强 VLM baseline + no-grounding/simple-prompt baseline"
     return ""
 
 
@@ -595,6 +666,8 @@ def render_experiment_markdown(bundle: ResearchDecisionBundle) -> str:
             "## Timeline\n" + "\n".join(f"- {step}" for step in plan.timeline),
             f"## Success Criterion\n{plan.success_criterion}",
             f"## Failure Criterion\n{plan.failure_criterion}",
+            "## Unblock Suggestions\n"
+            + ("\n".join(f"- {suggestion}" for suggestion in plan.unblock_suggestions) if plan.unblock_suggestions else "- none"),
         ],
     )
 

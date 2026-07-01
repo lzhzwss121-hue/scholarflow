@@ -517,7 +517,11 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
             session_id,
             "direction.retrieve",
             "done" if readings else "queued",
-            f"第 {payload.round} 轮检索并筛选 {len(readings)} 篇近三年高相关论文。",
+            (
+                f"partial：第 {payload.round} 轮仅筛选 {len(readings)}/10 篇论文，不能视为完整方向级 10 篇精读。"
+                if len(readings) < 5
+                else f"第 {payload.round} 轮检索并筛选 {len(readings)} 篇近三年高相关论文。"
+            ),
             completed_at,
         )
         insert_tool_event(
@@ -525,7 +529,11 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
             session_id,
             "direction.read",
             "done" if readings else "queued",
-            f"已生成 {len(readings)} 张 12 条规则论文精读卡片。",
+            (
+                f"partial：已生成 {len(readings)} 张论文精读卡片，低于 5 篇可信阈值。"
+                if len(readings) < 5
+                else f"已生成 {len(readings)} 张 12 条规则论文精读卡片。"
+            ),
             completed_at,
         )
         insert_tool_event(
@@ -541,7 +549,11 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
             session_id,
             "direction.summarize",
             "done",
-            f"已生成方向总结，并推荐 {len(bundle.recommended_paper_ids)} 篇用户亲自精读论文。",
+            (
+                f"partial：已生成临时方向总结；本轮仅 {len(readings)}/10 篇，推荐需谨慎使用。"
+                if bundle.review_status == "partial"
+                else f"已生成方向总结，并推荐 {len(bundle.recommended_paper_ids)} 篇用户亲自精读论文。"
+            ),
             completed_at,
         )
         insert_tool_event(
@@ -560,6 +572,8 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
     return DirectionReviewResponse(
         direction=bundle.direction,
         round=bundle.round,
+        review_status=bundle.review_status,
+        target_paper_count=bundle.target_paper_count,
         total_read_count=bundle.total_read_count,
         scope=DirectionScope(**bundle.scope.to_dict()),
         baseline_map=BaselineMap(**bundle.baseline_map.to_dict()),

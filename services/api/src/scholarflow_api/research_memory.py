@@ -43,6 +43,30 @@ class PaperMemoryScore:
         return round(self.title_score + self.keyword_score + self.section_score + self.priority_score, 4)
 
 
+FIELD_INTENTS: dict[str, dict[str, list[str]]] = {
+    "experiment": {
+        "triggers": ["experiment", "reproduce", "reproduction", "复现", "实验", "验证"],
+        "fields": ["minimal_reproduction", "sections_json"],
+        "terms": ["minimal reproduction", "dataset", "metric", "baseline", "ablation", "实验", "复现"],
+    },
+    "gap": {
+        "triggers": ["gap", "limitation", "weakness", "缺口", "空白", "局限", "不足"],
+        "fields": ["weakest_assumption", "follow_up_idea", "research_sight_json", "sections_json"],
+        "terms": ["limitation", "weakest assumption", "better angle", "follow up", "gap", "局限", "缺口"],
+    },
+    "baseline": {
+        "triggers": ["baseline", "baselines", "comparison", "对比", "基线", "参照"],
+        "fields": ["research_sight_json", "minimal_reproduction", "sections_json"],
+        "terms": ["baseline", "baseline comparison", "strong baseline", "comparison", "基线", "参照"],
+    },
+    "counterexample": {
+        "triggers": ["counterexample", "counterexamples", "反例", "攻击", "failure case"],
+        "fields": ["counterexample", "weakest_assumption", "research_sight_json"],
+        "terms": ["counterexample", "failure mode", "failure", "反例", "失败模式"],
+    },
+}
+
+
 @dataclass
 class DirectionMemorySnapshot:
     direction: str
@@ -489,6 +513,7 @@ def score_memory_record(record: dict[str, Any], terms: set[str], question: str) 
     title_overlap = score_term_overlap(title, terms, weight=0.42, max_score=1.6)
     keyword_overlap = score_term_overlap(" ".join(sorted(keywords)), terms, weight=0.36, max_score=1.4)
     section_overlap = score_term_overlap(text, terms, weight=0.08, max_score=1.4)
+    intent_overlap = score_field_intents(record, terms, question)
     normalized_question = normalize_space(question)
     if len(normalized_question) >= 12:
         section_overlap.score = round(
@@ -499,11 +524,55 @@ def score_memory_record(record: dict[str, Any], terms: set[str], question: str) 
             ),
             4,
         )
+    section_score = round(min(2.2, section_overlap.score + intent_overlap), 4)
+    evidence_score = title_overlap.score + keyword_overlap.score + section_score
     return PaperMemoryScore(
         title_score=title_overlap.score,
         keyword_score=keyword_overlap.score,
-        section_score=section_overlap.score,
-        priority_score=0.15 if int(record.get("self_read_priority") or 0) == 1 else 0.0,
+        section_score=section_score,
+        priority_score=0.15 if evidence_score > 0 and int(record.get("self_read_priority") or 0) == 1 else 0.0,
+    )
+
+
+def score_field_intents(record: dict[str, Any], terms: set[str], question: str) -> float:
+    intents = detect_memory_intents(question)
+    if not intents:
+        return 0.0
+    score = 0.0
+    for intent in intents:
+        config = FIELD_INTENTS[intent]
+        field_text = " ".join(memory_field_text(record, field) for field in config["fields"])
+        if not normalize_space(field_text):
+            continue
+        intent_terms = set(terms) | set(config["terms"])
+        overlap = score_term_overlap(field_text, intent_terms, weight=0.16, max_score=0.9)
+        presence_bonus = 0.18 if field_text else 0.0
+        score += min(1.0, overlap.score + presence_bonus)
+    return round(min(score, 1.4), 4)
+
+
+def detect_memory_intents(question: str) -> list[str]:
+    normalized = normalize_space(question).lower()
+    intents: list[str] = []
+    for intent, config in FIELD_INTENTS.items():
+        if any(trigger in normalized for trigger in config["triggers"]):
+            intents.append(intent)
+    return intents
+
+
+def memory_field_text(record: dict[str, Any], field: str) -> str:
+    if field != "research_sight_json":
+        return normalize_space(record.get(field, ""))
+    sight = safe_json_dict(record.get("research_sight_json", "{}"))
+    return normalize_space(
+        " ".join(
+            [
+                sight.get("why_not_good", ""),
+                sight.get("better_angle", ""),
+                sight.get("baseline_comparison", ""),
+                sight.get("next_step_proposal", ""),
+            ],
+        ),
     )
 
 

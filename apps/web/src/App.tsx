@@ -578,7 +578,11 @@ export function App() {
       setDirectionReview(result);
       setSelectedDirectionPaperId("");
       setLastSavedArtifact(result.artifacts[0] ?? null);
-      setApiMessage(`方向精读完成：第 ${result.round} 轮，累计 ${result.total_read_count} 篇。`);
+      setApiMessage(
+        result.review_status === "partial"
+          ? `方向精读 partial：第 ${result.round} 轮仅读取 ${result.papers.length}/${result.target_paper_count} 篇，不能视为完整 10 篇方向精读。`
+          : `方向精读完成：第 ${result.round} 轮，累计 ${result.total_read_count} 篇。`,
+      );
       await loadProjectResources(activeProject.id);
     } catch (error) {
       if (error instanceof Error && error.message === "Direction Review timeout") {
@@ -2486,10 +2490,11 @@ function DirectionReviewView({
     review?.papers.filter((reading) => review.recommended_paper_ids.includes(reading.paper.id) || reading.self_read_priority) ??
     [];
   const canGenerate = apiStatus === "online" && !isGenerating && direction.trim().length > 0;
-  const expectedRoundCount = 10;
+  const expectedRoundCount = review?.target_paper_count ?? 10;
   const actualRoundCount = review?.papers.length ?? 0;
+  const isPartialReview = review?.review_status === "partial";
   const partialRoundWarning =
-    review && actualRoundCount < expectedRoundCount
+    review && (isPartialReview || actualRoundCount < expectedRoundCount)
       ? `本轮实际只读取 ${actualRoundCount}/${expectedRoundCount} 篇。可能是检索源限流、候选不足或去重后不足 10 篇。`
       : "";
   const reviewWarnings = review ? [partialRoundWarning, ...review.errors].filter(Boolean) : [];
@@ -2550,6 +2555,7 @@ function DirectionReviewView({
               </div>
               <div className="direction-stat-grid">
                 <span>Round {review.round}</span>
+                <span>{isPartialReview ? "Partial" : "Complete"}</span>
                 <span>本轮 {actualRoundCount}/{expectedRoundCount}</span>
                 <span>累计 {review.total_read_count} papers</span>
                 <span>{review.scope.year_range}</span>
@@ -3384,6 +3390,16 @@ function ExperimentPlannerView({
               <dd>{plan.resources}</dd>
             </div>
           </dl>
+          {isBlocked && plan.unblock_suggestions.length ? (
+            <div className="experiment-unblock">
+              <strong>Unblock Suggestions</strong>
+              <ul>
+                {plan.unblock_suggestions.map((suggestion) => (
+                  <li key={suggestion}>{suggestion}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </section>
 
       ) : null}

@@ -80,6 +80,8 @@ class DirectionPaperReading:
 class DirectionReviewBundle:
     direction: str
     round: int
+    review_status: str
+    target_paper_count: int
     scope: DirectionScope
     baseline_map: BaselineMap
     readings: list[DirectionPaperReading]
@@ -92,6 +94,8 @@ class DirectionReviewBundle:
         return {
             "direction": self.direction,
             "round": self.round,
+            "review_status": self.review_status,
+            "target_paper_count": self.target_paper_count,
             "scope": self.scope.to_dict(),
             "baseline_map": self.baseline_map.to_dict(),
             "papers": [reading.to_dict() for reading in self.readings],
@@ -264,25 +268,54 @@ def build_direction_review_bundle(
 ) -> DirectionReviewBundle:
     recommended = [reading.paper.get("id", "") for reading in readings if reading.self_read_priority]
     total_read_count = previous_read_count + len(readings)
+    target_paper_count = 10
+    review_status = "partial" if len(readings) < 5 else "complete"
+    if review_status == "partial":
+        errors = [
+            *errors,
+            (
+                f"partial_direction_review: only {len(readings)}/{target_paper_count} papers were read; "
+                "this is not a complete ten-paper direction review."
+            ),
+        ]
     return DirectionReviewBundle(
         direction=direction,
         round=round_index,
+        review_status=review_status,
+        target_paper_count=target_paper_count,
         scope=scope,
         baseline_map=baseline_map,
         readings=readings,
         recommended_paper_ids=recommended,
-        direction_summary=build_direction_summary(direction, readings, total_read_count, baseline_map),
+        direction_summary=build_direction_summary(direction, readings, total_read_count, baseline_map, review_status, target_paper_count),
         total_read_count=total_read_count,
         errors=errors,
     )
 
 
-def build_direction_summary(direction: str, readings: list[DirectionPaperReading], total_read_count: int, baseline_map: BaselineMap) -> str:
+def build_direction_summary(
+    direction: str,
+    readings: list[DirectionPaperReading],
+    total_read_count: int,
+    baseline_map: BaselineMap,
+    review_status: str,
+    target_paper_count: int,
+) -> str:
     venues = unique_preserve_order([reading.paper.get("venue", "") for reading in readings if reading.paper.get("venue")])
     top_titles = [reading.paper.get("title", "") for reading in readings if reading.self_read_priority]
     focus_terms = ", ".join(infer_subtopics(direction)[:4])
     baseline_titles = [item.title for item in baseline_map.recent_strong_baselines[:2]]
     baseline_note = "; ".join(baseline_titles) if baseline_titles else "当前 baseline 信号不足，需要继续检索"
+    if review_status == "partial":
+        return (
+            f"Partial Direction Review：本轮仅实际读取 {len(readings)}/{target_paper_count} 篇候选论文，"
+            "低于可信方向级精读的最低阈值 5 篇，因此不能声称已完成 10 篇方向综述。"
+            f"当前累计已读 {total_read_count} 篇，ScholarFlow 只能给出临时判断："
+            f"`{direction}` 暂时应围绕 {focus_terms or '任务定义、评价方式和失败模式'} 继续补充候选论文。"
+            f" BaselineMap 当前线索：{baseline_note}。"
+            f" 本轮可优先人工复核：{'; '.join(top_titles) if top_titles else '暂无足够候选，需要继续检索或人工上传论文'}。"
+            f" 主要 venue/source 信号包括：{', '.join(venues[:6]) if venues else 'venue metadata insufficient'}。"
+        )
     return (
         f"基于当前累计已读 {total_read_count} 篇论文，ScholarFlow 对 `{direction}` 的理解是："
         f"这个方向的核心不只是提出一个新模型，而是围绕 {focus_terms or '任务定义、评价方式和失败模式'} "
@@ -320,8 +353,15 @@ def render_direction_review_markdown(bundle: DirectionReviewBundle) -> str:
 
     return "\n\n".join(
         [
-            f"# Direction Review Round {bundle.round}",
+            f"# {'Partial Direction Review' if bundle.review_status == 'partial' else 'Direction Review'} Round {bundle.round}",
             f"Direction: {bundle.direction}",
+            f"Status: {bundle.review_status}",
+            f"Coverage: {len(bundle.readings)}/{bundle.target_paper_count}",
+            (
+                "Warning: this is a partial review and must not be presented as a completed ten-paper direction review."
+                if bundle.review_status == "partial"
+                else "Coverage note: completed enough papers for a direction-level review."
+            ),
             f"Year range: {bundle.scope.year_range}",
             "## Scope",
             bundle.scope.included_scope,
@@ -335,8 +375,10 @@ def render_direction_review_markdown(bundle: DirectionReviewBundle) -> str:
                 f"- {reading.paper.get('title', '')}: {reading.why_selected}" for reading in recommended
             )
             or "- Not enough candidates.",
-            "## Ten-Paper Reading Set",
+            "## Reading Set",
             "\n".join(rows),
+            "## Retrieval Warnings",
+            "\n".join(f"- {error}" for error in bundle.errors) if bundle.errors else "- none",
             "## UI Note",
             "摘要中文翻译和 12 条精读内容保存在每张论文卡片中，前端通过点击论文卡片展开，不在列表页直接铺开。",
         ],

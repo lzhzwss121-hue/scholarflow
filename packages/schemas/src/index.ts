@@ -240,6 +240,8 @@ export interface ApiDirectionPaperReading {
 export interface ApiDirectionReviewResponse {
   direction: string;
   round: number;
+  review_status: "complete" | "partial";
+  target_paper_count: number;
   total_read_count: number;
   scope: ApiDirectionScope;
   baseline_map: ApiBaselineMap;
@@ -287,6 +289,7 @@ export interface ApiExperimentPlan {
   timeline: string[];
   success_criterion: string;
   failure_criterion: string;
+  unblock_suggestions: string[];
 }
 
 export interface ApiResearchDecisionResponse {

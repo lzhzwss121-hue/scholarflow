@@ -228,6 +228,8 @@ class DirectionPaperReading(BaseModel):
 class DirectionReviewResponse(BaseModel):
     direction: str
     round: int
+    review_status: Literal["complete", "partial"] = "complete"
+    target_paper_count: int = 10
     total_read_count: int
     scope: DirectionScope
     baseline_map: BaselineMap
@@ -275,6 +277,7 @@ class ExperimentPlan(BaseModel):
     timeline: list[str]
     success_criterion: str
     failure_criterion: str
+    unblock_suggestions: list[str] = Field(default_factory=list)
 
 
 class ResearchDecisionResponse(BaseModel):

@@ -3952,6 +3952,26 @@ td a {
   background: #fffaf0;
 }
 
+.experiment-unblock {
+  margin-top: 14px;
+  border-top: 1px solid rgba(122, 80, 16, 0.2);
+  padding-top: 12px;
+}
+
+.experiment-unblock strong {
+  display: block;
+  color: #7a5010;
+  font-size: 13px;
+}
+
+.experiment-unblock ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: #5b6472;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
 .empty-state {
   border: 1px dashed #cfd8e6;
   border-radius: 12px;

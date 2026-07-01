@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.parse
 import urllib.request
+import urllib.error
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -13,7 +15,19 @@ from typing import Any
 
 ARXIV_API_URL = "https://export.arxiv.org/api/query"
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
-DEFAULT_TIMEOUT_SECONDS = 20
+DEFAULT_TIMEOUT_SECONDS = float(os.getenv("SCHOLARFLOW_REQUEST_TIMEOUT_SECONDS", "12"))
+REQUEST_CACHE_TTL_SECONDS = int(os.getenv("SCHOLARFLOW_REQUEST_CACHE_TTL_SECONDS", "900"))
+LOW_RECALL_THRESHOLD = 5
+TRANSIENT_HTTP_STATUS = {429, 500, 502, 503, 504}
+REQUEST_CACHE: dict[str, tuple[float, str]] = {}
+
+
+class SourceDegradedError(RuntimeError):
+    def __init__(self, source: str, query: str, status: int | None, message: str) -> None:
+        self.source = source
+        self.query = query
+        self.status = status
+        super().__init__(f"{source}:{query}: degraded status={status or 'unknown'}: {message}")
 
 
 @dataclass
@@ -51,24 +65,63 @@ def search_literature(query: str, max_results: int = 12, sources: list[str] | No
     errors: list[str] = []
 
     for expanded_query in expanded_queries:
-        if "arxiv" in selected_sources:
-            try:
-                candidates.extend(search_arxiv(expanded_query, per_query_limit))
-            except Exception as error:  # noqa: BLE001 - preserve API failure detail for timeline/debugging.
-                errors.append(f"arxiv:{expanded_query}: {error}")
-        if "openalex" in selected_sources:
-            try:
-                candidates.extend(search_openalex(expanded_query, per_query_limit))
-            except Exception as error:  # noqa: BLE001
-                errors.append(f"openalex:{expanded_query}: {error}")
+        candidates.extend(search_sources_for_query(expanded_query, per_query_limit, selected_sources, errors))
 
     ranked = rank_and_deduplicate(candidates, query)
+    if len(ranked) < LOW_RECALL_THRESHOLD:
+        relaxed_queries = build_relaxed_queries(query, expanded_queries)
+        for relaxed_query in relaxed_queries:
+            errors.append(f"query_relaxed:{relaxed_query}: 初始检索召回不足，已自动放宽检索式。")
+            candidates.extend(
+                search_sources_for_query(
+                    relaxed_query,
+                    per_query_limit,
+                    selected_sources,
+                    errors,
+                    relaxed=True,
+                ),
+            )
+            ranked = rank_and_deduplicate(candidates, query)
+            if len(ranked) >= LOW_RECALL_THRESHOLD:
+                break
+
+    ranked = rank_and_deduplicate(candidates, query)
+    if len(ranked) < LOW_RECALL_THRESHOLD:
+        errors.append(
+            f"low_recall: only {len(ranked)} papers returned after query expansion and relaxation; "
+            "results are partial and should not be treated as a complete direction survey.",
+        )
     return LiteratureSearchResult(
         query=query,
         expanded_queries=expanded_queries,
         papers=ranked[:max_results],
         errors=errors,
     )
+
+
+def search_sources_for_query(
+    query: str,
+    per_query_limit: int,
+    selected_sources: list[str],
+    errors: list[str],
+    relaxed: bool = False,
+) -> list[PaperCandidate]:
+    candidates: list[PaperCandidate] = []
+    if "arxiv" in selected_sources:
+        try:
+            candidates.extend(search_arxiv(query, per_query_limit, relaxed=relaxed))
+        except SourceDegradedError as error:
+            errors.append(str(error))
+        except Exception as error:  # noqa: BLE001 - preserve API failure detail for timeline/debugging.
+            errors.append(f"arxiv:{query}: {error}")
+    if "openalex" in selected_sources:
+        try:
+            candidates.extend(search_openalex(query, per_query_limit))
+        except SourceDegradedError as error:
+            errors.append(str(error))
+        except Exception as error:  # noqa: BLE001
+            errors.append(f"openalex:{query}: {error}")
+    return candidates
 
 
 def expand_queries(query: str) -> list[str]:
@@ -97,13 +150,45 @@ def expand_queries(query: str) -> list[str]:
                 f"{normalized} scientific discovery workflow",
             ],
         )
+    if "图像修复" in lower:
+        expansions.extend([f"{normalized} image restoration", "image restoration benchmark"])
+    if "超分辨率" in lower:
+        expansions.extend([f"{normalized} super resolution", "single image super resolution"])
+    if "医学" in lower or "medical" in lower:
+        expansions.extend([f"{normalized} medical image", f"{normalized} healthcare AI"])
 
     return unique_preserve_order([item for item in expansions if item])
 
 
-def search_arxiv(query: str, max_results: int) -> list[PaperCandidate]:
+def build_relaxed_queries(query: str, already_used: list[str]) -> list[str]:
+    normalized = normalize_space(query)
+    terms = sorted(term for term in significant_terms(normalized) if term)
+    relaxed: list[str] = []
+    if len(terms) >= 2:
+        relaxed.append(" ".join(terms[:3]))
+        relaxed.extend(terms[:3])
+    if contains_cjk(normalized):
+        relaxed.extend(chinese_relaxation_queries(normalized))
+    return [item for item in unique_preserve_order(relaxed) if item and item not in set(already_used)]
+
+
+def chinese_relaxation_queries(query: str) -> list[str]:
+    lower = query.lower()
+    queries: list[str] = []
+    if "图像修复" in lower:
+        queries.extend(["image restoration", "blind image restoration"])
+    if "幻觉" in lower:
+        queries.extend(["hallucination benchmark", "object hallucination", "visual grounding"])
+    if "多模态" in lower:
+        queries.extend(["vision language model", "multimodal evaluation"])
+    if "证据" in lower or "忠实" in lower:
+        queries.extend(["evidence faithfulness", "grounded evidence"])
+    return queries
+
+
+def search_arxiv(query: str, max_results: int, relaxed: bool = False) -> list[PaperCandidate]:
     params = {
-        "search_query": build_arxiv_query(query),
+        "search_query": build_arxiv_query(query, relaxed=relaxed),
         "start": "0",
         "max_results": str(max_results),
         "sortBy": "relevance",
@@ -148,10 +233,12 @@ def search_arxiv(query: str, max_results: int) -> list[PaperCandidate]:
     return papers
 
 
-def build_arxiv_query(query: str) -> str:
+def build_arxiv_query(query: str, relaxed: bool = False) -> str:
     terms = [term for term in re.split(r"\s+", query.strip()) if term]
     if len(terms) <= 1:
         return f"all:{query}"
+    if relaxed:
+        return " OR ".join(f"all:{term}" for term in terms[:6])
     return " AND ".join(f"all:{term}" for term in terms[:8])
 
 
@@ -180,7 +267,18 @@ def search_openalex(query: str, max_results: int) -> list[PaperCandidate]:
     if api_key:
         params["api_key"] = api_key
 
-    payload = json.loads(request_text(f"{OPENALEX_WORKS_URL}?{urllib.parse.urlencode(params)}"))
+    url = f"{OPENALEX_WORKS_URL}?{urllib.parse.urlencode(params)}"
+    try:
+        payload = json.loads(request_text(url))
+    except urllib.error.HTTPError as error:
+        if error.code in {503, 504}:
+            raise SourceDegradedError(
+                "openalex",
+                query,
+                error.code,
+                "OpenAlex 暂时不可用，已降级为仅使用其它检索源。",
+            ) from error
+        raise
     papers: list[PaperCandidate] = []
     for work in payload.get("results", []):
         title = normalize_space(work.get("display_name") or "")
@@ -231,6 +329,9 @@ def reconstruct_openalex_abstract(index: dict[str, list[int]]) -> str:
 
 
 def request_text(url: str) -> str:
+    cached = read_request_cache(url)
+    if cached is not None:
+        return cached
     request = urllib.request.Request(
         url,
         headers={
@@ -238,8 +339,53 @@ def request_text(url: str) -> str:
             "User-Agent": "ScholarFlow/0.1 (local research workflow agent)",
         },
     )
-    with urllib.request.urlopen(request, timeout=DEFAULT_TIMEOUT_SECONDS) as response:
-        return response.read().decode("utf-8")
+    try:
+        with urllib.request.urlopen(request, timeout=DEFAULT_TIMEOUT_SECONDS) as response:
+            payload = response.read().decode("utf-8")
+    except urllib.error.HTTPError as error:
+        if error.code in TRANSIENT_HTTP_STATUS:
+            raise SourceDegradedError(
+                infer_source_from_url(url),
+                extract_query_from_url(url),
+                error.code,
+                str(error),
+            ) from error
+        raise
+    write_request_cache(url, payload)
+    return payload
+
+
+def read_request_cache(url: str) -> str | None:
+    if REQUEST_CACHE_TTL_SECONDS <= 0:
+        return None
+    cached = REQUEST_CACHE.get(url)
+    if cached is None:
+        return None
+    created_at, payload = cached
+    if time.time() - created_at > REQUEST_CACHE_TTL_SECONDS:
+        REQUEST_CACHE.pop(url, None)
+        return None
+    return payload
+
+
+def write_request_cache(url: str, payload: str) -> None:
+    if REQUEST_CACHE_TTL_SECONDS <= 0:
+        return
+    REQUEST_CACHE[url] = (time.time(), payload)
+
+
+def infer_source_from_url(url: str) -> str:
+    if "openalex" in url:
+        return "openalex"
+    if "arxiv" in url:
+        return "arxiv"
+    return "source"
+
+
+def extract_query_from_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    params = urllib.parse.parse_qs(parsed.query)
+    return (params.get("search") or params.get("search_query") or [""])[0]
 
 
 def rank_and_deduplicate(candidates: list[PaperCandidate], query: str) -> list[PaperCandidate]:
@@ -310,6 +456,10 @@ def significant_terms(query: str) -> set[str]:
         for term in re.findall(r"[A-Za-z0-9]+|[\u4e00-\u9fff]+", query.lower())
         if len(term) > 1 and term not in stop_words
     }
+
+
+def contains_cjk(value: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", value))
 
 
 def normalize_title_key(title: str) -> str:
