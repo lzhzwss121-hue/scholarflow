@@ -54,11 +54,8 @@ import {
 } from "@scholarflow/schemas";
 import {
   artifacts,
-  gapItems,
   navItems,
-  papers as fallbackPapers,
   planSteps,
-  timelineEvents as fallbackTimelineEvents,
   type ArtifactContent,
   type PaperRow,
   type PlanStep,
@@ -142,12 +139,44 @@ const productViewIds: ViewId[] = [
   "experiment-planner",
 ];
 
+const ACTIVE_PROJECT_STORAGE_KEY = "scholarflow.activeProjectId";
+
 function readViewFromHash(): ViewId {
   if (typeof window === "undefined") {
     return "dashboard";
   }
   const hashView = window.location.hash.replace("#", "");
   return productViewIds.includes(hashView as ViewId) ? (hashView as ViewId) : "dashboard";
+}
+
+function readStoredActiveProjectId(): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  return window.localStorage.getItem(ACTIVE_PROJECT_STORAGE_KEY);
+}
+
+function storeActiveProjectId(projectId: string | null) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  if (projectId) {
+    window.localStorage.setItem(ACTIVE_PROJECT_STORAGE_KEY, projectId);
+  } else {
+    window.localStorage.removeItem(ACTIVE_PROJECT_STORAGE_KEY);
+  }
+}
+
+function isDemoProject(projectId: string | undefined | null): boolean {
+  return projectId === "local-bootstrap";
+}
+
+function isSeedLikePaper(paper: ApiPaper | PaperRow): boolean {
+  const source = paper.source.toLowerCase();
+  const venue = paper.venue.toLowerCase();
+  const code = paper.code.toLowerCase();
+  const title = paper.title.toLowerCase();
+  return source === "seed" || venue === "demo" || code === "demo" || title.startsWith("synthetic example:");
 }
 
 export function App() {
@@ -157,8 +186,8 @@ export function App() {
   const [apiMessage, setApiMessage] = useState("正在连接 ScholarFlow API...");
   const [projects, setProjects] = useState<ApiProject[]>([]);
   const [activeProject, setActiveProject] = useState<ApiProject | null>(null);
-  const [paperRows, setPaperRows] = useState<PaperRow[]>(fallbackPapers);
-  const [timelineRows, setTimelineRows] = useState<TimelineEvent[]>(fallbackTimelineEvents);
+  const [paperRows, setPaperRows] = useState<PaperRow[]>([]);
+  const [timelineRows, setTimelineRows] = useState<TimelineEvent[]>([]);
   const [persistedArtifactCount, setPersistedArtifactCount] = useState(0);
   const [lastSavedArtifact, setLastSavedArtifact] = useState<ApiArtifact | null>(null);
   const [projectArtifacts, setProjectArtifacts] = useState<ApiArtifact[]>([]);
@@ -219,8 +248,17 @@ export function App() {
       try {
         await getHealth();
         const loadedProjects = await listProjects();
+        const storedProjectId = readStoredActiveProjectId();
+        const latestUserProject = loadedProjects.find((project) => !isDemoProject(project.id)) ?? null;
+        const storedProject =
+          loadedProjects.find((project) => {
+            if (project.id !== storedProjectId) {
+              return false;
+            }
+            return !isDemoProject(project.id) || latestUserProject === null;
+          }) ?? null;
         const firstProject =
-          loadedProjects.find((project) => project.id !== "local-bootstrap") ?? loadedProjects[0] ?? null;
+          storedProject ?? latestUserProject ?? loadedProjects[0] ?? null;
 
         if (cancelled) {
           return;
@@ -230,6 +268,9 @@ export function App() {
         setProjects(loadedProjects);
         setActiveProject(firstProject);
         setApiMessage(firstProject ? "API 已连接，正在使用 SQLite 工作区。" : "API 已连接，尚未创建项目。");
+        if (firstProject && !isDemoProject(firstProject.id)) {
+          storeActiveProjectId(firstProject.id);
+        }
 
         if (firstProject) {
           await loadProjectResources(firstProject.id, cancelled);
@@ -239,7 +280,11 @@ export function App() {
           return;
         }
         setApiStatus("offline");
-        setApiMessage("API 未连接，当前显示静态 mock 工作台。");
+        setPaperRows([]);
+        setTimelineRows([]);
+        setProjectArtifacts([]);
+        setPersistedArtifactCount(0);
+        setApiMessage("API 未连接，请先启动 ScholarFlow 后端服务。");
       }
     }
 
@@ -298,7 +343,7 @@ export function App() {
       return;
     }
 
-    setPaperRows(apiPapers.map(toPaperRow));
+    setPaperRows(apiPapers.filter((paper) => !isSeedLikePaper(paper)).map(toPaperRow));
     setTimelineRows(apiTimeline.map(toTimelineEvent));
     setPersistedArtifactCount(apiArtifacts.length);
     setProjectArtifacts(apiArtifacts);
@@ -308,6 +353,7 @@ export function App() {
   async function handleSelectProject(projectId: string) {
     const project = projects.find((item) => item.id === projectId) ?? null;
     setActiveProject(project);
+    storeActiveProjectId(project && !isDemoProject(project.id) ? project.id : null);
     setLastSavedArtifact(null);
     setProjectArtifacts([]);
     setDirectionReview(null);
@@ -317,8 +363,8 @@ export function App() {
     setSelectedDirectionPaperId("");
 
     if (!project) {
-      setPaperRows(fallbackPapers);
-      setTimelineRows(fallbackTimelineEvents);
+      setPaperRows([]);
+      setTimelineRows([]);
       setPersistedArtifactCount(0);
       return;
     }
@@ -354,7 +400,8 @@ export function App() {
       setApiStatus("online");
       setProjects(nextProjects);
       setActiveProject(project);
-      setActiveView("dashboard");
+      storeActiveProjectId(project.id);
+      setActiveViewAndHash("paper-table");
       setLiteratureQuery(keyword);
       setDirectionInput(keyword);
       setAgentTask(`请基于「${keyword}」方向，生成一个从文献检索到可验证 gap 的最小科研任务计划。`);
@@ -457,6 +504,7 @@ export function App() {
 
     setLiteratureBusy(true);
     setLiteratureErrors([]);
+    setPaperRows([]);
     setApiMessage("正在检索 arXiv / OpenAlex 并生成 paper table...");
     try {
       const result = await searchProjectLiterature(activeProject.id, {
@@ -464,12 +512,14 @@ export function App() {
         max_results: 12,
         sources: ["arxiv", "openalex"],
       });
-      setPaperRows(result.papers.map(toPaperRow));
+      setPaperRows(result.papers.filter((paper) => !isSeedLikePaper(paper)).map(toPaperRow));
       setLastSavedArtifact(result.artifact);
       setLiteratureErrors(result.errors);
       setApiMessage(`检索完成：${result.papers.length} 篇论文，artifact: ${result.artifact.id}`);
       await loadProjectResources(activeProject.id);
     } catch (error) {
+      setPaperRows([]);
+      setLiteratureErrors(["文献检索请求失败。请检查网络、OpenAlex/arXiv 可用性或 API 日志。"]);
       setApiMessage("文献检索失败，请检查网络、OpenAlex/arXiv 可用性或 API 日志。");
     } finally {
       setLiteratureBusy(false);
@@ -589,7 +639,7 @@ export function App() {
     }
   }
 
-  function navigateView(view: ViewId) {
+  function setActiveViewAndHash(view: ViewId) {
     setActiveView(view);
     if (typeof window !== "undefined") {
       window.history.replaceState(null, "", `#${view}`);
@@ -598,7 +648,7 @@ export function App() {
 
   return (
     <div className={`scholarflow-product-shell view-${activeView}`}>
-      <ProductTopNav activeView={activeView} onSelectView={navigateView} />
+      <ProductTopNav activeView={activeView} onSelectView={setActiveViewAndHash} />
       <main className="product-page" aria-label={activeNavItem?.label ?? viewTitles[activeView]}>
         <ActiveView
           activeProject={activeProject}
@@ -641,7 +691,7 @@ export function App() {
           onSearchLiterature={handleSearchLiterature}
           onSelectedDirectionPaperChange={setSelectedDirectionPaperId}
           onSelectedPaperChange={setSelectedPaperId}
-          onSelectView={navigateView}
+          onSelectView={setActiveViewAndHash}
           paperRows={paperRows}
           paperCardBusy={paperCardBusy}
           paperCardInput={paperCardInput}
@@ -664,15 +714,15 @@ function ProductTopNav({
   activeView: ViewId;
   onSelectView: (view: ViewId) => void;
 }) {
-  const showPaperSearch = activeView === "paper-table";
   const navLinks = ([
     { label: "首页", view: "dashboard" },
-    { label: "功能", view: "direction-review" },
-    { label: "科研工作流", view: "new-project" },
-    { label: "论文检索", view: "paper-table", optional: !showPaperSearch },
+    { label: "新建项目", view: "new-project" },
+    { label: "论文检索", view: "paper-table" },
+    { label: "方向精读", view: "direction-review" },
     { label: "Paper Memory", view: "paper-memory" },
+    { label: "Gap Board", view: "gap-board" },
     { label: "实验计划", view: "experiment-planner" },
-  ] satisfies Array<{ label: string; view: ViewId; optional?: boolean }>).filter((item) => !item.optional);
+  ] satisfies Array<{ label: string; view: ViewId }>);
   const activeTopView = activeView === "paper-reader" ? "paper-memory" : activeView;
   const readerChrome = activeView === "paper-reader";
 
@@ -897,7 +947,7 @@ function ProjectNavigator({
 
       <div className={`api-pill ${apiStatus}`}>
         <span className="api-dot" />
-        {apiStatus === "online" ? "API Online" : apiStatus === "checking" ? "API Checking" : "Mock Mode"}
+        {apiStatus === "online" ? "API Online" : apiStatus === "checking" ? "API Checking" : "API Offline"}
       </div>
 
       <label className="project-selector-field">
@@ -1130,6 +1180,7 @@ function ActiveView({
     case "direction-review":
       return (
         <DirectionReviewView
+          apiMessage={apiMessage}
           apiStatus={apiStatus}
           direction={directionInput}
           isGenerating={directionBusy}
@@ -2095,7 +2146,7 @@ function AgentRuntimePanel({
       icon: Save,
       label: "Artifacts",
       value: String(artifactCount),
-      detail: apiStatus === "online" ? "SQLite 持久化" : "mock preview",
+      detail: apiStatus === "online" ? "SQLite 持久化" : "等待 API 连接",
     },
   ];
 
@@ -2406,6 +2457,7 @@ function PaperTableView({
 }
 
 function DirectionReviewView({
+  apiMessage,
   apiStatus,
   direction,
   isGenerating,
@@ -2417,6 +2469,7 @@ function DirectionReviewView({
   round,
   selectedPaperId,
 }: {
+  apiMessage: string;
   apiStatus: ApiStatus;
   direction: string;
   isGenerating: boolean;
@@ -2433,6 +2486,13 @@ function DirectionReviewView({
     review?.papers.filter((reading) => review.recommended_paper_ids.includes(reading.paper.id) || reading.self_read_priority) ??
     [];
   const canGenerate = apiStatus === "online" && !isGenerating && direction.trim().length > 0;
+  const expectedRoundCount = 10;
+  const actualRoundCount = review?.papers.length ?? 0;
+  const partialRoundWarning =
+    review && actualRoundCount < expectedRoundCount
+      ? `本轮实际只读取 ${actualRoundCount}/${expectedRoundCount} 篇。可能是检索源限流、候选不足或去重后不足 10 篇。`
+      : "";
+  const reviewWarnings = review ? [partialRoundWarning, ...review.errors].filter(Boolean) : [];
 
   return (
     <div className="direction-review-stack">
@@ -2473,6 +2533,11 @@ function DirectionReviewView({
           <span>顶会/顶刊优先</span>
           <span>点击卡片查看细节</span>
         </div>
+
+        <div className={`project-status-note ${apiStatus}`}>
+          <Lightbulb size={18} />
+          <span>{apiMessage}</span>
+        </div>
       </section>
 
       {review ? (
@@ -2485,7 +2550,8 @@ function DirectionReviewView({
               </div>
               <div className="direction-stat-grid">
                 <span>Round {review.round}</span>
-                <span>{review.total_read_count} papers</span>
+                <span>本轮 {actualRoundCount}/{expectedRoundCount}</span>
+                <span>累计 {review.total_read_count} papers</span>
                 <span>{review.scope.year_range}</span>
               </div>
             </div>
@@ -2538,10 +2604,10 @@ function DirectionReviewView({
                 </div>
               </div>
             </div>
-            {review.errors.length ? (
+            {reviewWarnings.length ? (
               <div className="retrieval-errors">
                 <strong>检索警告</strong>
-                <p>{review.errors.slice(0, 2).join(" / ")}</p>
+                <p>{reviewWarnings.slice(0, 3).join(" / ")}</p>
               </div>
             ) : null}
           </section>
@@ -3153,16 +3219,7 @@ function GapBoardView({
   onGenerate: () => void;
   onGoalChange: (goal: string) => void;
 }) {
-  const gaps = decision?.gaps ?? gapItems.map((gap, index) => ({
-    id: `mock_${index}`,
-    title: gap.title,
-    kind: index === 0 ? "true_gap" : index === 1 ? "engineering_gap" : "pseudo_gap",
-    evidence: "静态示例，生成后会替换为基于 paper table / paper card 的证据。",
-    weakness: gap.weakness,
-    opportunity: gap.opportunity,
-    novelty_risk: gap.risk,
-    feasibility: index === 0 ? "one-week" : index === 1 ? "one-week" : "one-month",
-  }));
+  const gaps = decision?.gaps ?? [];
 
   return (
     <div className="view-stack">
@@ -3196,35 +3253,51 @@ function GapBoardView({
         ) : null}
       </section>
 
-      <div className="gap-board">
-        {gaps.map((gap) => (
-          <article className="gap-card" key={gap.id}>
-            <div className="gap-card-header">
-              <h2>{gap.title}</h2>
-              <span className={`risk ${gap.novelty_risk}`}>{gap.novelty_risk}</span>
-            </div>
-            <div className={`gap-kind ${gap.kind}`}>{gap.kind}</div>
-            <dl>
-              <div>
-                <dt>Evidence</dt>
-                <dd>{gap.evidence}</dd>
+      {!decision ? (
+        <section className="empty-state">
+          <h2>尚未生成 Gap Board</h2>
+          <p>请先点击生成研究决策。系统会基于当前项目的真实 paper table 和 paper card 生成 gap，不会填充演示卡片。</p>
+        </section>
+      ) : null}
+
+      {decision && gaps.length === 0 ? (
+        <section className="empty-state">
+          <h2>当前没有可展示 gap</h2>
+          <p>后端没有返回 gap。请先检索论文并生成 Paper Card，再重新生成研究决策。</p>
+        </section>
+      ) : null}
+
+      {gaps.length ? (
+        <div className="gap-board">
+          {gaps.map((gap) => (
+            <article className="gap-card" key={gap.id}>
+              <div className="gap-card-header">
+                <h2>{gap.title}</h2>
+                <span className={`risk ${gap.novelty_risk}`}>{gap.novelty_risk}</span>
               </div>
-              <div>
-                <dt>Weakness</dt>
-                <dd>{gap.weakness}</dd>
-              </div>
-              <div>
-                <dt>Opportunity</dt>
-                <dd>{gap.opportunity}</dd>
-              </div>
-              <div>
-                <dt>Feasibility</dt>
-                <dd>{gap.feasibility}</dd>
-              </div>
-            </dl>
-          </article>
-        ))}
-      </div>
+              <div className={`gap-kind ${gap.kind}`}>{gap.kind}</div>
+              <dl>
+                <div>
+                  <dt>Evidence</dt>
+                  <dd>{gap.evidence}</dd>
+                </div>
+                <div>
+                  <dt>Weakness</dt>
+                  <dd>{gap.weakness}</dd>
+                </div>
+                <div>
+                  <dt>Opportunity</dt>
+                  <dd>{gap.opportunity}</dd>
+                </div>
+                <div>
+                  <dt>Feasibility</dt>
+                  <dd>{gap.feasibility}</dd>
+                </div>
+              </dl>
+            </article>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -3509,7 +3582,7 @@ function ArtifactPreview({
 
       <div className="artifact-meta">
         <span>{apiStatus === "online" ? "可编辑并保存到 SQLite" : "离线预览，启动 API 后可保存"}</span>
-        <span>{lastSavedArtifact ? `当前来源: ${lastSavedArtifact.id}` : "当前来源: 内置示例"}</span>
+        <span>{lastSavedArtifact ? `当前来源: ${lastSavedArtifact.id}` : "当前来源: 等待后端 artifact"}</span>
       </div>
 
       <textarea
