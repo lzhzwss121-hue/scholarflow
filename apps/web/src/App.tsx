@@ -54,7 +54,6 @@ import {
 } from "@scholarflow/schemas";
 import {
   artifacts,
-  experiments,
   gapItems,
   navItems,
   papers as fallbackPapers,
@@ -220,7 +219,8 @@ export function App() {
       try {
         await getHealth();
         const loadedProjects = await listProjects();
-        const firstProject = loadedProjects[0] ?? null;
+        const firstProject =
+          loadedProjects.find((project) => project.id !== "local-bootstrap") ?? loadedProjects[0] ?? null;
 
         if (cancelled) {
           return;
@@ -517,17 +517,25 @@ export function App() {
     setDirectionBusy(true);
     setApiMessage(`正在执行第 ${directionRound} 轮方向精读：近三年 10 篇高相关论文...`);
     try {
-      const result = await createDirectionReview(activeProject.id, {
+      const payload = {
         direction: directionInput,
         round: directionRound,
+      };
+      const timeout = new Promise<never>((_, reject) => {
+        window.setTimeout(() => reject(new Error("Direction Review timeout")), 90000);
       });
+      const result = await Promise.race([createDirectionReview(activeProject.id, payload), timeout]);
       setDirectionReview(result);
       setSelectedDirectionPaperId("");
       setLastSavedArtifact(result.artifacts[0] ?? null);
       setApiMessage(`方向精读完成：第 ${result.round} 轮，累计 ${result.total_read_count} 篇。`);
       await loadProjectResources(activeProject.id);
     } catch (error) {
-      setApiMessage("方向精读失败，请检查网络、检索源可用性或 API 日志。");
+      if (error instanceof Error && error.message === "Direction Review timeout") {
+        setApiMessage("方向精读超时。建议稍后重试，或先只运行 Literature Search。");
+      } else {
+        setApiMessage("方向精读失败，请检查网络、检索源可用性或 API 日志。");
+      }
     } finally {
       setDirectionBusy(false);
     }
@@ -750,6 +758,7 @@ function ConferenceGlyph({ label }: { label: string }) {
 }
 
 function ProjectSidebar({
+  activeProject,
   activeView,
   compact = false,
   onSelectView,
@@ -757,6 +766,7 @@ function ProjectSidebar({
   projectCount,
   artifactCount,
 }: {
+  activeProject: ApiProject | null;
   activeView: ViewId;
   compact?: boolean;
   onSelectView: (view: ViewId) => void;
@@ -782,8 +792,8 @@ function ProjectSidebar({
       <div className="sidebar-project-head">
         <span className="sf-logo small">SF</span>
         <div>
-          <strong>{compact ? "当前项目" : activeView === "paper-table" ? "证据忠实性 VQA" : "ScholarFlow"}</strong>
-          <small>{compact ? "多模态大模型评估" : activeView === "paper-table" ? "survey-to-experiment" : "Workspace"}</small>
+          <strong>{activeProject?.title ?? "ScholarFlow"}</strong>
+          <small>{activeProject?.workflow ?? "Workspace"}</small>
         </div>
         <ChevronDown size={17} />
       </div>
@@ -1071,6 +1081,7 @@ function ActiveView({
     case "new-project":
       return (
         <ProductNewProjectView
+          activeProject={activeProject}
           apiMessage={apiMessage}
           apiStatus={apiStatus}
           artifactCount={artifactCount}
@@ -1101,6 +1112,7 @@ function ActiveView({
     case "paper-reader":
       return (
         <ProductPaperReaderView
+          activeProject={activeProject}
           artifactCount={artifactCount}
           apiStatus={apiStatus}
           card={latestPaperCard}
@@ -1348,6 +1360,7 @@ function ProductHomeView({
 }
 
 function ProductNewProjectView({
+  activeProject,
   apiMessage,
   apiStatus,
   artifactCount,
@@ -1358,6 +1371,7 @@ function ProductNewProjectView({
   paperCount,
   projectCount,
 }: {
+  activeProject: ApiProject | null;
   apiMessage: string;
   apiStatus: ApiStatus;
   artifactCount: number;
@@ -1416,6 +1430,7 @@ function ProductNewProjectView({
   return (
     <div className="project-canvas">
       <ProjectSidebar
+        activeProject={activeProject}
         activeView="new-project"
         artifactCount={artifactCount}
         onSelectView={onSelectView}
@@ -1564,70 +1579,22 @@ function ProductPaperTableView({
   query: string;
 }) {
   const [highOnly, setHighOnly] = useState(false);
-  const filteredPapers = highOnly ? papers.filter((paper) => paper.priority === "High") : papers;
-  const displayPapers = filteredPapers.length ? filteredPapers : papers;
-  const highCount = papers.filter((paper) => paper.priority === "High").length || 8;
-  const referenceRows = [
-    {
-      title: "Faithful Visual Question Answering with Grounded Evidence Chains",
-      authors: "Li et al.",
-      year: "2026",
-      type: "Method",
-      source: "arXiv",
-      priority: "High",
-      relation: "直接评估视觉证据链是否支持最终回答。",
-    },
-    {
-      title: "Benchmarking Citation Faithfulness in Multimodal RAG",
-      authors: "Chen et al.",
-      year: "2025",
-      type: "Benchmark",
-      source: "OpenAlex",
-      priority: "High",
-      relation: "覆盖 citation grounding 与 benchmark 偏差。",
-    },
-    {
-      title: "When Vision-Language Models Hallucinate: A Survey",
-      authors: "Zhang et al.",
-      year: "2025",
-      type: "Survey",
-      source: "arXiv",
-      priority: "Medium",
-      relation: "提供幻觉分类，但不适合作为复现 anchor。",
-    },
-    {
-      title: "Evidence Attribution for Large Multimodal Models",
-      authors: "Wang et al.",
-      year: "2024",
-      type: "Analysis",
-      source: "OpenAlex",
-      priority: "High",
-      relation: "讨论回答依据与图像区域之间的证据对应。",
-    },
-    {
-      title: "Robust VQA under Counterfactual Visual Evidence",
-      authors: "Park et al.",
-      year: "2024",
-      type: "Method",
-      source: "arXiv",
-      priority: "High",
-      relation: "可以设计反例，验证模型是否依赖错误线索。",
-    },
-    {
-      title: "Rethinking Metrics for Multimodal Faithfulness",
-      authors: "Sun et al.",
-      year: "2026",
-      type: "Benchmark",
-      source: "OpenAlex",
-      priority: "High",
-      relation: "指出常用 metric 无法反映证据不一致。",
-    },
-  ] as const;
-  const tableRows = referenceRows.filter((paper) => !highOnly || paper.priority === "High");
+  const displayPapers = highOnly ? papers.filter((paper) => paper.priority === "High") : papers;
+  const highCount = papers.filter((paper) => paper.priority === "High").length;
+  const tableRows = displayPapers.map((paper) => ({
+    title: paper.title,
+    authors: paper.authors,
+    year: paper.year,
+    type: paper.type,
+    source: paper.source,
+    priority: paper.priority,
+    relation: paper.relation,
+  }));
 
   return (
     <div className="table-canvas">
       <ProjectSidebar
+        activeProject={activeProject}
         activeView="paper-table"
         artifactCount={artifactCount}
         onSelectView={onSelectView}
@@ -1654,10 +1621,10 @@ function ProductPaperTableView({
         </div>
 
         <div className="table-metrics">
-          <MetricCard icon={FileText} label="检索论文" value={String(papers.length || 12)} />
+          <MetricCard icon={FileText} label="检索论文" value={String(papers.length)} />
           <MetricCard icon={Target} label="High Priority" value={String(highCount)} />
           <MetricCard icon={Calendar} label="重点年份" value="2024-26" />
-          <MetricCard icon={ShieldCheck} label="检索质量提示" value={String(errors.length || 2)} amber />
+          <MetricCard icon={ShieldCheck} label="检索质量提示" value={String(errors.length)} amber />
         </div>
 
         <div className="paper-search-strip">
@@ -1724,6 +1691,12 @@ function ProductPaperTableView({
               ))}
             </tbody>
           </table>
+          {tableRows.length === 0 ? (
+            <div className="product-table-empty">
+              <h2>本次没有可展示论文</h2>
+              <p>{highOnly ? "当前没有 High Priority 论文。可以关闭筛选，或重新检索更具体的方向。" : "请先运行 Literature Search，系统不会用内置示例论文填充表格。"}</p>
+            </div>
+          ) : null}
         </div>
 
         <div className="table-warning">
@@ -1731,7 +1704,7 @@ function ProductPaperTableView({
           <span>
             {errors.length
               ? errors.slice(0, 2).join(" / ")
-              : "检索异常示例：OpenAlex 429 时保留真实结果，不会把旧 mock 论文伪装成本次检索结果。"}
+              : "当前没有检索警告。表格只展示本项目真实论文记录，不使用内置示例数据。"}
           </span>
         </div>
       </section>
@@ -1766,6 +1739,7 @@ function MetricCard({
 }
 
 function ProductPaperReaderView({
+  activeProject,
   artifactCount,
   apiStatus,
   card,
@@ -1779,6 +1753,7 @@ function ProductPaperReaderView({
   selectedPaperId,
   supplementalInput,
 }: {
+  activeProject: ApiProject | null;
   artifactCount: number;
   apiStatus: ApiStatus;
   card: ApiPaperCard | null;
@@ -1814,6 +1789,7 @@ function ProductPaperReaderView({
   return (
     <div className="reader-canvas">
       <ProjectSidebar
+        activeProject={activeProject}
         activeView="paper-reader"
         artifactCount={artifactCount}
         compact
@@ -3295,6 +3271,13 @@ function ExperimentPlannerView({
         </label>
       </section>
 
+      {!decision ? (
+        <section className="empty-state">
+          <h2>尚未生成实验计划</h2>
+          <p>请先点击生成实验计划。系统会检查是否存在可复现 anchor；没有 anchor 时不会生成伪计划。</p>
+        </section>
+      ) : null}
+
       {plan ? (
         <section className={`experiment-detail ${isBlocked ? "blocked" : "ready"}`}>
           <h2>{plan.claim}</h2>
@@ -3332,26 +3315,28 @@ function ExperimentPlannerView({
 
       ) : null}
 
-      <div className="experiment-list">
-        {(plan
-          ? plan.timeline.map((step, index) => ({
+      {plan && !isBlocked ? (
+        <div className="experiment-list">
+          {plan.timeline.map((step, index) => {
+            const item = {
               week: `Step ${index + 1}`,
               goal: step,
               deliverable: index === plan.timeline.length - 1 ? plan.success_criterion : plan.claim,
-              cost: isBlocked ? "blocked" : index === 0 ? plan.resources : "tracked",
-            }))
-          : experiments
-        ).map((item) => (
-          <section className="experiment-row" key={item.week}>
-            <div className="experiment-date">{item.week}</div>
-            <div>
-              <h2>{item.goal}</h2>
-              <p>{item.deliverable}</p>
-            </div>
-            <span>{item.cost}</span>
-          </section>
-        ))}
-      </div>
+              cost: index === 0 ? plan.resources : "tracked",
+            };
+            return (
+              <section className="experiment-row" key={item.week}>
+                <div className="experiment-date">{item.week}</div>
+                <div>
+                  <h2>{item.goal}</h2>
+                  <p>{item.deliverable}</p>
+                </div>
+                <span>{item.cost}</span>
+              </section>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }

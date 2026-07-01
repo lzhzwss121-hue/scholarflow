@@ -1223,6 +1223,31 @@
   background: #f6f2ff;
 }
 
+.product-table-empty {
+  min-height: 180px;
+  padding: 34px;
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  border-top: 1px solid #e6edf6;
+  color: #617083;
+  background: rgba(255, 255, 255, 0.64);
+}
+
+.product-table-empty h2 {
+  margin: 0;
+  color: #172033;
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.product-table-empty p {
+  max-width: 620px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
 .table-warning {
   min-height: 41px;
   margin-top: 17px;
@@ -3925,6 +3950,28 @@ td a {
 .experiment-detail.blocked {
   border-color: #d7b56d;
   background: #fffaf0;
+}
+
+.empty-state {
+  border: 1px dashed #cfd8e6;
+  border-radius: 12px;
+  padding: 24px;
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.empty-state h2 {
+  margin: 0;
+  color: #172033;
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.empty-state p {
+  max-width: 720px;
+  margin: 8px 0 0;
+  color: #617083;
+  font-size: 13px;
+  line-height: 1.7;
 }
 
 .decision-panel {
