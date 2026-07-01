@@ -217,6 +217,25 @@ scholarflow/
 | 检索 | arXiv、OpenAlex，可配置 Semantic Scholar、Crossref |
 | 本地工具 | Node.js CLI、本地 workspace |
 
+## 目录说明
+
+| 文件或目录 | 作用 |
+| --- | --- |
+| `apps/web/` | 网页界面 |
+| `apps/cli/` | 本地命令 |
+| `services/api/` | 后端服务 |
+| `packages/schemas/` | 共享类型 |
+| `docs/` | 项目文档 |
+| `examples/` | 示例流程 |
+| `.github/` | 开源协作 |
+| `.env.example` | 环境模板 |
+| `README.md` | 项目说明 |
+| `ROADMAP.md` | 后续路线 |
+| `CONTRIBUTING.md` | 贡献指南 |
+| `SECURITY.md` | 安全说明 |
+| `package.json` | 项目脚本 |
+| `package-lock.json` | 依赖锁定 |
+
 ## 快速上手
 
 ### 1. 环境要求
