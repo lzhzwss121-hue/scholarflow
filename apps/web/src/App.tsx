@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { Component, useEffect, useMemo, useState } from "react";
+import type { ErrorInfo, ReactNode } from "react";
 import {
   AlertTriangle,
   ArrowRight,
@@ -44,11 +45,16 @@ import {
   type ApiAgentPlanStep,
   type ApiArtifact,
   type ApiArtifactRef,
+  type ApiEvidencePack,
   type ApiDirectionPaperReading,
   type ApiDirectionReviewResponse,
   type ApiPaper,
   type ApiPaperCard,
+  type ApiPaperCardSection,
+  type ApiPaperMemoryHit,
+  type ApiPaperSignals,
   type ApiProject,
+  type ApiResearchSight,
   type ApiResearchDecisionResponse,
   type ApiResearchMemoryQueryResponse,
   type ApiToolEvent,
@@ -145,6 +151,51 @@ const viewAliases: Record<string, ViewId> = {
   "experiment-plan": "experiment-planner",
   "deep-paper-card": "paper-reader",
 };
+const coreViews = new Set<ViewId>([
+  "paper-table",
+  "direction-review",
+  "paper-memory",
+  "paper-reader",
+  "gap-board",
+  "experiment-planner",
+]);
+
+class ViewErrorBoundary extends Component<
+  { children: ReactNode; view: ViewId },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error("ScholarFlow view render failed", error, errorInfo);
+  }
+
+  componentDidUpdate(previousProps: { view: ViewId }) {
+    if (previousProps.view !== this.props.view && this.state.hasError) {
+      this.setState({ hasError: false });
+    }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <section className="view-error-state" role="alert">
+          <AlertTriangle size={24} />
+          <div>
+            <h2>当前视图渲染失败，请刷新或检查 artifact JSON 结构。</h2>
+            <p>其他页面仍可继续使用；错误详情已保留在浏览器 Console 中。</p>
+          </div>
+        </section>
+      );
+    }
+
+    return this.props.children;
+  }
+}
 
 function readViewFromHash(): ViewId {
   if (typeof window === "undefined") {
@@ -185,6 +236,15 @@ function isSeedLikePaper(paper: ApiPaper | PaperRow): boolean {
   const code = paper.code.toLowerCase();
   const title = paper.title.toLowerCase();
   return source === "seed" || venue === "demo" || code === "demo" || title.startsWith("synthetic example:");
+}
+
+function ApiOfflineNotice() {
+  return (
+    <div className="api-offline-notice" role="alert">
+      <AlertTriangle size={18} />
+      <span>API 未连接，请先启动 ScholarFlow 后端服务。</span>
+    </div>
+  );
 }
 
 export function App() {
@@ -735,59 +795,61 @@ export function App() {
     <div className={`scholarflow-product-shell view-${activeView}`}>
       <ProductTopNav activeView={activeView} onSelectView={setActiveViewAndHash} />
       <main className="product-page" aria-label={activeNavItem?.label ?? viewTitles[activeView]}>
-        <ActiveView
-          activeProject={activeProject}
-          agentBusy={agentBusy}
-          agentPlan={agentPlan}
-          agentTask={agentTask}
-          apiMessage={apiMessage}
-          apiStatus={apiStatus}
-          artifactCount={persistedArtifactCount}
-          decisionBusy={decisionBusy}
-          decisionGoal={decisionGoal}
-          directionBusy={directionBusy}
-          directionInput={directionInput}
-          directionReview={directionReview}
-          directionRound={directionRound}
-          literatureBusy={literatureBusy}
-          literatureErrors={literatureErrors}
-          literatureQuery={literatureQuery}
-          memoryBusy={memoryBusy}
-          memoryQuestion={memoryQuestion}
-          memoryResult={memoryResult}
-          memoryTopK={memoryTopK}
-          projectDraft={projectDraft}
-          onAgentTaskChange={setAgentTask}
-          onCreateProject={handleCreateProject}
-          onCreateAgentPlan={handleCreateAgentPlan}
-          onCreateDirectionReview={handleCreateDirectionReview}
-          onExecuteAgentRun={handleExecuteAgentRun}
-          onGeneratePaperCard={handleGeneratePaperCard}
-          onCreateResearchDecision={handleCreateResearchDecision}
-          onDecisionGoalChange={setDecisionGoal}
-          onDirectionInputChange={setDirectionInput}
-          onDirectionRoundChange={setDirectionRound}
-          onLiteratureQueryChange={setLiteratureQuery}
-          onLoadArtifact={handleLoadArtifact}
-          onMemoryQuestionChange={setMemoryQuestion}
-          onMemoryTopKChange={setMemoryTopK}
-          onPaperCardInputChange={setPaperCardInput}
-          onQueryResearchMemory={handleQueryResearchMemory}
-          onProjectDraftChange={setProjectDraft}
-          onSearchLiterature={handleSearchLiterature}
-          onSelectedDirectionPaperChange={setSelectedDirectionPaperId}
-          onSelectedPaperChange={setSelectedPaperId}
-          onSelectView={setActiveViewAndHash}
-          paperRows={paperRows}
-          paperCardBusy={paperCardBusy}
-          paperCardInput={paperCardInput}
-          projectCount={projects.length}
-          researchDecision={researchDecision}
-          selectedDirectionPaperId={selectedDirectionPaperId}
-          selectedPaperId={selectedPaperId}
-          latestPaperCard={latestPaperCard}
-          view={activeView}
-        />
+        <ViewErrorBoundary view={activeView}>
+          <ActiveView
+            activeProject={activeProject}
+            agentBusy={agentBusy}
+            agentPlan={agentPlan}
+            agentTask={agentTask}
+            apiMessage={apiMessage}
+            apiStatus={apiStatus}
+            artifactCount={persistedArtifactCount}
+            decisionBusy={decisionBusy}
+            decisionGoal={decisionGoal}
+            directionBusy={directionBusy}
+            directionInput={directionInput}
+            directionReview={directionReview}
+            directionRound={directionRound}
+            literatureBusy={literatureBusy}
+            literatureErrors={literatureErrors}
+            literatureQuery={literatureQuery}
+            memoryBusy={memoryBusy}
+            memoryQuestion={memoryQuestion}
+            memoryResult={memoryResult}
+            memoryTopK={memoryTopK}
+            projectDraft={projectDraft}
+            onAgentTaskChange={setAgentTask}
+            onCreateProject={handleCreateProject}
+            onCreateAgentPlan={handleCreateAgentPlan}
+            onCreateDirectionReview={handleCreateDirectionReview}
+            onExecuteAgentRun={handleExecuteAgentRun}
+            onGeneratePaperCard={handleGeneratePaperCard}
+            onCreateResearchDecision={handleCreateResearchDecision}
+            onDecisionGoalChange={setDecisionGoal}
+            onDirectionInputChange={setDirectionInput}
+            onDirectionRoundChange={setDirectionRound}
+            onLiteratureQueryChange={setLiteratureQuery}
+            onLoadArtifact={handleLoadArtifact}
+            onMemoryQuestionChange={setMemoryQuestion}
+            onMemoryTopKChange={setMemoryTopK}
+            onPaperCardInputChange={setPaperCardInput}
+            onQueryResearchMemory={handleQueryResearchMemory}
+            onProjectDraftChange={setProjectDraft}
+            onSearchLiterature={handleSearchLiterature}
+            onSelectedDirectionPaperChange={setSelectedDirectionPaperId}
+            onSelectedPaperChange={setSelectedPaperId}
+            onSelectView={setActiveViewAndHash}
+            paperRows={paperRows}
+            paperCardBusy={paperCardBusy}
+            paperCardInput={paperCardInput}
+            projectCount={projects.length}
+            researchDecision={researchDecision}
+            selectedDirectionPaperId={selectedDirectionPaperId}
+            selectedPaperId={selectedPaperId}
+            latestPaperCard={latestPaperCard}
+            view={activeView}
+          />
+        </ViewErrorBoundary>
       </main>
     </div>
   );
@@ -1215,6 +1277,8 @@ function ActiveView({
   selectedPaperId,
   view,
 }: ActiveViewProps) {
+  const offlineNotice = apiStatus === "offline" && coreViews.has(view) ? <ApiOfflineNotice /> : null;
+
   switch (view) {
     case "new-project":
       return (
@@ -1233,95 +1297,113 @@ function ActiveView({
       );
     case "paper-table":
       return (
-        <ProductPaperTableView
-          activeProject={activeProject}
-          apiMessage={apiMessage}
-          artifactCount={artifactCount}
-          apiStatus={apiStatus}
-          errors={literatureErrors}
-          isSearching={literatureBusy}
-          onQueryChange={onLiteratureQueryChange}
-          onSearch={onSearchLiterature}
-          onSelectView={onSelectView}
-          papers={paperRows}
-          projectCount={projectCount}
-          query={literatureQuery}
-        />
+        <>
+          {offlineNotice}
+          <ProductPaperTableView
+            activeProject={activeProject}
+            apiMessage={apiMessage}
+            artifactCount={artifactCount}
+            apiStatus={apiStatus}
+            errors={literatureErrors}
+            isSearching={literatureBusy}
+            onQueryChange={onLiteratureQueryChange}
+            onSearch={onSearchLiterature}
+            onSelectView={onSelectView}
+            papers={paperRows}
+            projectCount={projectCount}
+            query={literatureQuery}
+          />
+        </>
       );
     case "paper-reader":
       return (
-        <ProductPaperReaderView
-          activeProject={activeProject}
-          apiMessage={apiMessage}
-          artifactCount={artifactCount}
-          apiStatus={apiStatus}
-          card={latestPaperCard}
-          isGenerating={paperCardBusy}
-          onGenerate={onGeneratePaperCard}
-          onInputChange={onPaperCardInputChange}
-          onSelectedPaperChange={onSelectedPaperChange}
-          onSelectView={onSelectView}
-          papers={paperRows}
-          projectCount={projectCount}
-          selectedPaperId={selectedPaperId}
-          supplementalInput={paperCardInput}
-        />
+        <>
+          {offlineNotice}
+          <ProductPaperReaderView
+            activeProject={activeProject}
+            apiMessage={apiMessage}
+            artifactCount={artifactCount}
+            apiStatus={apiStatus}
+            card={latestPaperCard}
+            isGenerating={paperCardBusy}
+            onGenerate={onGeneratePaperCard}
+            onInputChange={onPaperCardInputChange}
+            onSelectedPaperChange={onSelectedPaperChange}
+            onSelectView={onSelectView}
+            papers={paperRows}
+            projectCount={projectCount}
+            selectedPaperId={selectedPaperId}
+            supplementalInput={paperCardInput}
+          />
+        </>
       );
     case "direction-review":
       return (
-        <DirectionReviewView
-          apiMessage={apiMessage}
-          apiStatus={apiStatus}
-          direction={directionInput}
-          isGenerating={directionBusy}
-          onDirectionChange={onDirectionInputChange}
-          onGenerate={onCreateDirectionReview}
-          onLoadArtifact={onLoadArtifact}
-          onRoundChange={onDirectionRoundChange}
-          onSelectedPaperChange={onSelectedDirectionPaperChange}
-          review={directionReview}
-          round={directionRound}
-          selectedPaperId={selectedDirectionPaperId}
-        />
+        <>
+          {offlineNotice}
+          <DirectionReviewView
+            apiMessage={apiMessage}
+            apiStatus={apiStatus}
+            direction={directionInput}
+            isGenerating={directionBusy}
+            onDirectionChange={onDirectionInputChange}
+            onGenerate={onCreateDirectionReview}
+            onLoadArtifact={onLoadArtifact}
+            onRoundChange={onDirectionRoundChange}
+            onSelectedPaperChange={onSelectedDirectionPaperChange}
+            review={directionReview}
+            round={directionRound}
+            selectedPaperId={selectedDirectionPaperId}
+          />
+        </>
       );
     case "paper-memory":
       return (
-        <ResearchMemoryView
-          apiMessage={apiMessage}
-          apiStatus={apiStatus}
-          direction={directionInput}
-          isQuerying={memoryBusy}
-          onQuestionChange={onMemoryQuestionChange}
-          onQuery={onQueryResearchMemory}
-          onTopKChange={onMemoryTopKChange}
-          question={memoryQuestion}
-          result={memoryResult}
-          topK={memoryTopK}
-        />
+        <>
+          {offlineNotice}
+          <ResearchMemoryView
+            apiMessage={apiMessage}
+            apiStatus={apiStatus}
+            direction={directionInput}
+            isQuerying={memoryBusy}
+            onQuestionChange={onMemoryQuestionChange}
+            onQuery={onQueryResearchMemory}
+            onTopKChange={onMemoryTopKChange}
+            question={memoryQuestion}
+            result={memoryResult}
+            topK={memoryTopK}
+          />
+        </>
       );
     case "gap-board":
       return (
-        <GapBoardView
-          apiMessage={apiMessage}
-          apiStatus={apiStatus}
-          decision={researchDecision}
-          goal={decisionGoal}
-          isGenerating={decisionBusy}
-          onGenerate={onCreateResearchDecision}
-          onGoalChange={onDecisionGoalChange}
-        />
+        <>
+          {offlineNotice}
+          <GapBoardView
+            apiMessage={apiMessage}
+            apiStatus={apiStatus}
+            decision={researchDecision}
+            goal={decisionGoal}
+            isGenerating={decisionBusy}
+            onGenerate={onCreateResearchDecision}
+            onGoalChange={onDecisionGoalChange}
+          />
+        </>
       );
     case "experiment-planner":
       return (
-        <ExperimentPlannerView
-          apiMessage={apiMessage}
-          apiStatus={apiStatus}
-          decision={researchDecision}
-          goal={decisionGoal}
-          isGenerating={decisionBusy}
-          onGenerate={onCreateResearchDecision}
-          onGoalChange={onDecisionGoalChange}
-        />
+        <>
+          {offlineNotice}
+          <ExperimentPlannerView
+            apiMessage={apiMessage}
+            apiStatus={apiStatus}
+            decision={researchDecision}
+            goal={decisionGoal}
+            isGenerating={decisionBusy}
+            onGenerate={onCreateResearchDecision}
+            onGoalChange={onDecisionGoalChange}
+          />
+        </>
       );
     case "dashboard":
     default:
@@ -1842,8 +1924,14 @@ function ProductPaperTableView({
           </table>
           {tableRows.length === 0 ? (
             <div className="product-table-empty">
-              <h2>本次没有可展示论文</h2>
-              <p>{highOnly ? "当前没有 High Priority 论文。可以关闭筛选，或重新检索更具体的方向。" : "请先运行 Literature Search，系统不会用内置示例论文填充表格。"}</p>
+              <h2>{apiStatus === "offline" ? "API 未连接" : "本次没有可展示论文"}</h2>
+              <p>
+                {apiStatus === "offline"
+                  ? "请先启动 ScholarFlow 后端服务。当前不是“没有论文”，而是前端无法读取真实 paper table。"
+                  : highOnly
+                    ? "当前没有 High Priority 论文。可以关闭筛选，或重新检索更具体的方向。"
+                    : "请先运行 Literature Search，系统不会用内置示例论文填充表格。"}
+              </p>
             </div>
           ) : null}
         </div>
@@ -2588,8 +2676,9 @@ function DirectionReviewView({
   const readings = review?.papers ?? [];
   const artifactRefs = getDirectionArtifactRefs(review);
   const selectedReading = readings.find((reading) => reading.paper.id === selectedPaperId) ?? null;
+  const recommendedPaperIds = review?.recommended_paper_ids ?? [];
   const recommendedReadings =
-    readings.filter((reading) => review?.recommended_paper_ids.includes(reading.paper.id) || reading.self_read_priority) ?? [];
+    readings.filter((reading) => recommendedPaperIds.includes(reading.paper.id) || reading.self_read_priority) ?? [];
   const canGenerate = apiStatus === "online" && !isGenerating && direction.trim().length > 0;
   const expectedRoundCount = review?.target_paper_count ?? 10;
   const actualRoundCount = review?.round_read_count ?? readings.length;
@@ -2881,8 +2970,11 @@ function DirectionArtifactRefs({
 function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }) {
   const signals = reading.signals;
   const missingSignals = signals?.missing_signals ?? [];
+  const sections = reading.sections ?? [];
+  const researchSight = normalizeResearchSight(reading.research_sight);
+  const evidencePack = normalizeEvidencePack(researchSight.evidence_pack);
   const critiqueEvidence = new Map(
-    (reading.research_sight.critique_evidence ?? []).map((item) => [item.field, item]),
+    (researchSight.critique_evidence ?? []).map((item) => [item.field, item]),
   );
   const renderCritiqueEvidence = (field: string) => {
     const evidence = critiqueEvidence.get(field);
@@ -2902,9 +2994,9 @@ function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }
       <div className="direction-detail-header">
         <div>
           <p className="section-kicker">Selected Paper Detail</p>
-          <h2>{reading.paper.title}</h2>
+          <h2>{reading.paper?.title ?? "Untitled paper"}</h2>
         </div>
-        {reading.paper.url ? (
+        {reading.paper?.url ? (
           <a href={reading.paper.url} rel="noreferrer" target="_blank">
             open paper
           </a>
@@ -2973,57 +3065,57 @@ function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }
         <div className="research-sight-score-grid">
           <div>
             <strong>证据等级</strong>
-            <span>{reading.research_sight.evidence_pack.grounding_summary}</span>
+            <span>{evidencePack.grounding_summary}</span>
           </div>
           <div>
             <strong>动机锋利度</strong>
-            <span>{reading.research_sight.motivation_sharpness}</span>
+            <span>{researchSight.motivation_sharpness || "暂无"}</span>
           </div>
           <div>
             <strong>解法优雅性</strong>
-            <span>{reading.research_sight.solution_elegance}</span>
+            <span>{researchSight.solution_elegance || "暂无"}</span>
           </div>
           <div>
             <strong>评估真实性</strong>
-            <span>{reading.research_sight.evaluation_integrity}</span>
+            <span>{researchSight.evaluation_integrity || "暂无"}</span>
           </div>
           <div>
             <strong>范式启发性</strong>
-            <span>{reading.research_sight.paradigm_inspiration}</span>
+            <span>{researchSight.paradigm_inspiration || "暂无"}</span>
           </div>
         </div>
         <div className="research-sight-critique">
           <div>
             <strong>为什么好</strong>
-            <p>{reading.research_sight.why_good}</p>
+            <p>{researchSight.why_good || "当前证据不足。"}</p>
             {renderCritiqueEvidence("why_good")}
           </div>
           <div>
             <strong>为什么不好</strong>
-            <p>{reading.research_sight.why_not_good}</p>
+            <p>{researchSight.why_not_good || "当前证据不足。"}</p>
             {renderCritiqueEvidence("why_not_good")}
           </div>
           <div>
             <strong>更好角度</strong>
-            <p>{reading.research_sight.better_angle}</p>
+            <p>{researchSight.better_angle || "当前证据不足。"}</p>
             {renderCritiqueEvidence("better_angle")}
           </div>
           <div>
             <strong>Baseline 对比</strong>
-            <p>{reading.research_sight.baseline_comparison}</p>
+            <p>{researchSight.baseline_comparison || "当前证据不足。"}</p>
             {renderCritiqueEvidence("baseline_comparison")}
           </div>
           <div>
             <strong>下一步 proposal</strong>
-            <p>{reading.research_sight.next_step_proposal}</p>
+            <p>{researchSight.next_step_proposal || "当前证据不足。"}</p>
             {renderCritiqueEvidence("next_step_proposal")}
           </div>
         </div>
         <div className="sight-evidence-grid" aria-label="research sight evidence">
           <div>
             <strong>证据片段</strong>
-            {reading.research_sight.evidence_pack.snippets.length ? (
-              reading.research_sight.evidence_pack.snippets.slice(0, 4).map((snippet) => (
+            {evidencePack.snippets.length ? (
+              evidencePack.snippets.slice(0, 4).map((snippet) => (
                 <article key={`${snippet.source}-${snippet.id}`}>
                   <span>{snippet.source} · {snippet.kind} · {snippet.confidence}</span>
                   <p>{snippet.text}</p>
@@ -3036,9 +3128,9 @@ function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }
           </div>
           <div>
             <strong>缺失证据</strong>
-            {reading.research_sight.evidence_pack.missing_evidence.length ? (
+            {evidencePack.missing_evidence.length ? (
               <ul>
-                {reading.research_sight.evidence_pack.missing_evidence.slice(0, 5).map((item) => (
+                {evidencePack.missing_evidence.slice(0, 5).map((item) => (
                   <li key={item}>{item}</li>
                 ))}
               </ul>
@@ -3069,15 +3161,25 @@ function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }
       </div>
 
       <div className="direction-section-list">
-        {reading.sections.map((section, index) => (
-          <article className="direction-detail-section" key={section.id}>
-            <span>{String(index + 1).padStart(2, "0")}</span>
+        {sections.length ? (
+          sections.map((section, index) => (
+            <article className="direction-detail-section" key={section.id}>
+              <span>{String(index + 1).padStart(2, "0")}</span>
+              <div>
+                <h3>{section.title}</h3>
+                <p>{section.content}</p>
+              </div>
+            </article>
+          ))
+        ) : (
+          <article className="direction-detail-section empty">
+            <span>00</span>
             <div>
-              <h3>{section.title}</h3>
-              <p>{section.content}</p>
+              <h3>暂无 12 sections</h3>
+              <p>当前 artifact 没有提供 card.sections 或 sections 字段，但 Paper Signals 与 Research Sight 仍可查看。</p>
             </div>
           </article>
-        ))}
+        )}
       </div>
     </section>
   );
@@ -3107,6 +3209,7 @@ function ResearchMemoryView({
   topK: number;
 }) {
   const canQuery = apiStatus === "online" && !isQuerying && question.trim().length > 0;
+  const memoryHits = result?.hits ?? [];
 
   return (
     <div className="memory-stack">
@@ -3156,7 +3259,7 @@ function ResearchMemoryView({
               </div>
               <div className="memory-stat-grid">
                 <span>{result.total_memories} memories</span>
-                <span>{result.hits.length} hits</span>
+                <span>{memoryHits.length} hits</span>
                 <span>top {result.top_k}</span>
               </div>
             </div>
@@ -3168,7 +3271,7 @@ function ResearchMemoryView({
                 {result.direction_memory.baseline_map ? (
                   <small>
                     BaselineMap：
-                    {result.direction_memory.baseline_map.recent_strong_baselines
+                    {(result.direction_memory.baseline_map.recent_strong_baselines ?? [])
                       .slice(0, 2)
                       .map((reference) => reference.title)
                       .join(" / ") || "暂无强参照"}
@@ -3185,54 +3288,58 @@ function ResearchMemoryView({
           </section>
 
           <section className="memory-hit-list" aria-label="retrieved paper memories">
-            {result.hits.map((hit, index) => (
-              <article className="memory-hit-card" key={`${hit.paper.id}-${index}`}>
-                <div className="memory-hit-header">
-                  <span>{String(index + 1).padStart(2, "0")}</span>
-                  <strong>{hit.score.toFixed(2)}</strong>
-                  {hit.self_read_priority ? <small>推荐精读</small> : null}
-                </div>
-                <h3>{hit.paper.title}</h3>
-                <div className="memory-hit-meta">
-                  <span>Round {hit.round}</span>
-                  <span>{hit.paper.year || "year unknown"}</span>
-                  <span>{hit.paper.venue || hit.paper.source || "source unknown"}</span>
-                </div>
-                <div className="memory-hit-score-grid" aria-label="memory score breakdown">
-                  <span>title {hit.title_score.toFixed(2)}</span>
-                  <span>keyword {hit.keyword_score.toFixed(2)}</span>
-                  <span>section {hit.section_score.toFixed(2)}</span>
-                  <span>priority {hit.priority_score.toFixed(2)}</span>
-                </div>
-                <p>{hit.snippets[0]}</p>
-                <dl>
-                  <div>
-                    <dt>最脆弱假设</dt>
-                    <dd>{hit.weakest_assumption}</dd>
+            {memoryHits.map((hit, index) => {
+              const sight = normalizeResearchSight(hit.research_sight);
+              const pack = normalizeEvidencePack(sight.evidence_pack);
+              return (
+                <article className="memory-hit-card" key={`${hit.paper?.id ?? "memory-hit"}-${index}`}>
+                  <div className="memory-hit-header">
+                    <span>{String(index + 1).padStart(2, "0")}</span>
+                    <strong>{(hit.score ?? 0).toFixed(2)}</strong>
+                    {hit.self_read_priority ? <small>推荐精读</small> : null}
                   </div>
-                  <div>
-                    <dt>一周验证</dt>
-                    <dd>{hit.minimal_reproduction}</dd>
+                  <h3>{hit.paper?.title ?? "Untitled memory"}</h3>
+                  <div className="memory-hit-meta">
+                    <span>Round {hit.round ?? 0}</span>
+                    <span>{hit.paper?.year || "year unknown"}</span>
+                    <span>{hit.paper?.venue || hit.paper?.source || "source unknown"}</span>
                   </div>
-                  <div>
-                    <dt>反例设计</dt>
-                    <dd>{hit.counterexample}</dd>
+                  <div className="memory-hit-score-grid" aria-label="memory score breakdown">
+                    <span>title {(hit.title_score ?? 0).toFixed(2)}</span>
+                    <span>keyword {(hit.keyword_score ?? 0).toFixed(2)}</span>
+                    <span>section {(hit.section_score ?? 0).toFixed(2)}</span>
+                    <span>priority {(hit.priority_score ?? 0).toFixed(2)}</span>
                   </div>
-                  <div>
-                    <dt>审美批判</dt>
-                    <dd>{hit.research_sight.why_not_good || "暂无 ResearchSight 批判字段"}</dd>
-                  </div>
-                  <div>
-                    <dt>更好角度</dt>
-                    <dd>{hit.research_sight.better_angle || "暂无 ResearchSight 破局视角"}</dd>
-                  </div>
-                  <div>
-                    <dt>证据等级</dt>
-                    <dd>{hit.research_sight.evidence_pack.grounding_summary || "暂无 EvidencePack"}</dd>
-                  </div>
-                </dl>
-              </article>
-            ))}
+                  <p>{hit.snippets?.[0] ?? "暂无命中片段。"}</p>
+                  <dl>
+                    <div>
+                      <dt>最脆弱假设</dt>
+                      <dd>{hit.weakest_assumption || "暂无"}</dd>
+                    </div>
+                    <div>
+                      <dt>一周验证</dt>
+                      <dd>{hit.minimal_reproduction || "暂无"}</dd>
+                    </div>
+                    <div>
+                      <dt>反例设计</dt>
+                      <dd>{hit.counterexample || "暂无"}</dd>
+                    </div>
+                    <div>
+                      <dt>审美批判</dt>
+                      <dd>{sight.why_not_good || "暂无 ResearchSight 批判字段"}</dd>
+                    </div>
+                    <div>
+                      <dt>更好角度</dt>
+                      <dd>{sight.better_angle || "暂无 ResearchSight 破局视角"}</dd>
+                    </div>
+                    <div>
+                      <dt>证据等级</dt>
+                      <dd>{pack.grounding_summary || "暂无 EvidencePack"}</dd>
+                    </div>
+                  </dl>
+                </article>
+              );
+            })}
           </section>
         </>
       ) : (
@@ -3851,6 +3958,207 @@ function hydrateWorkflowStateFromArtifacts(items: ApiArtifact[]): HydratedWorkfl
   };
 }
 
+function defaultEvidencePack(): ApiEvidencePack {
+  return {
+    evidence_level: "unknown",
+    confidence: "low",
+    snippets: [],
+    missing_evidence: [],
+    grounding_summary: "暂无 EvidencePack",
+  };
+}
+
+function defaultResearchSight(): ApiResearchSight {
+  return {
+    motivation_sharpness: "",
+    solution_elegance: "",
+    evaluation_integrity: "",
+    paradigm_inspiration: "",
+    why_good: "",
+    why_not_good: "",
+    better_angle: "",
+    baseline_comparison: "",
+    next_step_proposal: "",
+    evidence_pack: defaultEvidencePack(),
+    critique_evidence: [],
+  };
+}
+
+function normalizeDirectionReading(
+  payloadReading: unknown,
+  artifactProjectId: string,
+  artifactCreatedAt: string,
+): ApiDirectionPaperReading {
+  const reading: Record<string, unknown> = isRecord(payloadReading) ? payloadReading : {};
+  const card: Record<string, unknown> = isRecord(reading.card) ? reading.card : {};
+  const sectionPayloads = Array.isArray(reading.sections)
+    ? reading.sections
+    : Array.isArray(card.sections)
+      ? card.sections
+      : [];
+
+  return {
+    paper: normalizeApiPaper(reading.paper, artifactProjectId, artifactCreatedAt),
+    abstract_translation: asString(reading.abstract_translation),
+    signals: normalizePaperSignals(reading.signals ?? card.signals),
+    sections: sectionPayloads.map(normalizePaperCardSection),
+    research_sight: normalizeResearchSight(reading.research_sight),
+    weakest_assumption: firstString(reading.weakest_assumption, card.weakest_assumption),
+    minimal_reproduction: firstString(reading.minimal_reproduction, card.minimal_reproduction),
+    counterexample: firstString(reading.counterexample, card.counterexample),
+    follow_up_idea: firstString(reading.follow_up_idea, card.follow_up_idea),
+    why_selected: asString(reading.why_selected),
+    venue_signal: asString(reading.venue_signal),
+    self_read_priority: asBoolean(reading.self_read_priority),
+  };
+}
+
+function normalizeMemoryHit(hitPayload: unknown, artifactProjectId: string, artifactCreatedAt: string): ApiPaperMemoryHit {
+  const hit: Record<string, unknown> = isRecord(hitPayload) ? hitPayload : {};
+  const memory: Record<string, unknown> = isRecord(hit.memory) ? hit.memory : {};
+  const score = asNumber(hit.score);
+  const selfReadPriority = asBoolean(hit.self_read_priority ?? memory.self_read_priority);
+  const paperPayload = isRecord(hit.paper)
+    ? hit.paper
+    : {
+        id: firstString(memory.paper_id, memory.id),
+        project_id: firstString(memory.project_id, artifactProjectId),
+        title: asString(memory.title),
+        authors: asString(memory.authors),
+        abstract: "",
+        year: asString(memory.year),
+        type: "memory",
+        venue: asString(memory.venue),
+        source: asString(memory.source),
+        url: asString(memory.url),
+        relation: asString(memory.why_selected),
+        priority: selfReadPriority ? "High" : "Medium",
+        code: "unknown",
+        relevance_score: score,
+        created_at: firstString(memory.created_at, artifactCreatedAt),
+      };
+  const researchSightPayload = isRecord(hit.research_sight)
+    ? hit.research_sight
+    : parseJsonRecord(memory.research_sight_json);
+
+  return {
+    paper: normalizeApiPaper(paperPayload, artifactProjectId, artifactCreatedAt),
+    direction: firstString(hit.direction, memory.direction),
+    round: asNumber(hit.round, asNumber(memory.round_index)),
+    score,
+    title_score: asNumber(hit.title_score),
+    keyword_score: asNumber(hit.keyword_score),
+    section_score: asNumber(hit.section_score),
+    priority_score: asNumber(hit.priority_score),
+    snippets: asStringArray(hit.snippets),
+    abstract_translation: firstString(hit.abstract_translation, memory.abstract_translation),
+    weakest_assumption: firstString(hit.weakest_assumption, memory.weakest_assumption),
+    minimal_reproduction: firstString(hit.minimal_reproduction, memory.minimal_reproduction),
+    counterexample: firstString(hit.counterexample, memory.counterexample),
+    follow_up_idea: firstString(hit.follow_up_idea, memory.follow_up_idea),
+    why_selected: firstString(hit.why_selected, memory.why_selected),
+    research_sight: normalizeResearchSight(researchSightPayload),
+    self_read_priority: selfReadPriority,
+  };
+}
+
+function normalizeApiPaper(payload: unknown, artifactProjectId: string, artifactCreatedAt: string): ApiPaper {
+  const paper: Record<string, unknown> = isRecord(payload) ? payload : {};
+  return {
+    id: asString(paper.id) || `artifact-paper-${stableTextKey(asString(paper.title) || "untitled")}`,
+    project_id: asString(paper.project_id) || artifactProjectId,
+    title: asString(paper.title) || "Untitled paper",
+    authors: asString(paper.authors),
+    abstract: asString(paper.abstract),
+    year: asString(paper.year),
+    type: asString(paper.type) || "unknown",
+    venue: asString(paper.venue),
+    source: asString(paper.source),
+    url: asString(paper.url),
+    relation: asString(paper.relation),
+    priority: asString(paper.priority) || "Medium",
+    code: asString(paper.code) || "unknown",
+    relevance_score: asNumber(paper.relevance_score),
+    created_at: asString(paper.created_at) || artifactCreatedAt,
+  };
+}
+
+function normalizePaperSignals(payload: unknown): ApiPaperSignals | undefined {
+  if (!isRecord(payload)) {
+    return undefined;
+  }
+  return {
+    task: asString(payload.task),
+    method: asString(payload.method),
+    dataset: asString(payload.dataset),
+    metric: asString(payload.metric),
+    claim: asString(payload.claim),
+    limitation: asString(payload.limitation),
+    contribution_type: asString(payload.contribution_type),
+    missing_signals: asStringArray(payload.missing_signals),
+  };
+}
+
+function normalizePaperCardSection(payload: unknown, index: number): ApiPaperCardSection {
+  const section: Record<string, unknown> = isRecord(payload) ? payload : {};
+  return {
+    id: asString(section.id) || `section_${index + 1}`,
+    title: asString(section.title) || `Section ${index + 1}`,
+    content: asString(section.content),
+  };
+}
+
+function normalizeResearchSight(payload: unknown): ApiResearchSight {
+  const sight: Record<string, unknown> = isRecord(payload) ? payload : {};
+  return {
+    ...defaultResearchSight(),
+    motivation_sharpness: asString(sight.motivation_sharpness),
+    solution_elegance: asString(sight.solution_elegance),
+    evaluation_integrity: asString(sight.evaluation_integrity),
+    paradigm_inspiration: asString(sight.paradigm_inspiration),
+    why_good: asString(sight.why_good),
+    why_not_good: asString(sight.why_not_good),
+    better_angle: asString(sight.better_angle),
+    baseline_comparison: asString(sight.baseline_comparison),
+    next_step_proposal: asString(sight.next_step_proposal),
+    evidence_pack: normalizeEvidencePack(sight.evidence_pack),
+    critique_evidence: Array.isArray(sight.critique_evidence)
+      ? sight.critique_evidence.map((item) => {
+          const judgment: Record<string, unknown> = isRecord(item) ? item : {};
+          return {
+            field: asString(judgment.field),
+            evidence_snippet_id: asString(judgment.evidence_snippet_id),
+            confidence: asString(judgment.confidence) || "low",
+            rationale: asString(judgment.rationale),
+          };
+        })
+      : [],
+  };
+}
+
+function normalizeEvidencePack(payload: unknown): ApiEvidencePack {
+  const pack: Record<string, unknown> = isRecord(payload) ? payload : {};
+  return {
+    evidence_level: asString(pack.evidence_level) || "unknown",
+    confidence: asString(pack.confidence) || "low",
+    snippets: Array.isArray(pack.snippets)
+      ? pack.snippets.map((item, index) => {
+          const snippet: Record<string, unknown> = isRecord(item) ? item : {};
+          return {
+            id: asString(snippet.id) || `snippet_${index + 1}`,
+            source: asString(snippet.source),
+            kind: asString(snippet.kind),
+            text: asString(snippet.text),
+            note: asString(snippet.note),
+            confidence: asString(snippet.confidence) || "low",
+          };
+        })
+      : [],
+    missing_evidence: asStringArray(pack.missing_evidence),
+    grounding_summary: asString(pack.grounding_summary) || "暂无 EvidencePack",
+  };
+}
+
 function hydrateDirectionReview(items: ApiArtifact[]): ApiDirectionReviewResponse | null {
   const artifact = findArtifactPayload(
     items,
@@ -3867,19 +4175,32 @@ function hydrateDirectionReview(items: ApiArtifact[]): ApiDirectionReviewRespons
     const title = item.title.toLowerCase();
     return title.includes("direction_review") || title.includes("baseline_map") || title.includes("direction_round");
   });
-  const payload = artifact.payload as Omit<ApiDirectionReviewResponse, "artifact_refs"> & {
-    artifact_refs?: ApiArtifactRef[];
-    artifacts?: ApiArtifact[];
-    round_read_count?: number;
-    papers?: ApiDirectionPaperReading[];
-  };
+  const payload = artifact.payload;
+  const papers = Array.isArray(payload.papers)
+    ? payload.papers.map((reading) => normalizeDirectionReading(reading, artifact.artifact.project_id, artifact.artifact.created_at))
+    : [];
+  const artifactRefs = Array.isArray(payload.artifact_refs)
+    ? (payload.artifact_refs as ApiArtifactRef[])
+    : relatedArtifacts.map((item) => ({
+        id: item.id,
+        title: item.title,
+        kind: item.kind,
+        created_at: item.created_at,
+      }));
   return {
-    ...payload,
-    round_read_count: payload.round_read_count ?? payload.papers?.length ?? 0,
-    artifact_refs: payload.artifact_refs?.length
-      ? payload.artifact_refs
-      : getDirectionArtifactRefs({ ...payload, artifact_refs: [], artifacts: relatedArtifacts }),
+    ...(payload as Partial<ApiDirectionReviewResponse>),
+    direction: asString(payload.direction),
+    round: asNumber(payload.round, 1),
+    review_status: asString(payload.review_status) === "partial" ? "partial" : "complete",
+    target_paper_count: asNumber(payload.target_paper_count, 10),
+    round_read_count: asNumber(payload.round_read_count, papers.length),
+    total_read_count: asNumber(payload.total_read_count, papers.length),
+    papers,
+    recommended_paper_ids: asStringArray(payload.recommended_paper_ids),
+    direction_summary: asString(payload.direction_summary),
+    artifact_refs: artifactRefs,
     artifacts: relatedArtifacts,
+    errors: asStringArray(payload.errors),
   };
 }
 
@@ -3892,9 +4213,22 @@ function hydrateResearchMemory(items: ApiArtifact[]): ApiResearchMemoryQueryResp
   if (!artifact) {
     return null;
   }
+  const payload = artifact.payload;
+  const hits = Array.isArray(payload.hits)
+    ? payload.hits.map((hit) => normalizeMemoryHit(hit, artifact.artifact.project_id, artifact.artifact.created_at))
+    : [];
   return {
-    ...(artifact.payload as Omit<ApiResearchMemoryQueryResponse, "artifact">),
+    ...(payload as Partial<ApiResearchMemoryQueryResponse>),
+    question: asString(payload.question),
+    top_k: asNumber(payload.top_k, hits.length),
+    answer: asString(payload.answer),
+    hits,
+    direction_memory: isRecord(payload.direction_memory)
+      ? (payload.direction_memory as unknown as ApiResearchMemoryQueryResponse["direction_memory"])
+      : null,
+    total_memories: asNumber(payload.total_memories, hits.length),
     artifact: artifact.artifact,
+    warnings: asStringArray(payload.warnings),
   };
 }
 
@@ -3973,6 +4307,79 @@ function parseArtifactJson(artifact: ApiArtifact): Record<string, unknown> | nul
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asString(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return "";
+}
+
+function firstString(...values: unknown[]): string {
+  for (const value of values) {
+    const text = asString(value).trim();
+    if (text) {
+      return text;
+    }
+  }
+  return "";
+}
+
+function asNumber(value: unknown, fallback = 0): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+  return fallback;
+}
+
+function asBoolean(value: unknown): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "yes", "high"].includes(normalized)) {
+      return true;
+    }
+    const numeric = Number(normalized);
+    return Number.isFinite(numeric) ? numeric !== 0 : false;
+  }
+  return false;
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((item) => asString(item).trim()).filter(Boolean);
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> | null {
+  if (!asString(value).trim()) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(asString(value)) as unknown;
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function stableTextKey(value: string): string {
+  const normalized = value.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/gi, "-").replace(/^-|-$/g, "");
+  return normalized.slice(0, 48) || "untitled";
 }
 
 function selectArtifactForView(items: ApiArtifact[], view: ViewId): ApiArtifact | null {

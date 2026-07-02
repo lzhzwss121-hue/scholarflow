@@ -4046,6 +4046,39 @@ td a {
   line-height: 1.7;
 }
 
+.api-offline-notice,
+.view-error-state {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: min(1180px, calc(100% - 32px));
+  margin: 18px auto 0;
+  padding: 14px 16px;
+  border: 1px solid #f3b7ad;
+  border-radius: 12px;
+  background: #fff4f1;
+  color: #8a2f20;
+  box-shadow: 0 16px 38px rgba(112, 36, 22, 0.08);
+}
+
+.api-offline-notice span,
+.view-error-state p {
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.view-error-state h2 {
+  margin: 0;
+  color: #651f16;
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.view-error-state p {
+  margin: 6px 0 0;
+  color: #884236;
+}
+
 .decision-panel {
   display: grid;
   gap: 14px;
