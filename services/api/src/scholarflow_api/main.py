@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 import hashlib
 import json
 import re
@@ -18,7 +20,7 @@ from scholarflow_api.agent_core import (
     render_plan_markdown,
 )
 from scholarflow_api.baseline_map import build_baseline_map, render_baseline_map_markdown
-from scholarflow_api.database import get_connection, init_db, new_id, row_to_dict, seed_papers, utc_now
+from scholarflow_api.database import get_connection, init_db, new_id, row_to_dict, utc_now
 from scholarflow_api.direction_review import (
     build_direction_readings,
     build_direction_review_bundle,
@@ -79,10 +81,17 @@ from scholarflow_api.schemas import (
 )
 
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    init_db()
+    yield
+
+
 app = FastAPI(
     title="ScholarFlow API",
     version=__version__,
     description="Backend API and persistence layer for the ScholarFlow research workflow agent.",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -96,11 +105,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-def startup() -> None:
-    init_db()
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -161,7 +165,6 @@ def create_project(payload: ProjectCreate) -> Project:
             """,
             (session_id, project_id, "Research planning session", "active", now, now),
         )
-        seed_papers(connection, project_id, now)
         connection.executemany(
             """
             INSERT INTO tool_events (id, session_id, time_label, tool, status, summary, created_at)

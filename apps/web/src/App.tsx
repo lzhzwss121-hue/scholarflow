@@ -140,12 +140,19 @@ const productViewIds: ViewId[] = [
 ];
 
 const ACTIVE_PROJECT_STORAGE_KEY = "scholarflow.activeProjectId";
+const viewAliases: Record<string, ViewId> = {
+  "experiment-plan": "experiment-planner",
+  "deep-paper-card": "paper-reader",
+};
 
 function readViewFromHash(): ViewId {
   if (typeof window === "undefined") {
     return "dashboard";
   }
   const hashView = window.location.hash.replace("#", "");
+  if (hashView in viewAliases) {
+    return viewAliases[hashView];
+  }
   return productViewIds.includes(hashView as ViewId) ? (hashView as ViewId) : "dashboard";
 }
 
@@ -309,9 +316,6 @@ export function App() {
       setLiteratureQuery(activeProject.keyword);
       setDirectionInput(activeProject.keyword);
     }
-    setDirectionReview(null);
-    setSelectedDirectionPaperId("");
-    setMemoryResult(null);
   }, [activeProject?.id, activeProject?.keyword]);
 
   useEffect(() => {
@@ -348,6 +352,27 @@ export function App() {
     setPersistedArtifactCount(apiArtifacts.length);
     setProjectArtifacts(apiArtifacts);
     setLastSavedArtifact(selectArtifactForView(apiArtifacts, activeView));
+    const restored = hydrateWorkflowStateFromArtifacts(apiArtifacts);
+    if (restored.directionReview) {
+      setDirectionReview(restored.directionReview);
+    }
+    if (restored.memoryResult) {
+      setMemoryResult(restored.memoryResult);
+    }
+    if (restored.paperCard) {
+      setLatestPaperCard(restored.paperCard);
+    }
+    if (restored.researchDecision) {
+      setResearchDecision(restored.researchDecision);
+    }
+  }
+
+  function resetWorkflowState() {
+    setDirectionReview(null);
+    setSelectedDirectionPaperId("");
+    setMemoryResult(null);
+    setResearchDecision(null);
+    setLatestPaperCard(null);
   }
 
   async function handleSelectProject(projectId: string) {
@@ -356,11 +381,7 @@ export function App() {
     storeActiveProjectId(project && !isDemoProject(project.id) ? project.id : null);
     setLastSavedArtifact(null);
     setProjectArtifacts([]);
-    setDirectionReview(null);
-    setMemoryResult(null);
-    setResearchDecision(null);
-    setLatestPaperCard(null);
-    setSelectedDirectionPaperId("");
+    resetWorkflowState();
 
     if (!project) {
       setPaperRows([]);
@@ -400,6 +421,7 @@ export function App() {
       setApiStatus("online");
       setProjects(nextProjects);
       setActiveProject(project);
+      resetWorkflowState();
       storeActiveProjectId(project.id);
       setActiveViewAndHash("paper-table");
       setLiteratureQuery(keyword);
@@ -477,7 +499,11 @@ export function App() {
     }
 
     setAgentBusy(true);
-    setApiMessage("正在执行已确认的 Agent Plan...");
+    const stopProgress = startProgressMessages([
+      "Agent Run: 正在执行文献检索工具...",
+      "Agent Run: 正在生成方向精读与 Paper Memory...",
+      "Agent Run: 正在生成 Gap Board、Experiment Plan 并保存 artifact...",
+    ]);
     try {
       const result = await executeAgentRun(agentPlan.run_id, { confirmed: true });
       setAgentPlan({
@@ -492,6 +518,7 @@ export function App() {
     } catch (error) {
       setApiMessage("执行 Agent Run 失败，请查看 API 日志。");
     } finally {
+      stopProgress();
       setAgentBusy(false);
     }
   }
@@ -505,7 +532,11 @@ export function App() {
     setLiteratureBusy(true);
     setLiteratureErrors([]);
     setPaperRows([]);
-    setApiMessage("正在检索 arXiv / OpenAlex 并生成 paper table...");
+    const stopProgress = startProgressMessages([
+      "Literature Search: 正在扩展关键词并查询 arXiv / OpenAlex...",
+      "Literature Search: 正在去重、排序并检查低召回...",
+      "Literature Search: 正在保存 Paper Table artifact 到 SQLite...",
+    ]);
     try {
       const result = await searchProjectLiterature(activeProject.id, {
         query: literatureQuery,
@@ -522,6 +553,7 @@ export function App() {
       setLiteratureErrors(["文献检索请求失败。请检查网络、OpenAlex/arXiv 可用性或 API 日志。"]);
       setApiMessage("文献检索失败，请检查网络、OpenAlex/arXiv 可用性或 API 日志。");
     } finally {
+      stopProgress();
       setLiteratureBusy(false);
     }
   }
@@ -565,7 +597,12 @@ export function App() {
     }
 
     setDirectionBusy(true);
-    setApiMessage(`正在执行第 ${directionRound} 轮方向精读：近三年 10 篇高相关论文...`);
+    const stopProgress = startProgressMessages([
+      `Direction Review: 正在界定第 ${directionRound} 轮研究方向范围...`,
+      "Direction Review: 正在检索候选池并构建 BaselineMap...",
+      "Direction Review: 正在生成 10 篇 Paper Card、ResearchSight 和 Paper Memory...",
+      "Direction Review: 正在保存 artifacts；如果检索源限流，会标记 partial 或 warning。",
+    ]);
     try {
       const payload = {
         direction: directionInput,
@@ -591,6 +628,7 @@ export function App() {
         setApiMessage("方向精读失败，请检查网络、检索源可用性或 API 日志。");
       }
     } finally {
+      stopProgress();
       setDirectionBusy(false);
     }
   }
@@ -602,7 +640,11 @@ export function App() {
     }
 
     setMemoryBusy(true);
-    setApiMessage(`正在从 Paper Memory Bank 检索 ${memoryTopK} 篇相关论文...`);
+    const stopProgress = startProgressMessages([
+      `Paper Memory: 正在从 SQLite memory bank 检索 ${memoryTopK} 篇相关论文...`,
+      "Paper Memory: 正在按问题意图匹配 minimal reproduction、counterexample 和 ResearchSight 字段...",
+      "Paper Memory: 正在保存 grounded answer artifact...",
+    ]);
     try {
       const result = await queryResearchMemory(activeProject.id, {
         question: memoryQuestion,
@@ -616,6 +658,7 @@ export function App() {
     } catch (error) {
       setApiMessage("论文记忆检索失败，请先执行方向精读，或检查 API 日志。");
     } finally {
+      stopProgress();
       setMemoryBusy(false);
     }
   }
@@ -627,7 +670,11 @@ export function App() {
     }
 
     setDecisionBusy(true);
-    setApiMessage("正在生成 Gap / Novelty / Experiment Plan...");
+    const stopProgress = startProgressMessages([
+      "Research Decision: 正在读取 paper table 和 paper cards...",
+      "Research Decision: 正在区分 true_gap / engineering_gap / pseudo_gap...",
+      "Research Decision: 正在检查 claim、dataset、metric、baseline 与真实 anchor...",
+    ]);
     try {
       const result = await createResearchDecisions(activeProject.id, {
         goal: decisionGoal,
@@ -639,8 +686,22 @@ export function App() {
     } catch (error) {
       setApiMessage("生成研究决策失败，请确认已有 paper table 或 paper card。");
     } finally {
+      stopProgress();
       setDecisionBusy(false);
     }
+  }
+
+  function startProgressMessages(messages: string[], intervalMs = 6500): () => void {
+    if (!messages.length) {
+      return () => undefined;
+    }
+    let index = 0;
+    setApiMessage(messages[index]);
+    const timer = window.setInterval(() => {
+      index = Math.min(index + 1, messages.length - 1);
+      setApiMessage(messages[index]);
+    }, intervalMs);
+    return () => window.clearInterval(timer);
   }
 
   function setActiveViewAndHash(view: ViewId) {
@@ -1151,6 +1212,7 @@ function ActiveView({
       return (
         <ProductPaperTableView
           activeProject={activeProject}
+          apiMessage={apiMessage}
           artifactCount={artifactCount}
           apiStatus={apiStatus}
           errors={literatureErrors}
@@ -1167,6 +1229,7 @@ function ActiveView({
       return (
         <ProductPaperReaderView
           activeProject={activeProject}
+          apiMessage={apiMessage}
           artifactCount={artifactCount}
           apiStatus={apiStatus}
           card={latestPaperCard}
@@ -1200,6 +1263,7 @@ function ActiveView({
     case "paper-memory":
       return (
         <ResearchMemoryView
+          apiMessage={apiMessage}
           apiStatus={apiStatus}
           direction={directionInput}
           isQuerying={memoryBusy}
@@ -1214,6 +1278,7 @@ function ActiveView({
     case "gap-board":
       return (
         <GapBoardView
+          apiMessage={apiMessage}
           apiStatus={apiStatus}
           decision={researchDecision}
           goal={decisionGoal}
@@ -1225,6 +1290,7 @@ function ActiveView({
     case "experiment-planner":
       return (
         <ExperimentPlannerView
+          apiMessage={apiMessage}
           apiStatus={apiStatus}
           decision={researchDecision}
           goal={decisionGoal}
@@ -1610,6 +1676,7 @@ function ProductNewProjectView({
 
 function ProductPaperTableView({
   activeProject,
+  apiMessage,
   artifactCount,
   apiStatus,
   errors,
@@ -1622,6 +1689,7 @@ function ProductPaperTableView({
   query,
 }: {
   activeProject: ApiProject | null;
+  apiMessage: string;
   artifactCount: number;
   apiStatus: ApiStatus;
   errors: string[];
@@ -1714,6 +1782,8 @@ function ProductPaperTableView({
           </button>
         </div>
 
+        {isSearching ? <OperationStatusNote apiStatus={apiStatus} message={apiMessage} /> : null}
+
         <div className="product-table-wrap">
           <table className="product-paper-table">
             <thead>
@@ -1758,7 +1828,7 @@ function ProductPaperTableView({
           <Lightbulb size={17} />
           <span>
             {errors.length
-              ? errors.slice(0, 2).join(" / ")
+              ? warningPreview(errors, 2)
               : "当前没有检索警告。表格只展示本项目真实论文记录，不使用内置示例数据。"}
           </span>
         </div>
@@ -1795,6 +1865,7 @@ function MetricCard({
 
 function ProductPaperReaderView({
   activeProject,
+  apiMessage,
   artifactCount,
   apiStatus,
   card,
@@ -1809,6 +1880,7 @@ function ProductPaperReaderView({
   supplementalInput,
 }: {
   activeProject: ApiProject | null;
+  apiMessage: string;
   artifactCount: number;
   apiStatus: ApiStatus;
   card: ApiPaperCard | null;
@@ -1883,6 +1955,8 @@ function ProductPaperReaderView({
               </button>
             </div>
           </div>
+
+          {isGenerating ? <OperationStatusNote apiStatus={apiStatus} message={apiMessage} /> : null}
 
           <div className="reader-tags">
             {["task: VQA faithfulness", "method: evidence chain", "dataset: VQA-v2 / OK-VQA", "metric: grounding score", "claim: reduce hallucination"].map((tag) => (
@@ -2397,7 +2471,7 @@ function PaperTableView({
         {errors.length ? (
           <div className="retrieval-errors">
             <strong>检索警告</strong>
-            <p>{errors.slice(0, 2).join(" / ")}</p>
+            <p>{warningPreview(errors, 2)}</p>
           </div>
         ) : null}
       </section>
@@ -2613,7 +2687,7 @@ function DirectionReviewView({
             {reviewWarnings.length ? (
               <div className="retrieval-errors">
                 <strong>检索警告</strong>
-                <p>{reviewWarnings.slice(0, 3).join(" / ")}</p>
+                <p>{warningPreview(reviewWarnings, 3)}</p>
               </div>
             ) : null}
           </section>
@@ -2927,6 +3001,7 @@ function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }
 }
 
 function ResearchMemoryView({
+  apiMessage,
   apiStatus,
   direction,
   isQuerying,
@@ -2937,6 +3012,7 @@ function ResearchMemoryView({
   result,
   topK,
 }: {
+  apiMessage: string;
   apiStatus: ApiStatus;
   direction: string;
   isQuerying: boolean;
@@ -2984,6 +3060,7 @@ function ResearchMemoryView({
           <span>30 篇上限</span>
           <span>检索 3-8 篇后回答</span>
         </div>
+        {isQuerying ? <OperationStatusNote apiStatus={apiStatus} message={apiMessage} /> : null}
       </section>
 
       {result ? (
@@ -3211,6 +3288,7 @@ function PaperReaderView({
 }
 
 function GapBoardView({
+  apiMessage,
   apiStatus,
   decision,
   goal,
@@ -3218,6 +3296,7 @@ function GapBoardView({
   onGenerate,
   onGoalChange,
 }: {
+  apiMessage: string;
   apiStatus: ApiStatus;
   decision: ApiResearchDecisionResponse | null;
   goal: string;
@@ -3249,6 +3328,7 @@ function GapBoardView({
           决策目标
           <textarea value={goal} onChange={(event) => onGoalChange(event.target.value)} />
         </label>
+        {isGenerating ? <OperationStatusNote apiStatus={apiStatus} message={apiMessage} /> : null}
         {decision ? (
           <div className="validation-summary">
             <strong>Idea Validation</strong>
@@ -3309,6 +3389,7 @@ function GapBoardView({
 }
 
 function ExperimentPlannerView({
+  apiMessage,
   apiStatus,
   decision,
   goal,
@@ -3316,6 +3397,7 @@ function ExperimentPlannerView({
   onGenerate,
   onGoalChange,
 }: {
+  apiMessage: string;
   apiStatus: ApiStatus;
   decision: ApiResearchDecisionResponse | null;
   goal: string;
@@ -3348,6 +3430,7 @@ function ExperimentPlannerView({
           实验目标
           <textarea value={goal} onChange={(event) => onGoalChange(event.target.value)} />
         </label>
+        {isGenerating ? <OperationStatusNote apiStatus={apiStatus} message={apiMessage} /> : null}
       </section>
 
       {!decision ? (
@@ -3407,11 +3490,12 @@ function ExperimentPlannerView({
       {plan && !isBlocked ? (
         <div className="experiment-list">
           {plan.timeline.map((step, index) => {
+            const isFinalStep = index === plan.timeline.length - 1;
             const item = {
               week: `Step ${index + 1}`,
               goal: step,
-              deliverable: index === plan.timeline.length - 1 ? plan.success_criterion : plan.claim,
-              cost: index === 0 ? plan.resources : "tracked",
+              deliverable: isFinalStep ? plan.success_criterion : experimentStepDeliverable(index),
+              cost: index === 0 ? "setup" : isFinalStep ? "report" : "tracked",
             };
             return (
               <section className="experiment-row" key={item.week}>
@@ -3438,6 +3522,33 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
       <small>{detail}</small>
     </article>
   );
+}
+
+function OperationStatusNote({ apiStatus, message }: { apiStatus: ApiStatus; message: string }) {
+  return (
+    <div className={`project-status-note operation-note ${apiStatus}`}>
+      <Clock3 size={18} />
+      <span>{message}</span>
+    </div>
+  );
+}
+
+function warningPreview(warnings: string[], limit: number) {
+  const visible = warnings.slice(0, limit);
+  const suffix = warnings.length > limit ? ` / 另有 ${warnings.length - limit} 条已折叠` : "";
+  return `${visible.join(" / ")}${suffix}`;
+}
+
+function experimentStepDeliverable(index: number) {
+  const deliverables = [
+    "复核 anchor 字段和实验前置条件",
+    "样本子集、baseline 运行记录",
+    "按指标整理初步结果表",
+    "失败切片和反例样本清单",
+    "ablation 记录与错误分析",
+    "复现实验报告草稿",
+  ];
+  return deliverables[index] ?? "当天结果、阻塞项与下一步记录";
 }
 
 function PlanChecklist({ steps }: { steps: PlanStep[] }) {
@@ -3608,6 +3719,136 @@ function ArtifactPreview({
       />
     </aside>
   );
+}
+
+type HydratedWorkflowState = {
+  directionReview: ApiDirectionReviewResponse | null;
+  memoryResult: ApiResearchMemoryQueryResponse | null;
+  paperCard: ApiPaperCard | null;
+  researchDecision: ApiResearchDecisionResponse | null;
+};
+
+function hydrateWorkflowStateFromArtifacts(items: ApiArtifact[]): HydratedWorkflowState {
+  return {
+    directionReview: hydrateDirectionReview(items),
+    memoryResult: hydrateResearchMemory(items),
+    paperCard: hydratePaperCard(items),
+    researchDecision: hydrateResearchDecision(items),
+  };
+}
+
+function hydrateDirectionReview(items: ApiArtifact[]): ApiDirectionReviewResponse | null {
+  const artifact = findArtifactPayload(
+    items,
+    (title) => title.includes("direction_review"),
+    (payload) =>
+      Array.isArray(payload.papers) &&
+      typeof payload.review_status === "string" &&
+      typeof payload.target_paper_count === "number",
+  );
+  if (!artifact) {
+    return null;
+  }
+  const relatedArtifacts = items.filter((item) => {
+    const title = item.title.toLowerCase();
+    return title.includes("direction_review") || title.includes("baseline_map") || title.includes("direction_round");
+  });
+  return {
+    ...(artifact.payload as Omit<ApiDirectionReviewResponse, "artifacts">),
+    artifacts: relatedArtifacts,
+  };
+}
+
+function hydrateResearchMemory(items: ApiArtifact[]): ApiResearchMemoryQueryResponse | null {
+  const artifact = findArtifactPayload(
+    items,
+    (title) => title.includes("research_memory_answer"),
+    (payload) => Array.isArray(payload.hits) && typeof payload.total_memories === "number",
+  );
+  if (!artifact) {
+    return null;
+  }
+  return {
+    ...(artifact.payload as Omit<ApiResearchMemoryQueryResponse, "artifact">),
+    artifact: artifact.artifact,
+  };
+}
+
+function hydrateResearchDecision(items: ApiArtifact[]): ApiResearchDecisionResponse | null {
+  const artifact = findArtifactPayload(
+    items,
+    (title) => title.includes("gap_board") || title.includes("idea_validation") || title.includes("experiment_plan"),
+    (payload) => Array.isArray(payload.gaps) && isRecord(payload.validation) && isRecord(payload.experiment),
+  );
+  if (!artifact) {
+    return null;
+  }
+  const relatedArtifacts = items.filter((item) => {
+    const title = item.title.toLowerCase();
+    return title.includes("gap_board") || title.includes("idea_validation") || title.includes("experiment_plan");
+  });
+  return {
+    ...(artifact.payload as Omit<ApiResearchDecisionResponse, "artifacts">),
+    artifacts: relatedArtifacts,
+  };
+}
+
+function hydratePaperCard(items: ApiArtifact[]): ApiPaperCard | null {
+  const artifact = findArtifactPayload(
+    items,
+    (title) => title.includes("paper_card"),
+    (payload) => isRecord(payload.card) && Array.isArray(payload.card.sections),
+  );
+  if (!artifact || !isRecord(artifact.payload.card)) {
+    return null;
+  }
+  const card = artifact.payload.card;
+  const paper = isRecord(artifact.payload.paper) ? artifact.payload.paper : {};
+  return {
+    id: artifact.artifact.id,
+    project_id: artifact.artifact.project_id,
+    paper_id: typeof paper.id === "string" ? paper.id : null,
+    artifact_id: artifact.artifact.id,
+    signals: isRecord(card.signals) ? (card.signals as unknown as ApiPaperCard["signals"]) : undefined,
+    sections: Array.isArray(card.sections) ? (card.sections as ApiPaperCard["sections"]) : [],
+    weakest_assumption: typeof card.weakest_assumption === "string" ? card.weakest_assumption : "",
+    minimal_reproduction: typeof card.minimal_reproduction === "string" ? card.minimal_reproduction : "",
+    created_at: artifact.artifact.created_at,
+  };
+}
+
+function findArtifactPayload(
+  items: ApiArtifact[],
+  titleMatches: (title: string) => boolean,
+  payloadMatches: (payload: Record<string, unknown>) => boolean,
+): { artifact: ApiArtifact; payload: Record<string, unknown> } | null {
+  for (const artifact of items) {
+    const title = artifact.title.toLowerCase();
+    if (!titleMatches(title)) {
+      continue;
+    }
+    const payload = parseArtifactJson(artifact);
+    if (payload && payloadMatches(payload)) {
+      return { artifact, payload };
+    }
+  }
+  return null;
+}
+
+function parseArtifactJson(artifact: ApiArtifact): Record<string, unknown> | null {
+  if (!artifact.content_json.trim()) {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(artifact.content_json) as unknown;
+    return isRecord(payload) ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function selectArtifactForView(items: ApiArtifact[], view: ViewId): ApiArtifact | null {

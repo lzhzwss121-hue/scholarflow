@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from scholarflow_api import literature
@@ -81,6 +84,25 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertEqual(second, "cached payload")
         self.assertEqual(calls["count"], 1)
 
+    def test_retrieval_errors_are_compacted_without_losing_low_recall_signal(self) -> None:
+        compacted = literature.compact_retrieval_errors(
+            [
+                "openalex:query one: degraded status=503: HTTP Error 503: Service Unavailable",
+                "openalex:query two: degraded status=503: HTTP Error 503: Service Unavailable",
+                "openalex:query three: degraded status=503: HTTP Error 503: Service Unavailable",
+                "query_relaxed:short query: 初始检索召回不足，已自动放宽检索式。",
+                "query_relaxed:shorter: 初始检索召回不足，已自动放宽检索式。",
+                "low_recall: only 0 papers returned after query expansion and relaxation; results are partial.",
+            ],
+        )
+
+        joined = "\n".join(compacted)
+        self.assertIn("openalex_summary", joined)
+        self.assertIn("3 retrieval warnings", joined)
+        self.assertIn("query_relaxed_summary", joined)
+        self.assertIn("low_recall", joined)
+        self.assertLess(len(compacted), 6)
+
     def test_direction_review_marks_less_than_five_as_partial(self) -> None:
         baseline_map = build_baseline_map("图像修复", [], [])
         bundle = build_direction_review_bundle(
@@ -144,6 +166,9 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                     "id": "paper_method",
                     "title": "A Method Paper for Trustworthy VLM Evaluation",
                     "type": "Method",
+                    "source": "arxiv",
+                    "venue": "arXiv cs.CV",
+                    "url": "https://arxiv.org/abs/2601.00001",
                     "abstract": "A method paper with benchmark discussion.",
                     "priority": "High",
                 },
@@ -165,6 +190,76 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertIn("dataset", suggestions)
         self.assertIn("baseline", suggestions)
         self.assertIn("metric", suggestions)
+
+    def test_manual_or_seed_paper_card_cannot_unlock_experiment_plan(self) -> None:
+        manual_bundle = generate_research_decisions(
+            project={"title": "Manual Card", "keyword": "trustworthy VLM"},
+            papers=[],
+            paper_cards=[
+                {
+                    "paper_title": "Manual fallback paper",
+                    "minimal_reproduction": "Claim: reduces hallucination. Dataset: POPE. Metric: accuracy. Baseline: LLaVA.",
+                    "sections_json": "Dataset: POPE. Metric: accuracy. Baseline: LLaVA.",
+                    "weakest_assumption": "Manual note is not linked to a real retrieved paper.",
+                },
+            ],
+            goal="build a one-week experiment",
+        )
+
+        self.assertEqual(manual_bundle.experiment.status, "blocked")
+        self.assertIn("真实检索论文", " ".join(manual_bundle.experiment.unblock_suggestions))
+
+        seed_bundle = generate_research_decisions(
+            project={"title": "Seed Card", "keyword": "trustworthy VLM"},
+            papers=[
+                {
+                    "id": "paper_seed",
+                    "title": "Synthetic Example: Selecting Reproducible Experiment Anchors",
+                    "type": "Guide",
+                    "source": "seed",
+                    "venue": "Demo",
+                    "code": "demo",
+                    "url": "",
+                    "abstract": "Dataset: POPE. Metric: accuracy. Baseline: LLaVA.",
+                    "priority": "High",
+                },
+            ],
+            paper_cards=[
+                {
+                    "paper_id": "paper_seed",
+                    "paper_title": "Synthetic Example: Selecting Reproducible Experiment Anchors",
+                    "minimal_reproduction": "Claim: reduces hallucination. Dataset: POPE. Metric: accuracy. Baseline: LLaVA.",
+                    "sections_json": "Dataset: POPE. Metric: accuracy. Baseline: LLaVA.",
+                },
+            ],
+            goal="build a one-week experiment",
+        )
+
+        self.assertEqual(seed_bundle.experiment.status, "blocked")
+
+    def test_new_user_project_starts_with_empty_paper_table(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api.database import init_db
+                try:
+                    from scholarflow_api.main import create_project, list_project_papers
+                except ModuleNotFoundError as error:
+                    if error.name == "fastapi":
+                        self.skipTest("FastAPI is not installed in the current Python environment.")
+                    raise
+                from scholarflow_api.schemas import ProjectCreate
+
+                init_db()
+                project = create_project(
+                    ProjectCreate(
+                        title="No Seed User Project",
+                        keyword="vision language model hallucination",
+                    ),
+                )
+                papers = list_project_papers(project.id)
+
+        self.assertEqual(papers, [])
 
 
 if __name__ == "__main__":

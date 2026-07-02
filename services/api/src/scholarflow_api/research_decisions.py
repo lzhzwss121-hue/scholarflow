@@ -183,6 +183,8 @@ def select_experiment_anchor(papers: list[dict[str, Any]], paper_cards: list[dic
     candidates: list[ExperimentAnchor] = []
     for card in paper_cards:
         paper = paper_by_id.get(card.get("paper_id", "") or "", {})
+        if not is_real_paper_anchor(paper, card):
+            continue
         merged_paper = merge_card_paper(card, paper)
         if is_survey_like(merged_paper, card):
             continue
@@ -192,6 +194,21 @@ def select_experiment_anchor(papers: list[dict[str, Any]], paper_cards: list[dic
     if not candidates:
         return None
     return sorted(candidates, key=lambda item: item.score, reverse=True)[0]
+
+
+def is_real_paper_anchor(paper: dict[str, Any], card: dict[str, Any]) -> bool:
+    paper_id = normalize_space(card.get("paper_id", ""))
+    if not paper_id or paper.get("id") != paper_id:
+        return False
+    source = normalize_space(paper.get("source", "")).lower()
+    venue = normalize_space(paper.get("venue", "")).lower()
+    code = normalize_space(paper.get("code", "")).lower()
+    title = normalize_space(paper.get("title", "")).lower()
+    if source in {"", "seed"} or venue == "demo" or code == "demo" or title.startswith("synthetic example:"):
+        return False
+    if not normalize_space(paper.get("url", "")):
+        return False
+    return True
 
 
 def merge_card_paper(card: dict[str, Any], paper: dict[str, Any]) -> dict[str, Any]:
@@ -293,9 +310,20 @@ def build_unblock_suggestions(papers: list[dict[str, Any]], paper_cards: list[di
         suggestions.append("缺 metric：补充 `Metric: ...`，至少包含论文主指标和一个 failure/counterexample 指标。")
         return suggestions
 
-    usable_cards = [
-        (merge_card_paper(card, {paper.get("id", ""): paper for paper in papers if paper.get("id")}.get(card.get("paper_id", "") or "", {})), card)
+    paper_by_id = {paper.get("id", ""): paper for paper in papers if paper.get("id")}
+    linked_real_cards = [
+        card
         for card in paper_cards
+        if is_real_paper_anchor(paper_by_id.get(card.get("paper_id", "") or "", {}), card)
+    ]
+    if not linked_real_cards:
+        suggestions.append("当前 Paper Card 没有绑定真实检索论文；请先从 Paper Table 选择 arXiv/OpenAlex 论文生成 Paper Card。")
+        suggestions.append("手工粘贴 title/abstract 可用于阅读草稿，但不会作为 ready 实验计划的 anchor。")
+        return suggestions
+
+    usable_cards = [
+        (merge_card_paper(card, paper_by_id.get(card.get("paper_id", "") or "", {})), card)
+        for card in linked_real_cards
     ]
     usable_cards = [(paper, card) for paper, card in usable_cards if not is_survey_like(paper, card)]
     if not usable_cards:

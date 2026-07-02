@@ -23,22 +23,119 @@ import type {
 } from "@scholarflow/schemas";
 
 const API_BASE_URL = import.meta.env.VITE_SCHOLARFLOW_API_BASE_URL ?? "http://127.0.0.1:8000";
+const API_REQUEST_TIMEOUT_MS = readPositiveIntegerEnv(import.meta.env.VITE_SCHOLARFLOW_API_TIMEOUT_MS, 30000);
+
+export class ScholarFlowApiError extends Error {
+  readonly status?: number;
+  readonly path: string;
+  readonly detail: string;
+
+  constructor(message: string, options: { path: string; status?: number; detail?: string }) {
+    super(message);
+    this.name = "ScholarFlowApiError";
+    this.status = options.status;
+    this.path = options.path;
+    this.detail = options.detail ?? "";
+  }
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options?.headers,
-    },
-  });
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
+  const upstreamSignal = options?.signal;
+  const abortFromUpstream = () => controller.abort(upstreamSignal?.reason);
 
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || `ScholarFlow API request failed: ${response.status}`);
+  if (upstreamSignal?.aborted) {
+    controller.abort(upstreamSignal.reason);
+  } else {
+    upstreamSignal?.addEventListener("abort", abortFromUpstream, { once: true });
   }
 
-  return response.json() as Promise<T>;
+  try {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+      },
+    });
+
+    if (!response.ok) {
+      const detail = await readResponseDetail(response);
+      throw new ScholarFlowApiError(formatApiError(path, response.status, detail), {
+        path,
+        status: response.status,
+        detail,
+      });
+    }
+
+    return response.json() as Promise<T>;
+  } catch (error) {
+    if (error instanceof ScholarFlowApiError) {
+      throw error;
+    }
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new ScholarFlowApiError(
+        `ScholarFlow API request timed out after ${Math.round(API_REQUEST_TIMEOUT_MS / 1000)}s: ${path}`,
+        { path, detail: "timeout" },
+      );
+    }
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new ScholarFlowApiError(`ScholarFlow API request failed before response: ${path}. ${detail}`, {
+      path,
+      detail,
+    });
+  } finally {
+    window.clearTimeout(timeoutId);
+    upstreamSignal?.removeEventListener("abort", abortFromUpstream);
+  }
+}
+
+function readPositiveIntegerEnv(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+async function readResponseDetail(response: Response) {
+  const raw = await response.text();
+  if (!raw.trim()) {
+    return "";
+  }
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    return raw;
+  }
+  try {
+    return stringifyApiDetail(JSON.parse(raw));
+  } catch {
+    return raw;
+  }
+}
+
+function stringifyApiDetail(payload: unknown): string {
+  if (typeof payload === "string") {
+    return payload;
+  }
+  if (Array.isArray(payload)) {
+    return payload.map(stringifyApiDetail).filter(Boolean).join("; ");
+  }
+  if (payload && typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    if ("detail" in record) {
+      return stringifyApiDetail(record.detail);
+    }
+    if (typeof record.message === "string") {
+      return record.message;
+    }
+    return JSON.stringify(record);
+  }
+  return String(payload);
+}
+
+function formatApiError(path: string, status: number, detail: string) {
+  const suffix = detail ? ` ${detail}` : "";
+  return `ScholarFlow API request failed: ${path} returned ${status}.${suffix}`;
 }
 
 export function getHealth() {

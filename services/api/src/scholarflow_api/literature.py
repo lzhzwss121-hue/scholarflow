@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import ssl
 import time
 import urllib.parse
 import urllib.request
@@ -12,6 +13,11 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+try:
+    import certifi
+except ImportError:  # pragma: no cover - requirements install certifi; keep fallback for system envs.
+    certifi = None
+
 
 ARXIV_API_URL = "https://export.arxiv.org/api/query"
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
@@ -20,6 +26,7 @@ REQUEST_CACHE_TTL_SECONDS = int(os.getenv("SCHOLARFLOW_REQUEST_CACHE_TTL_SECONDS
 LOW_RECALL_THRESHOLD = 5
 TRANSIENT_HTTP_STATUS = {429, 500, 502, 503, 504}
 REQUEST_CACHE: dict[str, tuple[float, str]] = {}
+SSL_CONTEXT: ssl.SSLContext | None = None
 
 
 class SourceDegradedError(RuntimeError):
@@ -95,7 +102,7 @@ def search_literature(query: str, max_results: int = 12, sources: list[str] | No
         query=query,
         expanded_queries=expanded_queries,
         papers=ranked[:max_results],
-        errors=errors,
+        errors=compact_retrieval_errors(errors),
     )
 
 
@@ -340,7 +347,7 @@ def request_text(url: str) -> str:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=DEFAULT_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=DEFAULT_TIMEOUT_SECONDS, context=get_ssl_context()) as response:
             payload = response.read().decode("utf-8")
     except urllib.error.HTTPError as error:
         if error.code in TRANSIENT_HTTP_STATUS:
@@ -353,6 +360,16 @@ def request_text(url: str) -> str:
         raise
     write_request_cache(url, payload)
     return payload
+
+
+def get_ssl_context() -> ssl.SSLContext | None:
+    global SSL_CONTEXT
+    if SSL_CONTEXT is not None:
+        return SSL_CONTEXT
+    if certifi is None:
+        return None
+    SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+    return SSL_CONTEXT
 
 
 def read_request_cache(url: str) -> str | None:
@@ -386,6 +403,65 @@ def extract_query_from_url(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
     params = urllib.parse.parse_qs(parsed.query)
     return (params.get("search") or params.get("search_query") or [""])[0]
+
+
+def compact_retrieval_errors(errors: list[str]) -> list[str]:
+    if not errors:
+        return []
+
+    output: list[str] = []
+    relaxed_queries: list[str] = []
+    grouped: dict[tuple[str, str], list[str]] = {}
+
+    for error in errors:
+        if error.startswith("query_relaxed:"):
+            relaxed_queries.append(error.split(":", 2)[1])
+            continue
+        if error.startswith("low_recall:"):
+            output.append(error)
+            continue
+
+        source, reason = retrieval_error_key(error)
+        grouped.setdefault((source, reason), []).append(error)
+
+    if relaxed_queries:
+        examples = ", ".join(relaxed_queries[:3])
+        suffix = f"; +{len(relaxed_queries) - 3} more" if len(relaxed_queries) > 3 else ""
+        output.append(f"query_relaxed_summary: relaxed {len(relaxed_queries)} query variants after low recall: {examples}{suffix}.")
+
+    for (source, reason), bucket in grouped.items():
+        if len(bucket) == 1:
+            output.append(bucket[0])
+            continue
+        sample_queries = ", ".join(extract_error_query(item) for item in bucket[:3] if extract_error_query(item))
+        suffix = f"; +{len(bucket) - 3} more" if len(bucket) > 3 else ""
+        output.append(f"{source}_summary: {len(bucket)} retrieval warnings with {reason}; examples: {sample_queries}{suffix}.")
+
+    return output
+
+
+def retrieval_error_key(error: str) -> tuple[str, str]:
+    parts = error.split(":", 2)
+    source = parts[0] if parts else "source"
+    detail = parts[2] if len(parts) >= 3 else error
+    if "degraded status=" in detail:
+        match = re.search(r"degraded status=(\d+|unknown)", detail)
+        status = match.group(1) if match else "unknown"
+        return source, f"degraded status={status}"
+    if "timed out" in detail.lower():
+        return source, "request timeout"
+    if "CERTIFICATE_VERIFY_FAILED" in detail:
+        return source, "certificate verification failure"
+    if "nodename nor servname" in detail or "Name or service not known" in detail:
+        return source, "DNS/network unavailable"
+    return source, truncate(normalize_space(detail), 120)
+
+
+def extract_error_query(error: str) -> str:
+    parts = error.split(":", 2)
+    if len(parts) < 2:
+        return ""
+    return truncate(normalize_space(parts[1]), 80)
 
 
 def rank_and_deduplicate(candidates: list[PaperCandidate], query: str) -> list[PaperCandidate]:

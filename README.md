@@ -304,13 +304,8 @@ OPENALEX_EMAIL=你的邮箱
 CROSSREF_MAILTO=你的邮箱
 ```
 
-本地开发时，可以在启动前加载 `.env`：
-
-```bash
-set -a
-source .env
-set +a
-```
+后端启动时会自动读取项目根目录的 `.env`。前端仍会按 Vite 规则读取 `VITE_` 前缀变量。
+默认前端 API 请求超时为 30 秒，可通过 `VITE_SCHOLARFLOW_API_TIMEOUT_MS` 调整。
 
 ### 6. 初始化数据库
 
@@ -483,17 +478,21 @@ npm --workspace @scholarflow/cli run start -- stop
 
 确认已经加载模型配置：
 
-```bash
-set -a
-source .env
-set +a
-```
-
-然后重新启动后端：
+确认 `.env` 已保存后重新启动后端：
 
 ```bash
 npm run dev:api:reload
 ```
+
+### arXiv / OpenAlex 证书错误
+
+如果日志里出现 `CERTIFICATE_VERIFY_FAILED`，请先重新安装后端依赖：
+
+```bash
+python -m pip install -r services/api/requirements.txt
+```
+
+ScholarFlow 会通过 `certifi` 为 Python HTTP 请求提供 CA 证书。
 
 ### OpenAlex 返回 429
 

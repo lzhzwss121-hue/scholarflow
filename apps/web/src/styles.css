@@ -920,6 +920,17 @@
   color: #ffae21;
 }
 
+.operation-note {
+  min-height: 48px;
+  margin-top: 12px;
+  border: 1px solid #dbe4ef;
+  background: #f7faff;
+}
+
+.operation-note svg {
+  color: #1f6f8b;
+}
+
 .new-project-aside {
   min-height: 688px;
   display: grid;
@@ -4186,6 +4197,7 @@ td a {
   margin: 6px 0 0;
   color: #526170;
   line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .experiment-row > span {
@@ -4193,6 +4205,7 @@ td a {
   font-size: 12px;
   font-weight: 700;
   text-align: right;
+  overflow-wrap: anywhere;
 }
 
 .agent-rail {

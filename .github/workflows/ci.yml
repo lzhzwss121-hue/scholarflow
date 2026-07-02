@@ -46,7 +46,16 @@ jobs:
         run: python -m pip install -r services/api/requirements.txt
 
       - name: Compile API package
+        env:
+          PYTHONPYCACHEPREFIX: /tmp/scholarflow-ci-pycache
         run: python -m compileall services/api/src/scholarflow_api
+
+      - name: Run API tests
+        env:
+          PYTHONPATH: services/api/src
+          PYTHONPYCACHEPREFIX: /tmp/scholarflow-ci-test-pycache
+          SCHOLARFLOW_DB_PATH: /tmp/scholarflow-ci-tests.sqlite3
+        run: python -m unittest discover services/api/tests -v
 
       - name: API health smoke test
         env:
