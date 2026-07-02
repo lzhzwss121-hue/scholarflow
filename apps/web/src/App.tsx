@@ -43,6 +43,7 @@ import {
   type ApiAgentPlanResponse,
   type ApiAgentPlanStep,
   type ApiArtifact,
+  type ApiArtifactRef,
   type ApiDirectionPaperReading,
   type ApiDirectionReviewResponse,
   type ApiPaper,
@@ -467,6 +468,20 @@ export function App() {
     }
   }
 
+  async function handleLoadArtifact(artifactId: string) {
+    if (!artifactId) {
+      return;
+    }
+    try {
+      const artifact = await getArtifact(artifactId);
+      setLastSavedArtifact(artifact);
+      setArtifactTab("markdown");
+      setApiMessage(`已回读完整 artifact: ${artifact.title}`);
+    } catch (error) {
+      setApiMessage("读取 artifact 失败，请确认后端 API 与 SQLite 工作区可用。");
+    }
+  }
+
   async function handleCreateAgentPlan() {
     if (!activeProject) {
       setApiMessage("没有可运行的项目，请先创建项目或启动 API。");
@@ -614,10 +629,15 @@ export function App() {
       const result = await Promise.race([createDirectionReview(activeProject.id, payload), timeout]);
       setDirectionReview(result);
       setSelectedDirectionPaperId("");
-      setLastSavedArtifact(result.artifacts[0] ?? null);
+      const reviewArtifactRef =
+        result.artifact_refs.find((artifact) => artifact.title.toLowerCase().includes("direction_review")) ??
+        result.artifact_refs[0];
+      if (reviewArtifactRef) {
+        await handleLoadArtifact(reviewArtifactRef.id);
+      }
       setApiMessage(
         result.review_status === "partial"
-          ? `方向精读 partial：第 ${result.round} 轮仅读取 ${result.papers.length}/${result.target_paper_count} 篇，不能视为完整 10 篇方向精读。`
+          ? `方向精读 partial：第 ${result.round} 轮仅读取 ${result.round_read_count}/${result.target_paper_count} 篇，不能视为完整 10 篇方向精读。`
           : `方向精读完成：第 ${result.round} 轮，累计 ${result.total_read_count} 篇。`,
       );
       await loadProjectResources(activeProject.id);
@@ -748,6 +768,7 @@ export function App() {
           onDirectionInputChange={setDirectionInput}
           onDirectionRoundChange={setDirectionRound}
           onLiteratureQueryChange={setLiteratureQuery}
+          onLoadArtifact={handleLoadArtifact}
           onMemoryQuestionChange={setMemoryQuestion}
           onMemoryTopKChange={setMemoryTopK}
           onPaperCardInputChange={setPaperCardInput}
@@ -1121,6 +1142,7 @@ interface ActiveViewProps {
   onExecuteAgentRun: () => void;
   onGeneratePaperCard: () => void;
   onLiteratureQueryChange: (query: string) => void;
+  onLoadArtifact: (artifactId: string) => void;
   onMemoryQuestionChange: (question: string) => void;
   onMemoryTopKChange: (topK: number) => void;
   onPaperCardInputChange: (value: string) => void;
@@ -1174,6 +1196,7 @@ function ActiveView({
   onExecuteAgentRun,
   onGeneratePaperCard,
   onLiteratureQueryChange,
+  onLoadArtifact,
   onMemoryQuestionChange,
   onMemoryTopKChange,
   onPaperCardInputChange,
@@ -1253,6 +1276,7 @@ function ActiveView({
           isGenerating={directionBusy}
           onDirectionChange={onDirectionInputChange}
           onGenerate={onCreateDirectionReview}
+          onLoadArtifact={onLoadArtifact}
           onRoundChange={onDirectionRoundChange}
           onSelectedPaperChange={onSelectedDirectionPaperChange}
           review={directionReview}
@@ -2541,6 +2565,7 @@ function DirectionReviewView({
   isGenerating,
   onDirectionChange,
   onGenerate,
+  onLoadArtifact,
   onRoundChange,
   onSelectedPaperChange,
   review,
@@ -2553,19 +2578,21 @@ function DirectionReviewView({
   isGenerating: boolean;
   onDirectionChange: (direction: string) => void;
   onGenerate: () => void;
+  onLoadArtifact: (artifactId: string) => void;
   onRoundChange: (round: number) => void;
   onSelectedPaperChange: (paperId: string) => void;
   review: ApiDirectionReviewResponse | null;
   round: number;
   selectedPaperId: string;
 }) {
-  const selectedReading = review?.papers.find((reading) => reading.paper.id === selectedPaperId) ?? null;
+  const readings = review?.papers ?? [];
+  const artifactRefs = getDirectionArtifactRefs(review);
+  const selectedReading = readings.find((reading) => reading.paper.id === selectedPaperId) ?? null;
   const recommendedReadings =
-    review?.papers.filter((reading) => review.recommended_paper_ids.includes(reading.paper.id) || reading.self_read_priority) ??
-    [];
+    readings.filter((reading) => review?.recommended_paper_ids.includes(reading.paper.id) || reading.self_read_priority) ?? [];
   const canGenerate = apiStatus === "online" && !isGenerating && direction.trim().length > 0;
   const expectedRoundCount = review?.target_paper_count ?? 10;
-  const actualRoundCount = review?.papers.length ?? 0;
+  const actualRoundCount = review?.round_read_count ?? readings.length;
   const isPartialReview = review?.review_status === "partial";
   const partialRoundWarning =
     review && (isPartialReview || actualRoundCount < expectedRoundCount)
@@ -2632,58 +2659,33 @@ function DirectionReviewView({
                 <span>{isPartialReview ? "Partial" : "Complete"}</span>
                 <span>本轮 {actualRoundCount}/{expectedRoundCount}</span>
                 <span>累计 {review.total_read_count} papers</span>
-                <span>{review.scope.year_range}</span>
+                {review.scope ? <span>{review.scope.year_range}</span> : null}
               </div>
             </div>
             <p>{review.direction_summary}</p>
-            <div className="direction-scope-grid">
-              <div>
-                <strong>纳入范围</strong>
-                <span>{review.scope.included_scope}</span>
-              </div>
-              <div>
-                <strong>排除范围</strong>
-                <span>{review.scope.excluded_scope}</span>
-              </div>
-            </div>
-            <div className="direction-chip-row">
-              {review.scope.subtopics.map((subtopic) => (
-                <span key={subtopic}>{subtopic}</span>
-              ))}
-            </div>
-            <div className="baseline-map-panel" aria-label="baseline map">
-              <div className="baseline-map-header">
-                <div>
-                  <p className="section-kicker">BaselineMap</p>
-                  <h3>方向背景与对比参照</h3>
+            {review.scope ? (
+              <>
+                <div className="direction-scope-grid">
+                  <div>
+                    <strong>纳入范围</strong>
+                    <span>{review.scope.included_scope}</span>
+                  </div>
+                  <div>
+                    <strong>排除范围</strong>
+                    <span>{review.scope.excluded_scope}</span>
+                  </div>
                 </div>
-                <span>{review.baseline_map.generated_from.length} candidates</span>
-              </div>
-              <p>{review.baseline_map.task_definition}</p>
-              <div className="baseline-map-grid">
-                <BaselineReferenceList title="经典 baseline" references={review.baseline_map.classic_baselines} />
-                <BaselineReferenceList title="近三年强 baseline" references={review.baseline_map.recent_strong_baselines} />
-                <BaselineReferenceList title="异质范式" references={review.baseline_map.alternative_paradigms} />
-              </div>
-              <div className="baseline-risk-grid">
-                <div>
-                  <strong>证据约束</strong>
-                  <span>{review.baseline_map.evidence_summary}</span>
+                <div className="direction-chip-row">
+                  {review.scope.subtopics.map((subtopic) => (
+                    <span key={subtopic}>{subtopic}</span>
+                  ))}
                 </div>
-                <div>
-                  <strong>常见 benchmark</strong>
-                  <span>{review.baseline_map.common_benchmarks.slice(0, 5).join(" / ")}</span>
-                </div>
-                <div>
-                  <strong>评价风险</strong>
-                  <span>{review.baseline_map.evaluation_risks.slice(0, 2).join("；")}</span>
-                </div>
-                <div>
-                  <strong>开放问题</strong>
-                  <span>{review.baseline_map.open_questions.slice(0, 2).join("；")}</span>
-                </div>
-              </div>
-            </div>
+              </>
+            ) : null}
+            {review.baseline_map ? <BaselineMapPanel baselineMap={review.baseline_map} /> : null}
+            {artifactRefs.length ? (
+              <DirectionArtifactRefs artifacts={artifactRefs} onLoadArtifact={onLoadArtifact} />
+            ) : null}
             {reviewWarnings.length ? (
               <div className="retrieval-errors">
                 <strong>检索警告</strong>
@@ -2692,6 +2694,7 @@ function DirectionReviewView({
             ) : null}
           </section>
 
+          {readings.length ? (
           <section className="recommendation-panel" aria-label="recommended papers">
             <div>
               <p className="section-kicker">Personal Deep Reading</p>
@@ -2714,10 +2717,12 @@ function DirectionReviewView({
               ))}
             </div>
           </section>
+          ) : null}
 
+          {readings.length ? (
           <div className="direction-reader-layout">
             <section className="direction-paper-grid" aria-label="direction paper cards">
-              {review.papers.map((reading, index) => {
+              {readings.map((reading, index) => {
                 const isActive = selectedPaperId === reading.paper.id;
                 return (
                   <button
@@ -2752,6 +2757,15 @@ function DirectionReviewView({
               </section>
             )}
           </div>
+          ) : (
+            <section className="direction-empty-state">
+              <BookOpen size={22} />
+              <div>
+                <h2>精读详情已保存为 Artifact</h2>
+                <p>为了控制 Direction Review 响应体，完整 BaselineMap、Paper Cards 和 Memory 不再随 POST 返回。点击上方 Artifact 可按需回读完整内容。</p>
+              </div>
+            </section>
+          )}
         </>
       ) : (
         <section className="direction-empty-state">
@@ -2773,7 +2787,7 @@ function BaselineReferenceList({
   references,
   title,
 }: {
-  references: ApiDirectionReviewResponse["baseline_map"]["classic_baselines"];
+  references: NonNullable<ApiDirectionReviewResponse["baseline_map"]>["classic_baselines"];
   title: string;
 }) {
   return (
@@ -2791,6 +2805,75 @@ function BaselineReferenceList({
       ) : (
         <p>当前候选池没有稳定参照。</p>
       )}
+    </div>
+  );
+}
+
+function BaselineMapPanel({ baselineMap }: { baselineMap: NonNullable<ApiDirectionReviewResponse["baseline_map"]> }) {
+  return (
+    <div className="baseline-map-panel" aria-label="baseline map">
+      <div className="baseline-map-header">
+        <div>
+          <p className="section-kicker">BaselineMap</p>
+          <h3>方向背景与对比参照</h3>
+        </div>
+        <span>{baselineMap.generated_from.length} candidates</span>
+      </div>
+      <p>{baselineMap.task_definition}</p>
+      <div className="baseline-map-grid">
+        <BaselineReferenceList title="经典 baseline" references={baselineMap.classic_baselines} />
+        <BaselineReferenceList title="近三年强 baseline" references={baselineMap.recent_strong_baselines} />
+        <BaselineReferenceList title="异质范式" references={baselineMap.alternative_paradigms} />
+      </div>
+      <div className="baseline-risk-grid">
+        <div>
+          <strong>证据约束</strong>
+          <span>{baselineMap.evidence_summary}</span>
+        </div>
+        <div>
+          <strong>常见 benchmark</strong>
+          <span>{baselineMap.common_benchmarks.slice(0, 5).join(" / ")}</span>
+        </div>
+        <div>
+          <strong>评价风险</strong>
+          <span>{baselineMap.evaluation_risks.slice(0, 2).join("；")}</span>
+        </div>
+        <div>
+          <strong>开放问题</strong>
+          <span>{baselineMap.open_questions.slice(0, 2).join("；")}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DirectionArtifactRefs({
+  artifacts,
+  onLoadArtifact,
+}: {
+  artifacts: ApiArtifactRef[];
+  onLoadArtifact: (artifactId: string) => void;
+}) {
+  return (
+    <div className="direction-artifact-panel" aria-label="direction review artifacts">
+      <div className="baseline-map-header">
+        <div>
+          <p className="section-kicker">Artifacts</p>
+          <h3>完整内容按需回读</h3>
+        </div>
+        <span>{artifacts.length} saved</span>
+      </div>
+      <div className="direction-artifact-list">
+        {artifacts.map((artifact) => (
+          <button key={artifact.id} type="button" onClick={() => onLoadArtifact(artifact.id)}>
+            <FileText size={16} />
+            <div>
+              <strong>{artifact.title}</strong>
+              <small>{artifact.kind} · {formatArtifactDate(artifact.created_at)}</small>
+            </div>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -3539,6 +3622,37 @@ function warningPreview(warnings: string[], limit: number) {
   return `${visible.join(" / ")}${suffix}`;
 }
 
+function getDirectionArtifactRefs(review: ApiDirectionReviewResponse | null): ApiArtifactRef[] {
+  if (!review) {
+    return [];
+  }
+  if (review.artifact_refs?.length) {
+    return review.artifact_refs;
+  }
+  return (review.artifacts ?? []).map((artifact) => ({
+    id: artifact.id,
+    title: artifact.title,
+    kind: artifact.kind,
+    created_at: artifact.created_at,
+  }));
+}
+
+function formatArtifactDate(value: string) {
+  if (!value) {
+    return "unknown time";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function experimentStepDeliverable(index: number) {
   const deliverables = [
     "复核 anchor 字段和实验前置条件",
@@ -3753,8 +3867,18 @@ function hydrateDirectionReview(items: ApiArtifact[]): ApiDirectionReviewRespons
     const title = item.title.toLowerCase();
     return title.includes("direction_review") || title.includes("baseline_map") || title.includes("direction_round");
   });
+  const payload = artifact.payload as Omit<ApiDirectionReviewResponse, "artifact_refs"> & {
+    artifact_refs?: ApiArtifactRef[];
+    artifacts?: ApiArtifact[];
+    round_read_count?: number;
+    papers?: ApiDirectionPaperReading[];
+  };
   return {
-    ...(artifact.payload as Omit<ApiDirectionReviewResponse, "artifacts">),
+    ...payload,
+    round_read_count: payload.round_read_count ?? payload.papers?.length ?? 0,
+    artifact_refs: payload.artifact_refs?.length
+      ? payload.artifact_refs
+      : getDirectionArtifactRefs({ ...payload, artifact_refs: [], artifacts: relatedArtifacts }),
     artifacts: relatedArtifacts,
   };
 }
@@ -3913,6 +4037,9 @@ function toPlanStatus(status: ApiAgentPlanStep["status"]): PlanStatus {
   }
   if (status === "running") {
     return "active";
+  }
+  if (status === "failed") {
+    return "blocked";
   }
   return "queued";
 }

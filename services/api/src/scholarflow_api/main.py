@@ -55,11 +55,10 @@ from scholarflow_api.schemas import (
     AgentPlanResponse,
     Artifact,
     ArtifactCreate,
+    ArtifactRef,
     BaselineMap,
-    DirectionPaperReading,
     DirectionReviewRequest,
     DirectionReviewResponse,
-    DirectionScope,
     HealthResponse,
     LiteratureSearchRequest,
     LiteratureSearchResponse,
@@ -577,29 +576,11 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
         round=bundle.round,
         review_status=bundle.review_status,
         target_paper_count=bundle.target_paper_count,
+        round_read_count=len(bundle.readings),
         total_read_count=bundle.total_read_count,
-        scope=DirectionScope(**bundle.scope.to_dict()),
-        baseline_map=BaselineMap(**bundle.baseline_map.to_dict()),
-        papers=[
-            DirectionPaperReading(
-                paper=Paper.model_validate(reading.paper),
-                abstract_translation=reading.abstract_translation,
-                signals=reading.card.signals.to_dict(),
-                sections=[section.to_dict() for section in reading.card.sections],
-                research_sight=ResearchSight(**reading.research_sight.to_dict()),
-                weakest_assumption=reading.card.weakest_assumption,
-                minimal_reproduction=reading.card.minimal_reproduction,
-                counterexample=reading.card.counterexample,
-                follow_up_idea=reading.card.follow_up_idea,
-                why_selected=reading.why_selected,
-                venue_signal=reading.venue_signal,
-                self_read_priority=reading.self_read_priority,
-            )
-            for reading in bundle.readings
-        ],
         recommended_paper_ids=bundle.recommended_paper_ids,
         direction_summary=bundle.direction_summary,
-        artifacts=[Artifact.model_validate(artifact) for artifact in artifacts],
+        artifact_refs=[ArtifactRef.model_validate(artifact) for artifact in artifacts],
         errors=bundle.errors,
     )
 
@@ -938,11 +919,15 @@ def execute_agent_run(run_id: str, payload: AgentExecuteRequest) -> AgentExecute
 
         if run_dict["status"] == "completed" and run_dict["result_artifact_id"]:
             artifact = fetch_artifact_dict(connection, run_dict["result_artifact_id"])
+            papers = plan.get("papers", [])
+            paper_count = infer_agent_paper_count(plan, papers)
             return AgentExecuteResponse(
                 run_id=run_id,
                 status="completed",
                 artifact=Artifact.model_validate(artifact),
-                papers=plan.get("papers", []),
+                papers=papers,
+                paper_count=paper_count,
+                summary_metrics=collect_agent_summary_metrics(plan, paper_count),
                 steps=plan["steps"],
             )
 
@@ -982,6 +967,8 @@ def execute_agent_run(run_id: str, payload: AgentExecuteRequest) -> AgentExecute
             try:
                 result = registry.run(tool_name, context)
                 context.outputs[result.tool] = result.data
+                step_metrics = result.summary_metrics or infer_tool_summary_metrics(result.data)
+                context.summary_metrics[result.tool] = step_metrics
                 if result.data.get("papers"):
                     context.papers = result.data["papers"]
                     plan["papers"] = context.papers
@@ -991,7 +978,7 @@ def execute_agent_run(run_id: str, payload: AgentExecuteRequest) -> AgentExecute
                     context.artifacts.extend(result.data["artifacts"])
                 if result.data.get("artifact_id"):
                     context.artifact_id = result.data["artifact_id"]
-                mark_plan_step_by_id(plan, step["id"], "done")
+                mark_plan_step_by_id(plan, step["id"], "done", step_metrics)
                 insert_tool_event(
                     connection,
                     run_dict["session_id"],
@@ -1035,6 +1022,8 @@ def execute_agent_run(run_id: str, payload: AgentExecuteRequest) -> AgentExecute
         status="completed",
         artifact=Artifact.model_validate(result_artifact),
         papers=context.papers,
+        paper_count=len(context.papers),
+        summary_metrics=collect_agent_summary_metrics(plan, len(context.papers)),
         steps=plan["steps"],
     )
 
@@ -1578,6 +1567,11 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
             tool="literature_search",
             status="done",
             summary=f"已检索真实论文候选 {len(result.papers)} 篇；当前项目 paper table 共 {len(papers)} 篇。",
+            summary_metrics={
+                "paper_count": len(papers),
+                "artifact_count": 1,
+                "warning_count": len(result.errors),
+            },
             data={
                 "papers": papers,
                 "artifact_id": artifact["id"],
@@ -1704,14 +1698,23 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
             tool="direction_review",
             status="done",
             summary=f"已完成第 {round_index} 轮方向精读，生成 {len(readings)} 张 Paper Card。",
+            summary_metrics={
+                "review_status": bundle.review_status,
+                "round_read_count": len(readings),
+                "total_read_count": bundle.total_read_count,
+                "artifact_count": len(artifacts),
+                "warning_count": len(bundle.errors),
+            },
             data={
                 "papers": paper_dicts,
                 "artifacts": artifacts,
                 "artifact_id": review_artifact["id"],
                 "round": round_index,
                 "paper_count": len(readings),
+                "review_status": bundle.review_status,
+                "total_read_count": bundle.total_read_count,
                 "recommended_paper_ids": bundle.recommended_paper_ids,
-                "errors": errors,
+                "errors": bundle.errors,
             },
         )
 
@@ -1741,10 +1744,16 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
             tool="research_memory_query",
             status="done",
             summary=f"已从 Paper Memory Bank 检索 {len(answer.hits)} 篇相关论文记忆。",
+            summary_metrics={
+                "memory_hit_count": len(answer.hits),
+                "artifact_count": 1,
+                "warning_count": len(answer.warnings),
+            },
             data={
                 "artifact_id": artifact["id"],
                 "artifact": artifact,
                 "hit_count": len(answer.hits),
+                "memory_hit_count": len(answer.hits),
                 "total_memories": answer.total_memories,
                 "warnings": answer.warnings,
             },
@@ -1792,6 +1801,11 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
             tool="research_decision",
             status="done",
             summary=f"已生成 {len(bundle.gaps)} 个 gap、idea validation 和 experiment plan。",
+            summary_metrics={
+                "gap_count": len(bundle.gaps),
+                "artifact_count": len(artifacts),
+                "experiment_status": bundle.experiment.status,
+            },
             data={
                 "artifacts": artifacts,
                 "artifact_id": artifacts[-1]["id"],
@@ -1808,6 +1822,7 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
             tool="search_mock_papers",
             status="done",
             summary=f"已生成 {len(papers)} 条 mock paper candidates。",
+            summary_metrics={"paper_count": len(papers), "demo_mode": True},
             data={"papers": papers, "paper_count": len(papers), "demo_mode": True},
         )
 
@@ -1846,6 +1861,7 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
             tool="save_artifact",
             status="done",
             summary=f"已保存 agent run artifact: {artifact['title']}。",
+            summary_metrics={"artifact_id": artifact["id"], "artifact_count": 1},
             data={"artifact_id": artifact["id"], "artifact": artifact},
         )
 
@@ -1854,6 +1870,7 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
             tool="update_timeline",
             status="done",
             summary="已完成本次最小 Agent Loop，并同步 session timeline。",
+            summary_metrics={"artifact_id": context.artifact_id or ""},
             data={"artifact_id": context.artifact_id},
         )
 
@@ -1906,10 +1923,12 @@ def mark_plan_step(plan: dict, tool_name: str, status: str) -> None:
             step["status"] = status
 
 
-def mark_plan_step_by_id(plan: dict, step_id: str, status: str) -> None:
+def mark_plan_step_by_id(plan: dict, step_id: str, status: str, metrics: dict[str, object] | None = None) -> None:
     for step in plan["steps"]:
         if step.get("id") == step_id:
             step["status"] = status
+            if metrics is not None:
+                step["metrics"] = metrics
             return
 
 
@@ -1918,3 +1937,64 @@ def completed_plan_snapshot(plan: dict) -> dict:
     for step in snapshot["steps"]:
         step["status"] = "done"
     return snapshot
+
+
+def infer_tool_summary_metrics(data: dict | None) -> dict[str, object]:
+    data = data or {}
+    metrics: dict[str, object] = {}
+    if "paper_count" in data:
+        metrics["paper_count"] = int(data.get("paper_count") or 0)
+    if "artifacts" in data and isinstance(data.get("artifacts"), list):
+        metrics["artifact_count"] = len(data["artifacts"])
+    elif data.get("artifact") or data.get("artifact_id"):
+        metrics["artifact_count"] = 1
+    warning_count = len(data.get("warnings", [])) + len(data.get("errors", []))
+    if warning_count:
+        metrics["warning_count"] = warning_count
+    if "hit_count" in data:
+        metrics["memory_hit_count"] = int(data.get("hit_count") or 0)
+    if "experiment_status" in data:
+        metrics["experiment_status"] = str(data.get("experiment_status") or "")
+    if "review_status" in data:
+        metrics["review_status"] = str(data.get("review_status") or "")
+    if "total_read_count" in data:
+        metrics["total_read_count"] = int(data.get("total_read_count") or 0)
+    if "artifact_id" in data:
+        metrics["artifact_id"] = str(data.get("artifact_id") or "")
+    return metrics
+
+
+def infer_agent_paper_count(plan: dict, papers: list[dict]) -> int:
+    if papers:
+        return len(papers)
+    for step in plan.get("steps", []):
+        metrics = step.get("metrics") if isinstance(step, dict) else None
+        if isinstance(metrics, dict) and int(metrics.get("paper_count") or 0) > 0:
+            return int(metrics["paper_count"])
+    return 0
+
+
+def collect_agent_summary_metrics(plan: dict, paper_count: int) -> dict[str, object]:
+    summary: dict[str, object] = {
+        "paper_count": paper_count,
+        "artifact_count": 0,
+        "warning_count": 0,
+    }
+    for step in plan.get("steps", []):
+        metrics = step.get("metrics") if isinstance(step, dict) else None
+        if not isinstance(metrics, dict):
+            continue
+        tool = str(step.get("tool", ""))
+        if tool:
+            summary[f"{tool}_metrics"] = metrics
+        summary["artifact_count"] = int(summary["artifact_count"]) + int(metrics.get("artifact_count") or 0)
+        summary["warning_count"] = int(summary["warning_count"]) + int(metrics.get("warning_count") or 0)
+        if tool == "literature_search" and int(metrics.get("paper_count") or 0) > 0:
+            summary["paper_count"] = int(metrics["paper_count"])
+        if tool == "research_memory_query" and "memory_hit_count" in metrics:
+            summary["memory_hit_count"] = int(metrics.get("memory_hit_count") or 0)
+        if tool == "research_decision" and metrics.get("experiment_status"):
+            summary["experiment_status"] = str(metrics["experiment_status"])
+        if tool == "direction_review" and metrics.get("review_status"):
+            summary["review_status"] = str(metrics["review_status"])
+    return summary

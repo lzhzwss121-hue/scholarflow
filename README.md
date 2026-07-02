@@ -306,6 +306,7 @@ CROSSREF_MAILTO=你的邮箱
 
 后端启动时会自动读取项目根目录的 `.env`。前端仍会按 Vite 规则读取 `VITE_` 前缀变量。
 默认前端 API 请求超时为 30 秒，可通过 `VITE_SCHOLARFLOW_API_TIMEOUT_MS` 调整。
+文献检索会对 arXiv / OpenAlex 请求设置超时，并把相同 source + query + max_results 的短期结果写入 SQLite cache。若 OpenAlex 触发 429/503/504，系统会在本轮检索中暂停该 source，并显示 `openalex_cooldown`、`arxiv_rate_limited` 或 `using_cached_results` 等 warning。
 
 ### 6. 初始化数据库
 
@@ -424,6 +425,7 @@ AI
 | `npm run db:init` | 初始化开发数据库 |
 | `npm run check` | 运行 TypeScript 和 CLI 检查 |
 | `npm run build` | 构建前端和共享包 |
+| `npm run test:e2e` | 运行 Playwright 浏览器 smoke，默认使用 mocked API，不代表真实外部检索质量 |
 | `npm run health:api` | 检查 API health |
 | `npm run version:cli` | 查看 CLI 版本 |
 

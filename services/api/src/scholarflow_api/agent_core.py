@@ -23,6 +23,7 @@ class AgentPlanStep:
     detail: str
     tool: str
     status: AgentStepStatus = "queued"
+    metrics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -193,6 +194,7 @@ class ToolContext:
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     outputs: dict[str, Any] = field(default_factory=dict)
     artifact_id: str | None = None
+    summary_metrics: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -201,6 +203,7 @@ class ToolResult:
     status: str
     summary: str
     data: dict[str, Any] = field(default_factory=dict)
+    summary_metrics: dict[str, Any] = field(default_factory=dict)
 
 
 ToolHandler = Callable[[ToolContext], ToolResult]

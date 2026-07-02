@@ -17,6 +17,7 @@
     "db:init": "PYTHONPATH=services/api/src python3 -m scholarflow_api.database",
     "build": "npm --workspaces --if-present run build",
     "check": "npm --workspaces --if-present run check",
+    "test:e2e": "npm --workspace @scholarflow/web run test:e2e",
     "health:api": "PYTHONPATH=services/api/src python3 -m scholarflow_api.healthcheck",
     "version:cli": "npm --workspace @scholarflow/cli run start -- --version"
   },

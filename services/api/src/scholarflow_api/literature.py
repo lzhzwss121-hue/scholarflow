@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import ssl
 import time
 import urllib.parse
@@ -12,6 +13,8 @@ import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
+
+from scholarflow_api.database import get_connection, new_id, utc_now
 
 try:
     import certifi
@@ -23,10 +26,12 @@ ARXIV_API_URL = "https://export.arxiv.org/api/query"
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 DEFAULT_TIMEOUT_SECONDS = float(os.getenv("SCHOLARFLOW_REQUEST_TIMEOUT_SECONDS", "12"))
 REQUEST_CACHE_TTL_SECONDS = int(os.getenv("SCHOLARFLOW_REQUEST_CACHE_TTL_SECONDS", "900"))
+RETRIEVAL_CACHE_TTL_SECONDS = int(os.getenv("SCHOLARFLOW_RETRIEVAL_CACHE_TTL_SECONDS", "86400"))
 LOW_RECALL_THRESHOLD = 5
 TRANSIENT_HTTP_STATUS = {429, 500, 502, 503, 504}
 REQUEST_CACHE: dict[str, tuple[float, str]] = {}
 SSL_CONTEXT: ssl.SSLContext | None = None
+SOURCE_FAILURE_THRESHOLD = 1
 
 
 class SourceDegradedError(RuntimeError):
@@ -70,9 +75,10 @@ def search_literature(query: str, max_results: int = 12, sources: list[str] | No
     per_query_limit = max(3, min(10, max_results))
     candidates: list[PaperCandidate] = []
     errors: list[str] = []
+    source_failures: dict[str, int] = {}
 
     for expanded_query in expanded_queries:
-        candidates.extend(search_sources_for_query(expanded_query, per_query_limit, selected_sources, errors))
+        candidates.extend(search_sources_for_query(expanded_query, per_query_limit, selected_sources, errors, source_failures))
 
     ranked = rank_and_deduplicate(candidates, query)
     if len(ranked) < LOW_RECALL_THRESHOLD:
@@ -85,6 +91,7 @@ def search_literature(query: str, max_results: int = 12, sources: list[str] | No
                     per_query_limit,
                     selected_sources,
                     errors,
+                    source_failures,
                     relaxed=True,
                 ),
             )
@@ -111,24 +118,158 @@ def search_sources_for_query(
     per_query_limit: int,
     selected_sources: list[str],
     errors: list[str],
+    source_failures: dict[str, int] | None = None,
     relaxed: bool = False,
 ) -> list[PaperCandidate]:
+    source_failures = source_failures if source_failures is not None else {}
     candidates: list[PaperCandidate] = []
     if "arxiv" in selected_sources:
-        try:
-            candidates.extend(search_arxiv(query, per_query_limit, relaxed=relaxed))
-        except SourceDegradedError as error:
-            errors.append(str(error))
-        except Exception as error:  # noqa: BLE001 - preserve API failure detail for timeline/debugging.
-            errors.append(f"arxiv:{query}: {error}")
+        if should_skip_source("arxiv", source_failures):
+            errors.append(f"arxiv_rate_limited:{query}: arXiv 已在本轮触发限流或临时失败，后续 query 暂停该 source。")
+        else:
+            source_errors: list[str] = []
+            cached = get_cached_retrieval("arxiv", cache_query_key(query, relaxed), per_query_limit)
+            if cached is not None:
+                cached_papers, cached_errors = cached
+                candidates.extend(cached_papers)
+                errors.append(f"using_cached_results:arxiv:{query}: 使用 24 小时内 SQLite 检索缓存。")
+                errors.extend(cached_errors)
+            else:
+                try:
+                    papers = search_arxiv(query, per_query_limit, relaxed=relaxed)
+                    candidates.extend(papers)
+                    save_cached_retrieval("arxiv", cache_query_key(query, relaxed), per_query_limit, papers, source_errors)
+                except SourceDegradedError as error:
+                    record_source_failure(source_failures, error.source, error.status)
+                    errors.append(format_source_degraded_error(error))
+                except Exception as error:  # noqa: BLE001 - preserve API failure detail for timeline/debugging.
+                    errors.append(f"arxiv:{query}: {error}")
     if "openalex" in selected_sources:
-        try:
-            candidates.extend(search_openalex(query, per_query_limit))
-        except SourceDegradedError as error:
-            errors.append(str(error))
-        except Exception as error:  # noqa: BLE001
-            errors.append(f"openalex:{query}: {error}")
+        if should_skip_source("openalex", source_failures):
+            errors.append(f"openalex_cooldown:{query}: OpenAlex 已在本轮触发 429/503/504，后续 query 暂停该 source。")
+        else:
+            source_errors = []
+            cached = get_cached_retrieval("openalex", query, per_query_limit)
+            if cached is not None:
+                cached_papers, cached_errors = cached
+                candidates.extend(cached_papers)
+                errors.append(f"using_cached_results:openalex:{query}: 使用 24 小时内 SQLite 检索缓存。")
+                errors.extend(cached_errors)
+            else:
+                try:
+                    papers = search_openalex(query, per_query_limit)
+                    candidates.extend(papers)
+                    save_cached_retrieval("openalex", query, per_query_limit, papers, source_errors)
+                except SourceDegradedError as error:
+                    record_source_failure(source_failures, error.source, error.status)
+                    errors.append(format_source_degraded_error(error))
+                except Exception as error:  # noqa: BLE001
+                    errors.append(f"openalex:{query}: {error}")
     return candidates
+
+
+def should_skip_source(source: str, source_failures: dict[str, int]) -> bool:
+    return source_failures.get(source, 0) >= SOURCE_FAILURE_THRESHOLD
+
+
+def record_source_failure(source_failures: dict[str, int], source: str, status: int | None) -> None:
+    if status in {429, 503, 504}:
+        source_failures[source] = source_failures.get(source, 0) + 1
+
+
+def format_source_degraded_error(error: SourceDegradedError) -> str:
+    if error.source == "openalex" and error.status in {429, 503, 504}:
+        return f"openalex_cooldown:{error.query}: {error}"
+    if error.source == "arxiv" and error.status == 429:
+        return f"arxiv_rate_limited:{error.query}: {error}"
+    return str(error)
+
+
+def cache_query_key(query: str, relaxed: bool) -> str:
+    return f"{query} :: relaxed={int(relaxed)}"
+
+
+def get_cached_retrieval(
+    source: str,
+    query: str,
+    max_results: int,
+) -> tuple[list[PaperCandidate], list[str]] | None:
+    if RETRIEVAL_CACHE_TTL_SECONDS <= 0:
+        return None
+    try:
+        with get_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT response_json, errors_json, created_at
+                FROM retrieval_cache
+                WHERE source = ? AND query = ? AND max_results = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (source, query, max_results),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    created_at = parse_iso_datetime(row["created_at"])
+    if created_at is None:
+        return None
+    age = (datetime.now(timezone.utc) - created_at).total_seconds()
+    if age > RETRIEVAL_CACHE_TTL_SECONDS:
+        return None
+    try:
+        paper_payload = json.loads(row["response_json"] or "[]")
+        errors_payload = json.loads(row["errors_json"] or "[]")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(paper_payload, list):
+        return None
+    papers = [PaperCandidate(**item) for item in paper_payload if isinstance(item, dict)]
+    errors = [str(item) for item in errors_payload] if isinstance(errors_payload, list) else []
+    return papers, errors
+
+
+def save_cached_retrieval(
+    source: str,
+    query: str,
+    max_results: int,
+    papers: list[PaperCandidate],
+    errors: list[str],
+) -> None:
+    if RETRIEVAL_CACHE_TTL_SECONDS <= 0:
+        return
+    try:
+        with get_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO retrieval_cache (
+                    id, source, query, max_results, response_json, errors_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id("retrieval_cache"),
+                    source,
+                    query,
+                    max_results,
+                    json.dumps([paper.to_dict() for paper in papers], ensure_ascii=False),
+                    json.dumps(errors, ensure_ascii=False),
+                    utc_now(),
+                ),
+            )
+    except sqlite3.Error:
+        return
+
+
+def parse_iso_datetime(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def expand_queries(query: str) -> list[str]:

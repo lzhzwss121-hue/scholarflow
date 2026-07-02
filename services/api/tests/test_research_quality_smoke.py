@@ -84,6 +84,62 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertEqual(second, "cached payload")
         self.assertEqual(calls["count"], 1)
 
+    def test_source_level_backoff_skips_openalex_after_transient_failure(self) -> None:
+        openalex_calls = {"count": 0}
+
+        def fake_arxiv(query: str, max_results: int, relaxed: bool = False) -> list[literature.PaperCandidate]:
+            return []
+
+        def fake_openalex(query: str, max_results: int) -> list[literature.PaperCandidate]:
+            openalex_calls["count"] += 1
+            raise literature.SourceDegradedError("openalex", query, 503, "temporary unavailable")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api.database import init_db
+
+                init_db()
+                with patch.object(literature, "search_arxiv", side_effect=fake_arxiv), patch.object(
+                    literature,
+                    "search_openalex",
+                    side_effect=fake_openalex,
+                ):
+                    result = literature.search_literature("hallucination", max_results=8, sources=["arxiv", "openalex"])
+
+        self.assertEqual(openalex_calls["count"], 1)
+        self.assertTrue(any("openalex_cooldown" in warning for warning in result.errors))
+        self.assertFalse(any(paper.source in {"seed", "demo"} for paper in result.papers))
+
+    def test_sqlite_retrieval_cache_hit_avoids_external_source_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api.database import init_db
+
+                init_db()
+                cached_paper = literature.PaperCandidate(
+                    title="Cached Evidence Faithfulness Benchmark",
+                    year="2026",
+                    authors="A. Researcher",
+                    abstract="Cached paper about evidence faithfulness.",
+                    type="Benchmark",
+                    venue="arXiv cs.CL",
+                    source="openalex",
+                    url="https://openalex.org/W123",
+                    relation="cached",
+                    priority="High",
+                )
+                literature.save_cached_retrieval("openalex", "cached query", 5, [cached_paper], [])
+
+                with patch.object(literature, "search_openalex", side_effect=AssertionError("external source called")):
+                    errors: list[str] = []
+                    papers = literature.search_sources_for_query("cached query", 5, ["openalex"], errors)
+
+        self.assertEqual(len(papers), 1)
+        self.assertEqual(papers[0].title, "Cached Evidence Faithfulness Benchmark")
+        self.assertTrue(any("using_cached_results" in warning for warning in errors))
+
     def test_retrieval_errors_are_compacted_without_losing_low_recall_signal(self) -> None:
         compacted = literature.compact_retrieval_errors(
             [
@@ -260,6 +316,69 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                 papers = list_project_papers(project.id)
 
         self.assertEqual(papers, [])
+
+    def test_agent_run_reports_literature_step_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api.database import init_db
+                try:
+                    from scholarflow_api import direction_review as direction_review_module
+                    from scholarflow_api import main as main_module
+                except ModuleNotFoundError as error:
+                    if error.name == "fastapi":
+                        self.skipTest("FastAPI is not installed in the current Python environment.")
+                    raise
+                from scholarflow_api.schemas import AgentExecuteRequest, AgentPlanRequest, ProjectCreate
+
+                init_db()
+                project = main_module.create_project(
+                    ProjectCreate(
+                        title="Agent Metrics Smoke",
+                        keyword="evidence faithfulness benchmark",
+                    ),
+                )
+                fake_result = literature.LiteratureSearchResult(
+                    query="evidence faithfulness benchmark",
+                    expanded_queries=["evidence faithfulness benchmark"],
+                    papers=[
+                        literature.PaperCandidate(
+                            title="Evidence Faithfulness Benchmark for VQA",
+                            year="2026",
+                            authors="A. Researcher",
+                            abstract="Dataset: POPE. Metric: accuracy. Baseline: LLaVA. Claim: reduces hallucination.",
+                            type="Benchmark",
+                            venue="arXiv cs.CV",
+                            source="arxiv",
+                            url="https://arxiv.org/abs/2601.00002",
+                            relation="matches evidence faithfulness benchmark",
+                            priority="High",
+                            relevance_score=1.4,
+                        )
+                    ],
+                    errors=[],
+                )
+
+                with patch.object(main_module, "search_literature", return_value=fake_result), patch.object(
+                    direction_review_module,
+                    "search_literature",
+                    return_value=fake_result,
+                ):
+                    plan = main_module.create_agent_plan(
+                        AgentPlanRequest(
+                            project_id=project.id,
+                            task="Run an evidence faithfulness benchmark workflow",
+                            provider="local",
+                        ),
+                    )
+                    result = main_module.execute_agent_run(plan.run_id, AgentExecuteRequest(confirmed=True))
+
+        literature_step = next(step for step in result.steps if step.tool == "literature_search")
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(literature_step.status, "done")
+        self.assertGreater(result.paper_count, 0)
+        self.assertGreater(int(literature_step.metrics.get("paper_count") or 0), 0)
+        self.assertTrue(result.artifact.id)
 
 
 if __name__ == "__main__":

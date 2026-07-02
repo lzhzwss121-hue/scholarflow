@@ -3104,6 +3104,7 @@ td a {
 }
 
 .baseline-map-panel,
+.direction-artifact-panel,
 .paper-signals-panel,
 .research-sight-panel {
   border: 1px solid #dce3eb;
@@ -3148,6 +3149,46 @@ td a {
   color: #344256;
   font-size: 13px;
   line-height: 1.7;
+}
+
+.direction-artifact-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.direction-artifact-list button {
+  border: 1px solid #dce3eb;
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  background: #ffffff;
+  color: #263545;
+  text-align: left;
+  cursor: pointer;
+}
+
+.direction-artifact-list button:hover {
+  border-color: #9bc6d4;
+  background: #f5fbfd;
+}
+
+.direction-artifact-list strong,
+.direction-artifact-list small {
+  display: block;
+}
+
+.direction-artifact-list strong {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.direction-artifact-list small {
+  margin-top: 4px;
+  color: #667789;
+  font-size: 11px;
 }
 
 .baseline-map-grid {

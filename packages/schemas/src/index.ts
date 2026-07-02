@@ -76,6 +76,13 @@ export interface ApiArtifact {
   updated_at: string;
 }
 
+export interface ApiArtifactRef {
+  id: string;
+  title: string;
+  kind: string;
+  created_at: string;
+}
+
 export interface ApiArtifactCreate {
   project_id: string;
   title: string;
@@ -242,13 +249,15 @@ export interface ApiDirectionReviewResponse {
   round: number;
   review_status: "complete" | "partial";
   target_paper_count: number;
+  round_read_count: number;
   total_read_count: number;
-  scope: ApiDirectionScope;
-  baseline_map: ApiBaselineMap;
-  papers: ApiDirectionPaperReading[];
+  scope?: ApiDirectionScope;
+  baseline_map?: ApiBaselineMap;
+  papers?: ApiDirectionPaperReading[];
   recommended_paper_ids: string[];
   direction_summary: string;
-  artifacts: ApiArtifact[];
+  artifact_refs: ApiArtifactRef[];
+  artifacts?: ApiArtifact[];
   errors: string[];
 }
 
@@ -361,7 +370,8 @@ export interface ApiAgentPlanStep {
   title: string;
   detail: string;
   tool: string;
-  status: "done" | "running" | "queued";
+  status: "done" | "running" | "queued" | "failed";
+  metrics?: Record<string, unknown>;
 }
 
 export interface ApiAgentPlanResponse {
@@ -381,6 +391,8 @@ export interface ApiAgentExecuteResponse {
   status: "completed";
   artifact: ApiArtifact;
   papers: Array<Record<string, unknown>>;
+  paper_count: number;
+  summary_metrics: Record<string, unknown>;
   steps: ApiAgentPlanStep[];
 }
 

@@ -189,6 +189,16 @@ def init_db() -> None:
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS retrieval_cache (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                query TEXT NOT NULL,
+                max_results INTEGER NOT NULL,
+                response_json TEXT NOT NULL DEFAULT '[]',
+                errors_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_papers_project_id ON papers(project_id);
             CREATE INDEX IF NOT EXISTS idx_artifacts_project_id ON artifacts(project_id);
             CREATE INDEX IF NOT EXISTS idx_paper_memories_project_id ON paper_memories(project_id);
@@ -198,6 +208,7 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_agent_runs_project_id ON agent_runs(project_id);
             CREATE INDEX IF NOT EXISTS idx_agent_runs_session_id ON agent_runs(session_id);
             CREATE INDEX IF NOT EXISTS idx_tool_events_session_id ON tool_events(session_id);
+            CREATE INDEX IF NOT EXISTS idx_retrieval_cache_lookup ON retrieval_cache(source, query, max_results, created_at);
             """
         )
         ensure_paper_columns(connection)

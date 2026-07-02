@@ -73,6 +73,13 @@ class Artifact(BaseModel):
     updated_at: str
 
 
+class ArtifactRef(BaseModel):
+    id: str
+    title: str
+    kind: str
+    created_at: str
+
+
 class LiteratureSearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=300)
     max_results: int = Field(default=12, ge=1, le=30)
@@ -230,13 +237,11 @@ class DirectionReviewResponse(BaseModel):
     round: int
     review_status: Literal["complete", "partial"] = "complete"
     target_paper_count: int = 10
+    round_read_count: int
     total_read_count: int
-    scope: DirectionScope
-    baseline_map: BaselineMap
-    papers: list[DirectionPaperReading]
     recommended_paper_ids: list[str]
     direction_summary: str
-    artifacts: list[Artifact]
+    artifact_refs: list[ArtifactRef]
     errors: list[str]
 
 
@@ -349,7 +354,8 @@ class AgentPlanStep(BaseModel):
     title: str
     detail: str
     tool: str
-    status: Literal["done", "running", "queued"]
+    status: Literal["done", "running", "queued", "failed"]
+    metrics: dict[str, object] = Field(default_factory=dict)
 
 
 class AgentRun(BaseModel):
@@ -384,6 +390,8 @@ class AgentExecuteResponse(BaseModel):
     status: Literal["completed"]
     artifact: Artifact
     papers: list[dict[str, object]]
+    paper_count: int
+    summary_metrics: dict[str, object] = Field(default_factory=dict)
     steps: list[AgentPlanStep]
 
 
