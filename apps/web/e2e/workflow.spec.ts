@@ -37,7 +37,7 @@ test("shows an API offline notice instead of implying empty data", async ({ page
   });
 
   await page.goto("/#paper-table");
-  await expect(page.getByText("API 未连接，请先启动 ScholarFlow 后端服务。")).toBeVisible();
+  await expect(page.getByText("API 未连接，请先启动 ScholarFlow 后端服务。", { exact: true })).toBeVisible();
   await expect(page.getByText("当前不是“没有论文”，而是前端无法读取真实 paper table。")).toBeVisible();
 });
 
@@ -169,7 +169,7 @@ test("mocked research workflow smoke keeps a created project after refresh", asy
   });
 
   await page.goto("/");
-  await page.getByRole("button", { name: /新建研究项目/ }).first().click();
+  await page.getByRole("button", { name: /新建项目/ }).first().click();
   await expect(page).toHaveURL(/#new-project/);
 
   await page.getByPlaceholder("例如：多模态大模型在视觉问答证据真实性研究").fill(project.title);
@@ -179,13 +179,13 @@ test("mocked research workflow smoke keeps a created project after refresh", asy
   await expect(page).toHaveURL(/#paper-table/);
   await expect(page.getByRole("heading", { name: /论文表格/ })).toBeVisible();
   await page.getByRole("button", { name: /重新检索/ }).click();
-  await expect(page.getByText(paper.title)).toBeVisible();
-  await expect(page.getByText(/mock_api_e2e/)).toBeVisible();
+  await expect(page.getByText(paper.title, { exact: true })).toBeVisible();
+  await expect(page.getByText(/mock_api_e2e/).first()).toBeVisible();
   expect(artifactSummaryReads).toBeGreaterThan(0);
 
   await page.reload();
   await expect(page).toHaveURL(/#paper-table/);
-  await expect(page.getByText(paper.title)).toBeVisible();
+  await expect(page.getByText(paper.title, { exact: true })).toBeVisible();
 });
 
 test("hydrates real direction review and memory artifact shapes without blank views", async ({ page }) => {
@@ -468,7 +468,7 @@ test("hydrates real direction review and memory artifact shapes without blank vi
 
   await page.goto("/#paper-memory");
   await expect(page.getByText("Memory-Grounded Answer")).toBeVisible();
-  await expect(page.getByText(paper.title)).toBeVisible();
+  await expect(page.getByText(paper.title, { exact: true })).toBeVisible();
 
   servedArtifacts = [v2DirectionArtifact, v2MemoryArtifact];
   await page.goto("/#direction-review");

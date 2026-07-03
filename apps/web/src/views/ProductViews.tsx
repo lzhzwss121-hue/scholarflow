@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import {
   AlertTriangle,
   ArrowRight,
@@ -61,7 +61,15 @@ import {
 } from "../mockData";
 import { ApiOfflineNotice } from "../components/ApiOfflineNotice";
 import { normalizeEvidencePack, normalizeResearchSight, toPlanStatus } from "../lib/artifactHydration";
-import type { ApiStatus, ArtifactTab, ProjectDraft } from "../types/workflow";
+import type {
+  ApiStatus,
+  ArtifactTab,
+  ProjectDraft,
+  WorkflowActions,
+  WorkflowNotice,
+  WorkflowStepStatus,
+  WorkflowViewModel,
+} from "../types/workflow";
 
 const conferenceBadges = [
   "CVPR",
@@ -97,6 +105,222 @@ const coreViews = new Set<ViewId>([
   "gap-board",
   "experiment-planner",
 ]);
+
+export function WorkflowShell({
+  activeView,
+  actions,
+  ariaLabel,
+  children,
+  onSelectView,
+  viewModel,
+}: {
+  activeView: ViewId;
+  actions: WorkflowActions;
+  ariaLabel: string;
+  children: ReactNode;
+  onSelectView: (view: ViewId) => void;
+  viewModel: WorkflowViewModel;
+}) {
+  const latestNotice = viewModel.warnings[0] ?? null;
+  const activeStep = viewModel.workflowSteps.find((step) => step.id === activeView);
+
+  return (
+    <div className="workflow-shell">
+      <aside className="workflow-rail" aria-label="workflow steps">
+        <button className="workflow-brand" type="button" onClick={() => onSelectView("dashboard")}>
+          <span className="sf-logo small">SF</span>
+          <span>
+            <strong>ScholarFlow</strong>
+            <small>Research Workspace</small>
+          </span>
+        </button>
+
+        <label className="project-select-block">
+          <span>项目</span>
+          <select
+            value={viewModel.activeProject?.id ?? ""}
+            onChange={(event) => actions.onSelectProject(event.target.value)}
+          >
+            {!viewModel.projects.length ? <option value="">尚未创建项目</option> : null}
+            {viewModel.projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.id === "local-bootstrap" ? "Demo: " : ""}
+                {project.title}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <nav className="workflow-step-list">
+          {viewModel.workflowSteps.map((step) => {
+            const Icon = navIcons[step.id];
+            const isActive = step.id === activeView || (activeView === "paper-reader" && step.id === "paper-reader");
+            return (
+              <button
+                className={isActive ? "workflow-step active" : "workflow-step"}
+                key={step.id}
+                type="button"
+                onClick={() => onSelectView(step.id)}
+              >
+                <Icon size={17} />
+                <span>
+                  <strong>{step.label}</strong>
+                  <small>{step.summary}</small>
+                </span>
+                <StatusPill status={step.status} />
+              </button>
+            );
+          })}
+        </nav>
+      </aside>
+
+      <main className="workflow-main" aria-label={ariaLabel}>
+        <header className="workflow-header">
+          <div>
+            <p className="section-kicker">Current Workspace</p>
+            <h1>{viewModel.activeProject?.title ?? "尚未选择项目"}</h1>
+            <span>{viewModel.activeProject?.workflow ?? "创建项目后开始真实科研工作流"}</span>
+          </div>
+          <div className="workflow-header-meta">
+            <span className={`api-chip ${viewModel.apiStatus}`}>{viewModel.apiStatus}</span>
+            <span>{viewModel.paperRows.length} papers</span>
+            <span>{viewModel.artifactCount} artifacts</span>
+            <button className="secondary-command compact" type="button" onClick={() => onSelectView("new-project")}>
+              <Plus size={15} />
+              新建项目
+            </button>
+          </div>
+        </header>
+
+        {latestNotice ? (
+          <div className={`workflow-latest-notice ${latestNotice.kind}`}>
+            <AlertTriangle size={16} />
+            <span>{latestNotice.message}</span>
+          </div>
+        ) : activeStep ? (
+          <div className="workflow-latest-notice info">
+            <CheckCircle2 size={16} />
+            <span>
+              当前步骤：{activeStep.label} · {activeStep.status}
+            </span>
+          </div>
+        ) : null}
+
+        <section className="workflow-content">{children}</section>
+      </main>
+
+      <aside className="workflow-inspector" aria-label="workflow artifacts and warnings">
+        <WorkflowNoticeList notices={viewModel.warnings} />
+        <WorkflowArtifactPanel
+          activeArtifact={viewModel.activeArtifact}
+          artifacts={viewModel.artifactSummaries}
+          lastSavedArtifact={viewModel.lastSavedArtifact}
+          onLoadArtifact={actions.onLoadArtifact}
+        />
+        <WorkflowTimelinePanel events={viewModel.timelineRows} />
+      </aside>
+    </div>
+  );
+}
+
+function StatusPill({ status }: { status: WorkflowStepStatus }) {
+  return <em className={`workflow-status ${status}`}>{status}</em>;
+}
+
+function WorkflowNoticeList({ notices }: { notices: WorkflowNotice[] }) {
+  return (
+    <section className="workflow-side-section">
+      <div className="workflow-side-heading">
+        <strong>Warnings</strong>
+        <span>{notices.length}</span>
+      </div>
+      {notices.length ? (
+        <div className="workflow-notice-list">
+          {notices.map((notice) => (
+            <article className={`workflow-notice ${notice.kind}`} key={notice.id}>
+              <AlertTriangle size={15} />
+              <p>{notice.message}</p>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="workflow-empty-copy">暂无 warning / error。</p>
+      )}
+    </section>
+  );
+}
+
+function WorkflowArtifactPanel({
+  activeArtifact,
+  artifacts,
+  lastSavedArtifact,
+  onLoadArtifact,
+}: {
+  activeArtifact: ArtifactContent;
+  artifacts: ApiArtifactSummary[];
+  lastSavedArtifact: ApiArtifact | null;
+  onLoadArtifact: (artifactId: string) => void;
+}) {
+  const preview = activeArtifact.markdown || activeArtifact.json || "暂无 artifact 内容。";
+
+  return (
+    <section className="workflow-side-section">
+      <div className="workflow-side-heading">
+        <strong>Local Assets</strong>
+        <span>{artifacts.length}</span>
+      </div>
+      <div className="workflow-artifact-list">
+        {artifacts.slice(0, 6).map((artifact) => (
+          <button key={artifact.id} type="button" onClick={() => onLoadArtifact(artifact.id)}>
+            <FileText size={15} />
+            <span>
+              <strong>{artifact.title}</strong>
+              <small>
+                {artifact.kind} · {formatBytes(artifact.markdown_bytes + artifact.json_bytes)}
+              </small>
+            </span>
+          </button>
+        ))}
+      </div>
+      {!artifacts.length ? <p className="workflow-empty-copy">运行工作流后，这里会列出真实 artifact。</p> : null}
+      <div className="workflow-artifact-preview">
+        <small>{lastSavedArtifact ? `当前来源：${lastSavedArtifact.id}` : "当前没有已回读 artifact"}</small>
+        <strong>{activeArtifact.title}</strong>
+        <p>{preview.slice(0, 360)}</p>
+      </div>
+    </section>
+  );
+}
+
+function WorkflowTimelinePanel({ events }: { events: TimelineEvent[] }) {
+  return (
+    <section className="workflow-side-section">
+      <div className="workflow-side-heading">
+        <strong>Timeline</strong>
+        <span>{events.length}</span>
+      </div>
+      {events.length ? (
+        <div className="workflow-mini-timeline">
+          {events.slice(0, 7).map((event) => {
+            const Icon = getToolEventIcon(event.tool);
+            return (
+              <article key={`${event.time}-${event.tool}-${event.summary}`}>
+                <Icon size={14} />
+                <div>
+                  <strong>{event.tool}</strong>
+                  <p>{event.summary}</p>
+                  <small>{event.time}</small>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="workflow-empty-copy">暂无后端 timeline 事件。</p>
+      )}
+    </section>
+  );
+}
 
 export function ProductTopNav({
   activeView,
@@ -731,135 +955,59 @@ export function ProductHomeView({
   paperCount: number;
   projectCount: number;
 }) {
-  const heroSubtitle = activeProject
-    ? "ScholarFlow 会围绕当前项目持续推进论文检索、方向精读、Deep Paper Card、Paper Memory 与一周最小复现实验计划。"
-    : "ScholarFlow 会帮你完成论文检索、方向精读、Deep Paper Card、Paper Memory、Gap Board 与一周最小复现实验计划。";
-  const workflowSteps = [
-    {
-      icon: Search,
-      title: "方向理解与关键问题扩展",
-      detail: "拆解研究对象与核心问题，生成搜索关键词与假设。",
-      status: "已就绪",
-      tone: "ready",
-    },
-    {
-      icon: BookOpen,
-      title: "文献检索与 Paper Table",
-      detail: "arXiv / OpenAlex 检索，构建相关文章表与初步证据。",
-      status: "进行中",
-      tone: "active",
-    },
-    {
-      icon: FileText,
-      title: "方向精读与 Deep Paper Card",
-      detail: "多维度精读每篇关键论文，提炼方法、贡献与局限。",
-      status: "进行中",
-      tone: "active",
-    },
-    {
-      icon: Target,
-      title: "Gap Board 与研究假设",
-      detail: "识别研究空白，形成可验证的 follow-up idea。",
-      status: "待开始",
-      tone: "queued",
-    },
-    {
-      icon: FlaskConical,
-      title: "实验计划与最小复现（7D）",
-      detail: "生成一周最小复现实验计划与评估指标。",
-      status: "待开始",
-      tone: "queued",
-    },
-  ];
-
   return (
-    <div className="home-canvas">
-      <section className="home-hero-grid">
-        <div className="home-copy">
-          <div className="home-badge">
-            <span />
-            中文优先 · 证据优先 · 面向 AI 顶会论文
-          </div>
-          <h1>
-            把模糊的 <span>research idea</span>
-            <br />
-            推进成可验证的科研任务
-          </h1>
-          <p>{heroSubtitle}</p>
-          <div className="home-actions">
-            <button className="gradient-button large" type="button" onClick={() => onSelectView("new-project")}>
-              <Plus size={20} />
-              新建研究项目
-            </button>
-            <button className="outline-button large" type="button" onClick={() => onSelectView("direction-review")}>
-              <Network size={20} />
-              查看工作流
-            </button>
-            <button className="outline-button large" type="button" onClick={() => onSelectView("paper-table")}>
-              <Search size={20} />
-              检索论文
-            </button>
-          </div>
-          <div className="home-stat-row">
-            <article>
-              <FileText size={25} />
-              <strong>30+</strong>
-              <span>多模态论文精读</span>
-            </article>
-            <article>
-              <Lightbulb size={25} />
-              <strong>3-8</strong>
-              <span>记忆检索相关论文</span>
-            </article>
-            <article>
-              <FlaskConical size={25} />
-              <strong>7D</strong>
-              <span>一周最小复现实验</span>
-            </article>
-            <article>
-              <Target size={25} />
-              <strong>12+</strong>
-              <span>关键证据链构建</span>
-            </article>
-          </div>
+    <div className="dashboard-workbench">
+      <section className="workbench-summary-panel">
+        <div>
+          <p className="section-kicker">Project Snapshot</p>
+          <h2>{activeProject?.title ?? "先创建一个科研项目"}</h2>
+          <p>
+            {activeProject
+              ? activeProject.description || "当前项目已经连接到本地 SQLite 工作区。"
+              : "ScholarFlow 只展示真实项目状态。创建项目后，Paper Table、Direction Review、Paper Memory、Gap Board 和 Experiment Plan 才会逐步进入可用状态。"}
+          </p>
         </div>
-
-        <aside className="workflow-showcase">
-          <div className="showcase-header">
-            <div>
-              <Sparkles size={25} />
-              <strong>ScholarFlow 智能科研工作流</strong>
-            </div>
-            <span>Local-first · SQLite Workspace</span>
-          </div>
-          <div className="showcase-steps">
-            {workflowSteps.map((step, index) => {
-              const Icon = step.icon;
-              return (
-                <article className="showcase-step" key={step.title}>
-                  <div className="step-node">
-                    <Icon size={28} />
-                  </div>
-                  <div className="step-card">
-                    <span>{String(index + 1).padStart(2, "0")}</span>
-                    <div>
-                      <strong>{step.title}</strong>
-                      <p>{step.detail}</p>
-                    </div>
-                    <em className={step.tone}>{step.status}</em>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-          <footer>
-            <span>ScholarFlow Agent</span>
-            <span>{apiStatus === "online" ? "SQLite / API Ready" : "OpenRouter / DeepSeek Configurable"}</span>
-          </footer>
-        </aside>
+        <div className="workbench-action-row">
+          <button className="secondary-command" type="button" onClick={() => onSelectView("new-project")}>
+            <Plus size={17} />
+            新建项目
+          </button>
+          <button
+            className="secondary-command"
+            disabled={!activeProject || apiStatus !== "online"}
+            type="button"
+            onClick={() => onSelectView("paper-table")}
+          >
+            <Search size={17} />
+            进入 Paper Table
+          </button>
+        </div>
       </section>
 
-      <ConferenceLogoBelt />
+      <section className="workbench-metric-grid" aria-label="current project metrics">
+        <Metric label="API" value={apiStatus} detail={apiStatus === "online" ? "后端可用" : "等待后端连接"} />
+        <Metric label="Projects" value={String(projectCount)} detail="本地 SQLite 项目数" />
+        <Metric label="Papers" value={String(paperCount)} detail="当前项目真实论文" />
+        <Metric label="Artifacts" value={String(artifactCount)} detail="后端持久化输出" />
+      </section>
+
+      <WorkflowGuide
+        apiStatus={apiStatus}
+        artifactCount={artifactCount}
+        hasProject={Boolean(activeProject)}
+        onSelectView={onSelectView}
+        paperCount={paperCount}
+      />
+
+      <AgentRunPanel
+        agentBusy={agentBusy}
+        agentPlan={agentPlan}
+        agentTask={agentTask}
+        apiStatus={apiStatus}
+        onAgentTaskChange={onAgentTaskChange}
+        onCreateAgentPlan={onCreateAgentPlan}
+        onExecuteAgentRun={onExecuteAgentRun}
+      />
     </div>
   );
 }
@@ -1300,24 +1448,32 @@ export function ProductPaperReaderView({
   selectedPaperId: string;
   supplementalInput: string;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const [activeQuestion, setActiveQuestion] = useState(1);
   const selectedPaper = papers.find((paper) => paper.id === selectedPaperId) ?? papers[0];
-  const questions = [
-    ["研究问题是什么？", "构建可验证的证据链以提升 VQA 的答案忠实度。", true],
-    ["数据集与设置？", "VQA-v2、OK-VQA；标准 split；单图输入。", true],
-    ["方法核心思想？", "检索 → 链式推理 → 受证生成。", true],
-    ["模型与基线？", "LLaVA-NeXT、InstructBLIP 等；与标准基线对比。", true],
-    ["主要结果？", "Grounding Score 提升 8.6%，幻觉率下降 21.3%。", true],
-    ["关键证据？", "Human Eval、反事实干预、案例可视化。", true],
-    ["局限性？", "多跳推理仍会中断；长尾概念不足。", false],
-    ["局限条件？", "移除器覆盖率足够；证据可信。", true],
-    ["复现要点？", "证据结构建细节、阈值敏感性。", false],
-    ["一句话总结？", "证据链让 VQA 更可验证、更可靠。", false],
-    ["如何设计反例？", "替换关键词证据或引入干扰证据。", false],
-    ["Follow-up idea?", "自检+回溯式证据链 + 不确定度估计。", false],
+  const cardSections = card?.sections ?? [];
+  const signals = card?.signals;
+  const expectedSections = [
+    "研究问题与背景",
+    "已有研究与不足",
+    "作者思考路径重建",
+    "核心 intuition",
+    "方法 pipeline",
+    "数学与理论解释",
+    "实验如何验证 claim",
+    "Take-aways",
+    "最脆弱的假设",
+    "一周最小复现实验",
+    "反例设计",
+    "非增量 follow-up idea",
   ];
-  const visibleQuestions = expanded ? questions : questions.slice(0, 12);
+  const signalTags = [
+    signals?.task ? `task: ${signals.task}` : "",
+    signals?.method ? `method: ${signals.method}` : "",
+    signals?.dataset ? `dataset: ${signals.dataset}` : "",
+    signals?.metric ? `metric: ${signals.metric}` : "",
+    signals?.claim ? `claim: ${signals.claim}` : "",
+  ].filter(Boolean);
+  const selectedSummary = selectedPaper?.abstract || selectedPaper?.relation || "";
 
   return (
     <div className="reader-canvas">
@@ -1343,15 +1499,12 @@ export function ProductPaperReaderView({
             <div>
               <h1>论文精读 · Deep Paper Card</h1>
               <p>
-                Faithful VQA with Grounded Evidence Chains <span>CVPR 2026</span>
+                {selectedPaper?.title ?? "尚未选择论文"}
+                {selectedPaper?.venue || selectedPaper?.year ? <span>{selectedPaper.venue || selectedPaper.year}</span> : null}
               </p>
-              <small>每篇论文围绕 12 个问题展开，重点标出证据、缺口与脆弱假设。</small>
+              <small>只展示当前项目真实论文和已生成的 Paper Card；没有生成时不会填充示例结论。</small>
             </div>
             <div className="reader-actions">
-              <button className="outline-button" type="button">
-                <Upload size={17} />
-                导出报告
-              </button>
               <button
                 className="gradient-button"
                 disabled={apiStatus !== "online" || isGenerating}
@@ -1367,46 +1520,67 @@ export function ProductPaperReaderView({
           {isGenerating ? <OperationStatusNote apiStatus={apiStatus} message={apiMessage} /> : null}
 
           <div className="reader-tags">
-            {["task: VQA faithfulness", "method: evidence chain", "dataset: VQA-v2 / OK-VQA", "metric: grounding score", "claim: reduce hallucination"].map((tag) => (
-              <span key={tag}>{tag}</span>
-            ))}
+            {signalTags.length ? (
+              signalTags.map((tag) => <span key={tag}>{tag}</span>)
+            ) : selectedPaper ? (
+              <>
+                <span>{selectedPaper.type || "type unknown"}</span>
+                <span>{selectedPaper.source || "source unknown"}</span>
+                <span>{selectedPaper.year || "year unknown"}</span>
+              </>
+            ) : (
+              <span>等待论文或手动输入</span>
+            )}
           </div>
 
           <article className="summary-card">
             <Sparkles size={23} />
             <div>
-              <strong>摘要速览</strong>
-              <p>
-                提出证据链（Evidence Chain）框架，将答案生成分解为证据检索与逐步推理，并在 VQA-v2 与 OK-VQA
-                上验证了对抗式与自然分布下的幻觉显著降低。
-              </p>
+              <strong>{card ? "Paper Card 摘要" : "待生成 Paper Card"}</strong>
+              <p>{selectedSummary || "请先在 Paper Table 选择论文，或粘贴摘要/正文片段后生成 Paper Card。"}</p>
             </div>
           </article>
 
           <section className="question-board">
             <div className="question-board-head">
               <h2>核心问题（12 个）</h2>
-              <span>10 / 12 已分析</span>
+              <span>{cardSections.length}/12 已生成</span>
             </div>
-            <div className="question-grid">
-              {visibleQuestions.map(([title, detail, done], index) => (
-                <button
-                  className={activeQuestion === index + 1 ? "question-card active" : "question-card"}
-                  key={String(title)}
-                  type="button"
-                  onClick={() => setActiveQuestion(index + 1)}
-                >
-                  <span>{index + 1}</span>
-                  <strong>{title}</strong>
-                  <p>{detail}</p>
-                  {done ? <CheckCircle2 size={15} /> : <Circle size={15} />}
-                </button>
-              ))}
-            </div>
-            <button className="expand-questions" type="button" onClick={() => setExpanded((value) => !value)}>
-              <ChevronDown size={16} />
-              {expanded ? "收起问题" : "展开全部 12 个问题"}
-            </button>
+            {cardSections.length ? (
+              <div className="question-grid">
+                {cardSections.map((section, index) => (
+                  <button
+                    className={activeQuestion === index + 1 ? "question-card active" : "question-card"}
+                    key={section.id}
+                    type="button"
+                    onClick={() => setActiveQuestion(index + 1)}
+                  >
+                    <span>{index + 1}</span>
+                    <strong>{section.title}</strong>
+                    <p>{section.content}</p>
+                    <CheckCircle2 size={15} />
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="reader-empty-state">
+                <BookOpen size={22} />
+                <div>
+                  <h2>尚未生成 12 条精读</h2>
+                  <p>点击“生成 12 条分析”后，系统会基于选中论文或补充文本生成真实 Paper Card。</p>
+                </div>
+              </div>
+            )}
+            {!cardSections.length ? (
+              <div className="protocol-list compact" aria-label="paper card protocol">
+                {expectedSections.map((section, index) => (
+                  <div className="protocol-row" key={section}>
+                    <span>{String(index + 1).padStart(2, "0")}</span>
+                    <p>{section}</p>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </section>
         </div>
 
@@ -1415,71 +1589,82 @@ export function ProductPaperReaderView({
             <h2>关键信息</h2>
             <div className="key-info-grid">
               <div>
-                <strong>8.6%</strong>
-                <span>Grounding Score ↑</span>
+                <strong>{selectedPaper?.year || "N/A"}</strong>
+                <span>Year</span>
               </div>
               <div>
-                <strong>21.3%</strong>
-                <span>Hallucination ↓</span>
+                <strong>{selectedPaper?.type || "N/A"}</strong>
+                <span>Type</span>
               </div>
               <div>
-                <strong>3</strong>
-                <span>核心贡献</span>
+                <strong>{selectedPaper?.priority || "N/A"}</strong>
+                <span>Priority</span>
               </div>
               <div>
-                <strong>{card?.sections.length || 12}</strong>
-                <span>关键证据</span>
+                <strong>{cardSections.length}</strong>
+                <span>Sections</span>
               </div>
             </div>
           </section>
 
           <section className="evidence-chain-card">
             <div className="aside-heading compact">
-              <h2>证据链（Evidence Chain）</h2>
-              <span>证据充足</span>
+              <h2>生成状态</h2>
+              <span>{card ? "已生成" : "待生成"}</span>
             </div>
-            {["视觉证据检索", "证据过滤与对齐", "链式推理", "受证回答生成", "一致性验证"].map((item, index) => (
-              <div className="chain-step" key={item}>
-                <span>{index + 1}</span>
-                <div>
-                  <strong>{item}</strong>
-                  <p>
-                    {
-                      [
-                        "检索与问题相关的区域与对象（Top-K）。",
-                        "过滤低相关证据并与问题对齐。",
-                        "基于证据逐步推理，生成中间结论。",
-                        "融合答案聚焦证据支持。",
-                        "与原证据核对，降低幻觉风险。",
-                      ][index]
-                    }
-                  </p>
-                </div>
+            <div className="chain-step">
+              <span>1</span>
+              <div>
+                <strong>最脆弱假设</strong>
+                <p>{card?.weakest_assumption || "尚未生成，系统不会编造论文局限。"}</p>
               </div>
-            ))}
+            </div>
+            <div className="chain-step">
+              <span>2</span>
+              <div>
+                <strong>一周最小复现</strong>
+                <p>{card?.minimal_reproduction || "需要生成 Paper Card 后才能给出具体实验切口。"}</p>
+              </div>
+            </div>
+            <div className="chain-step">
+              <span>3</span>
+              <div>
+                <strong>输入来源</strong>
+                <p>{selectedPaper ? "来自当前项目 Paper Table。" : supplementalInput.trim() ? "来自用户粘贴内容。" : "暂无输入。"}</p>
+              </div>
+            </div>
           </section>
 
           <section className="paper-signals-card">
             <div className="aside-heading compact">
               <h2>PaperSignals（自动抽取）</h2>
-              <button type="button">查看全部</button>
+              <span>{signals ? "available" : "empty"}</span>
             </div>
-            <div className="signal-chip-grid">
-              {[
-                ["Task", "VQA Faithfulness"],
-                ["Method", "Evidence Chain"],
-                ["Dataset", "VQA-v2, OK-VQA"],
-                ["Metric", "Grounding Score"],
-                ["Claim", "降低幻觉率"],
-                ["Limitation", "多跳推理不足"],
-              ].map(([label, value], index) => (
-                <span className={`signal-chip tone-${index}`} key={label}>
-                  <strong>{label}</strong>
-                  {value}
-                </span>
-              ))}
-              <span className="signal-chip more">+2</span>
-            </div>
+            {signals ? (
+              <div className="signal-chip-grid">
+                {[
+                  ["Task", signals.task],
+                  ["Method", signals.method],
+                  ["Dataset", signals.dataset],
+                  ["Metric", signals.metric],
+                  ["Claim", signals.claim],
+                  ["Limitation", signals.limitation],
+                ].map(([label, value], index) => (
+                  <span className={`signal-chip tone-${index}`} key={label}>
+                    <strong>{label}</strong>
+                    {value || "暂无"}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <div className="reader-empty-state compact">
+                <FileText size={19} />
+                <div>
+                  <h3>暂无 PaperSignals</h3>
+                  <p>生成 Paper Card 后才会显示 task、method、dataset、metric 和 claim。</p>
+                </div>
+              </div>
+            )}
           </section>
         </aside>
       </section>

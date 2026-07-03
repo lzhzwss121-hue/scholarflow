@@ -35,10 +35,27 @@ export function hydrateWorkflowStateFromArtifacts(items: ApiArtifact[]): Hydrate
   };
 }
 
-export async function loadHydrationArtifacts(summaries: ApiArtifactSummary[]): Promise<ApiArtifact[]> {
+export async function loadHydrationArtifacts(summaries: ApiArtifactSummary[], options?: RequestInit): Promise<ApiArtifact[]> {
   const ids = selectHydrationArtifactIds(summaries);
-  const results = await Promise.allSettled(ids.map((id) => getArtifact(id)));
+  const results = await Promise.allSettled(ids.map((id) => getArtifact(id, options)));
   return results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+}
+
+export function collectArtifactHydrationWarnings(items: ApiArtifact[]): string[] {
+  return items.flatMap((artifact) => {
+    if (!artifact.content_json.trim()) {
+      return [];
+    }
+    try {
+      const payload = JSON.parse(artifact.content_json) as unknown;
+      if (isRecord(payload)) {
+        return [];
+      }
+      return [`Artifact JSON 不是对象，已跳过 hydration：${artifact.title}`];
+    } catch {
+      return [`Artifact JSON 解析失败，已跳过 hydration：${artifact.title}`];
+    }
+  });
 }
 
 function selectHydrationArtifactIds(summaries: ApiArtifactSummary[]): string[] {
