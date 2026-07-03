@@ -38,6 +38,8 @@ TOP_VENUE_KEYWORDS = [
     "cell",
 ]
 
+DIRECTION_REVIEW_SCHEMA_VERSION = "direction_review.v2"
+
 
 @dataclass
 class DirectionScope:
@@ -68,8 +70,12 @@ class DirectionPaperReading:
             "paper": self.paper,
             "abstract_translation": self.abstract_translation,
             "signals": self.card.signals.to_dict(),
-            "card": self.card.to_dict(),
+            "sections": [section.to_dict() for section in self.card.sections],
             "research_sight": self.research_sight.to_dict(),
+            "weakest_assumption": self.card.weakest_assumption,
+            "minimal_reproduction": self.card.minimal_reproduction,
+            "counterexample": self.card.counterexample,
+            "follow_up_idea": self.card.follow_up_idea,
             "why_selected": self.why_selected,
             "venue_signal": self.venue_signal,
             "self_read_priority": self.self_read_priority,
@@ -92,10 +98,12 @@ class DirectionReviewBundle:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "schema_version": DIRECTION_REVIEW_SCHEMA_VERSION,
             "direction": self.direction,
             "round": self.round,
             "review_status": self.review_status,
             "target_paper_count": self.target_paper_count,
+            "round_read_count": len(self.readings),
             "scope": self.scope.to_dict(),
             "baseline_map": self.baseline_map.to_dict(),
             "papers": [reading.to_dict() for reading in self.readings],

@@ -76,6 +76,19 @@ export interface ApiArtifact {
   updated_at: string;
 }
 
+export interface ApiArtifactSummary {
+  id: string;
+  project_id: string;
+  title: string;
+  kind: string;
+  created_at: string;
+  updated_at: string;
+  markdown_bytes: number;
+  json_bytes: number;
+  markdown_preview: string;
+  json_schema_version: string;
+}
+
 export interface ApiArtifactRef {
   id: string;
   title: string;
@@ -245,6 +258,7 @@ export interface ApiDirectionPaperReading {
 }
 
 export interface ApiDirectionReviewResponse {
+  schema_version?: string;
   direction: string;
   round: number;
   review_status: "complete" | "partial";
@@ -345,6 +359,7 @@ export interface ApiDirectionMemory {
 }
 
 export interface ApiResearchMemoryQueryResponse {
+  schema_version?: string;
   question: string;
   top_k: number;
   answer: string;

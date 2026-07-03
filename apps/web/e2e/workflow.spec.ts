@@ -1,5 +1,83 @@
 import { expect, test } from "@playwright/test";
 
+function artifactSummary(artifact: {
+  id: string;
+  project_id: string;
+  title: string;
+  kind: string;
+  content_markdown: string;
+  content_json: string;
+  created_at: string;
+  updated_at: string;
+}) {
+  let json_schema_version = "";
+  try {
+    const payload = JSON.parse(artifact.content_json) as { schema_version?: string };
+    json_schema_version = payload.schema_version ?? "";
+  } catch {
+    json_schema_version = "";
+  }
+  return {
+    id: artifact.id,
+    project_id: artifact.project_id,
+    title: artifact.title,
+    kind: artifact.kind,
+    created_at: artifact.created_at,
+    updated_at: artifact.updated_at,
+    markdown_bytes: new TextEncoder().encode(artifact.content_markdown).length,
+    json_bytes: new TextEncoder().encode(artifact.content_json).length,
+    markdown_preview: artifact.content_markdown.slice(0, 280),
+    json_schema_version,
+  };
+}
+
+test("shows an API offline notice instead of implying empty data", async ({ page }) => {
+  await page.route("**/health", async (route) => {
+    await route.abort();
+  });
+
+  await page.goto("/#paper-table");
+  await expect(page.getByText("API 未连接，请先启动 ScholarFlow 后端服务。")).toBeVisible();
+  await expect(page.getByText("当前不是“没有论文”，而是前端无法读取真实 paper table。")).toBeVisible();
+});
+
+test("empty user project paper table does not show mock or demo papers", async ({ page }) => {
+  const project = {
+    id: "project_e2e_empty",
+    title: "空项目回归",
+    description: "empty paper table regression",
+    keyword: "trustworthy multimodal evaluation",
+    field: "Artificial Intelligence",
+    language: "zh-CN",
+    workflow: "survey-to-experiment",
+    stage: "api",
+    active_session_id: "session_e2e_empty",
+    created_at: "2026-07-02T00:00:00+00:00",
+    updated_at: "2026-07-02T00:00:00+00:00",
+  };
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
+  });
+  await page.route("**/projects", async (route) => {
+    await route.fulfill({ json: [project] });
+  });
+  await page.route(`**/projects/${project.id}/papers`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/timeline`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+
+  await page.goto("/#paper-table");
+  await expect(page.getByText("本次没有可展示论文")).toBeVisible();
+  await expect(page.getByText("请先运行 Literature Search，系统不会用内置示例论文填充表格。")).toBeVisible();
+  await expect(page.getByText(/Synthetic Example/)).toHaveCount(0);
+});
+
 test("mocked research workflow smoke keeps a created project after refresh", async ({ page }) => {
   const project = {
     id: "project_e2e_smoke",
@@ -46,7 +124,7 @@ test("mocked research workflow smoke keeps a created project after refresh", asy
   let projects: typeof project[] = [];
   let papers: typeof paper[] = [];
   let artifacts: typeof artifact[] = [];
-  let artifactListReads = 0;
+  let artifactSummaryReads = 0;
 
   await page.route("**/health", async (route) => {
     await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
@@ -65,8 +143,11 @@ test("mocked research workflow smoke keeps a created project after refresh", asy
   await page.route(`**/projects/${project.id}/timeline`, async (route) => {
     await route.fulfill({ json: [] });
   });
+  await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
+    artifactSummaryReads += 1;
+    await route.fulfill({ json: artifacts.map(artifactSummary) });
+  });
   await page.route(`**/projects/${project.id}/artifacts`, async (route) => {
-    artifactListReads += 1;
     await route.fulfill({ json: artifacts });
   });
   await page.route(`**/projects/${project.id}/literature/search`, async (route) => {
@@ -100,7 +181,7 @@ test("mocked research workflow smoke keeps a created project after refresh", asy
   await page.getByRole("button", { name: /重新检索/ }).click();
   await expect(page.getByText(paper.title)).toBeVisible();
   await expect(page.getByText(/mock_api_e2e/)).toBeVisible();
-  expect(artifactListReads).toBeGreaterThan(0);
+  expect(artifactSummaryReads).toBeGreaterThan(0);
 
   await page.reload();
   await expect(page).toHaveURL(/#paper-table/);
@@ -301,6 +382,55 @@ test("hydrates real direction review and memory artifact shapes without blank vi
     created_at: "2026-07-02T00:00:00+00:00",
     updated_at: "2026-07-02T00:00:00+00:00",
   };
+  const v2DirectionPayload = {
+    ...directionPayload,
+    schema_version: "direction_review.v2",
+    round_read_count: 1,
+    papers: directionPayload.papers.map((reading) => ({
+      ...reading,
+      sections: reading.card.sections,
+      weakest_assumption: reading.card.weakest_assumption,
+      minimal_reproduction: reading.card.minimal_reproduction,
+      counterexample: reading.card.counterexample,
+      follow_up_idea: reading.card.follow_up_idea,
+    })),
+  };
+  const v2MemoryPayload = {
+    ...memoryPayload,
+    schema_version: "research_memory_answer.v2",
+    hits: memoryPayload.hits.map((hit) => ({
+      paper,
+      direction: hit.memory.direction,
+      round: hit.memory.round_index,
+      score: hit.score,
+      title_score: hit.title_score,
+      keyword_score: hit.keyword_score,
+      section_score: hit.section_score,
+      priority_score: hit.priority_score,
+      snippets: hit.snippets,
+      abstract_translation: hit.memory.abstract_translation,
+      weakest_assumption: hit.memory.weakest_assumption,
+      minimal_reproduction: hit.memory.minimal_reproduction,
+      counterexample: hit.memory.counterexample,
+      follow_up_idea: hit.memory.follow_up_idea,
+      why_selected: hit.memory.why_selected,
+      research_sight: researchSight,
+      self_read_priority: true,
+    })),
+  };
+  const v2DirectionArtifact = {
+    ...directionArtifact,
+    id: "artifact_e2e_direction_shape_v2",
+    content_json: JSON.stringify(v2DirectionPayload),
+    diff: "+ v2 direction artifact shape",
+  };
+  const v2MemoryArtifact = {
+    ...memoryArtifact,
+    id: "artifact_e2e_memory_shape_v2",
+    content_json: JSON.stringify(v2MemoryPayload),
+    diff: "+ v2 memory artifact shape",
+  };
+  let servedArtifacts = [directionArtifact, memoryArtifact];
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
 
@@ -316,8 +446,16 @@ test("hydrates real direction review and memory artifact shapes without blank vi
   await page.route(`**/projects/${project.id}/timeline`, async (route) => {
     await route.fulfill({ json: [] });
   });
+  await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
+    await route.fulfill({ json: servedArtifacts.map(artifactSummary) });
+  });
   await page.route(`**/projects/${project.id}/artifacts`, async (route) => {
-    await route.fulfill({ json: [directionArtifact, memoryArtifact] });
+    await route.fulfill({ json: servedArtifacts });
+  });
+  await page.route("**/artifacts/artifact_*", async (route) => {
+    const artifactId = route.request().url().split("/").pop();
+    const artifact = servedArtifacts.find((item) => item.id === artifactId);
+    await route.fulfill({ status: artifact ? 200 : 404, json: artifact ?? { detail: "Artifact not found" } });
   });
 
   await page.goto("/#direction-review");
@@ -331,5 +469,15 @@ test("hydrates real direction review and memory artifact shapes without blank vi
   await page.goto("/#paper-memory");
   await expect(page.getByText("Memory-Grounded Answer")).toBeVisible();
   await expect(page.getByText(paper.title)).toBeVisible();
+
+  servedArtifacts = [v2DirectionArtifact, v2MemoryArtifact];
+  await page.goto("/#direction-review");
+  await expect(page.getByRole("button", { name: /Artifact Shape Paper/ }).first()).toBeVisible();
+  await page.getByRole("button", { name: /Artifact Shape Paper/ }).first().click();
+  await expect(page.getByText("研究问题与背景")).toBeVisible();
+
+  await page.goto("/#paper-memory");
+  await expect(page.getByText("Memory-Grounded Answer")).toBeVisible();
+  await expect(page.locator("dd", { hasText: "构造同答案但视觉证据冲突的样本。" })).toBeVisible();
   expect(pageErrors).toEqual([]);
 });

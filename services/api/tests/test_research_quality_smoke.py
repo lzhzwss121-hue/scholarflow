@@ -178,6 +178,153 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertIn("Partial Direction Review", markdown)
         self.assertIn("Coverage: 0/10", markdown)
 
+    def test_direction_review_artifact_uses_v2_flat_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api.database import init_db
+                try:
+                    from scholarflow_api import direction_review as direction_review_module
+                    from scholarflow_api import main as main_module
+                except ModuleNotFoundError as error:
+                    if error.name == "fastapi":
+                        self.skipTest("FastAPI is not installed in the current Python environment.")
+                    raise
+                from scholarflow_api.schemas import DirectionReviewRequest, ProjectCreate
+
+                init_db()
+                project = main_module.create_project(
+                    ProjectCreate(title="Direction V2 Schema", keyword="evidence faithfulness benchmark"),
+                )
+                fake_result = literature.LiteratureSearchResult(
+                    query="evidence faithfulness benchmark",
+                    expanded_queries=["evidence faithfulness benchmark"],
+                    papers=[
+                        literature.PaperCandidate(
+                            title="Evidence Faithfulness Benchmark for VQA",
+                            year="2026",
+                            authors="A. Researcher",
+                            abstract=(
+                                "Dataset: POPE. Metric: accuracy. Baseline: LLaVA. "
+                                "Claim: the benchmark exposes hallucination failures."
+                            ),
+                            type="Benchmark",
+                            venue="CVPR",
+                            source="arxiv",
+                            url="https://arxiv.org/abs/2601.00002",
+                            relation="matches evidence faithfulness benchmark",
+                            priority="High",
+                            relevance_score=1.4,
+                        )
+                    ],
+                    errors=[],
+                )
+                with patch.object(direction_review_module, "search_literature", return_value=fake_result):
+                    response = main_module.create_project_direction_review(
+                        project.id,
+                        DirectionReviewRequest(direction=project.keyword, round=1),
+                    )
+                review_ref = next(artifact for artifact in response.artifact_refs if "direction_review" in artifact.title)
+                artifact = main_module.get_artifact(review_ref.id)
+                payload = json.loads(artifact.content_json)
+
+        self.assertEqual(payload["schema_version"], "direction_review.v2")
+        self.assertEqual(payload["round_read_count"], 1)
+        self.assertIn("papers", payload)
+        self.assertIn("sections", payload["papers"][0])
+        self.assertEqual(len(payload["papers"][0]["sections"]), 12)
+        for key in [
+            "paper",
+            "signals",
+            "research_sight",
+            "weakest_assumption",
+            "minimal_reproduction",
+            "counterexample",
+            "follow_up_idea",
+            "why_selected",
+            "venue_signal",
+            "self_read_priority",
+        ]:
+            self.assertIn(key, payload["papers"][0])
+
+    def test_research_memory_artifact_uses_v2_flat_hit_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api.database import init_db
+                try:
+                    from scholarflow_api import direction_review as direction_review_module
+                    from scholarflow_api import main as main_module
+                except ModuleNotFoundError as error:
+                    if error.name == "fastapi":
+                        self.skipTest("FastAPI is not installed in the current Python environment.")
+                    raise
+                from scholarflow_api.schemas import (
+                    DirectionReviewRequest,
+                    ProjectCreate,
+                    ResearchMemoryQueryRequest,
+                )
+
+                init_db()
+                project = main_module.create_project(
+                    ProjectCreate(title="Memory V2 Schema", keyword="evidence faithfulness benchmark"),
+                )
+                fake_result = literature.LiteratureSearchResult(
+                    query="evidence faithfulness benchmark",
+                    expanded_queries=["evidence faithfulness benchmark"],
+                    papers=[
+                        literature.PaperCandidate(
+                            title="Evidence Faithfulness Benchmark for VQA",
+                            year="2026",
+                            authors="A. Researcher",
+                            abstract=(
+                                "Dataset: POPE. Metric: accuracy. Baseline: LLaVA. "
+                                "Claim: the benchmark exposes hallucination failures."
+                            ),
+                            type="Benchmark",
+                            venue="CVPR",
+                            source="arxiv",
+                            url="https://arxiv.org/abs/2601.00002",
+                            relation="matches evidence faithfulness benchmark",
+                            priority="High",
+                            relevance_score=1.4,
+                        )
+                    ],
+                    errors=[],
+                )
+                with patch.object(direction_review_module, "search_literature", return_value=fake_result):
+                    main_module.create_project_direction_review(
+                        project.id,
+                        DirectionReviewRequest(direction=project.keyword, round=1),
+                    )
+                response = main_module.query_project_research_memory(
+                    project.id,
+                    ResearchMemoryQueryRequest(
+                        question="What dataset metric baseline counterexample should I test?",
+                        direction=project.keyword,
+                        top_k=3,
+                    ),
+                )
+                payload = json.loads(response.artifact.content_json)
+
+        self.assertEqual(payload["schema_version"], "research_memory_answer.v2")
+        self.assertGreaterEqual(len(payload["hits"]), 1)
+        hit = payload["hits"][0]
+        self.assertNotIn("memory", hit)
+        for key in [
+            "paper",
+            "direction",
+            "round",
+            "score",
+            "snippets",
+            "research_sight",
+            "weakest_assumption",
+            "minimal_reproduction",
+            "counterexample",
+            "follow_up_idea",
+        ]:
+            self.assertIn(key, hit)
+
     def test_memory_scoring_routes_experiment_baseline_and_counterexample_to_fields(self) -> None:
         question = "What one week experiment baseline and counterexample should I run?"
         terms = set(extract_terms(question, limit=16))
@@ -292,6 +439,119 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         )
 
         self.assertEqual(seed_bundle.experiment.status, "blocked")
+
+    def test_project_paper_card_generation_produces_twelve_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api.database import init_db
+                try:
+                    from scholarflow_api import main as main_module
+                except ModuleNotFoundError as error:
+                    if error.name == "fastapi":
+                        self.skipTest("FastAPI is not installed in the current Python environment.")
+                    raise
+                from scholarflow_api.schemas import PaperCardCreateRequest, ProjectCreate
+
+                init_db()
+                project = main_module.create_project(
+                    ProjectCreate(title="Paper Card Smoke", keyword="evidence faithfulness benchmark"),
+                )
+                response = main_module.create_project_paper_card(
+                    project.id,
+                    PaperCardCreateRequest(
+                        title="Evidence Faithfulness Benchmark for VQA",
+                        abstract=(
+                            "Dataset: POPE. Metric: accuracy. Baseline: LLaVA. "
+                            "Claim: the benchmark exposes hallucination failures."
+                        ),
+                    ),
+                )
+
+        self.assertEqual(len(response.card.sections), 12)
+        self.assertTrue(response.card.weakest_assumption)
+        self.assertTrue(response.artifact.id)
+
+    def test_artifact_summary_endpoint_is_lightweight_and_reports_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api.database import init_db
+                try:
+                    from scholarflow_api import main as main_module
+                except ModuleNotFoundError as error:
+                    if error.name == "fastapi":
+                        self.skipTest("FastAPI is not installed in the current Python environment.")
+                    raise
+                from scholarflow_api.schemas import ArtifactCreate, ProjectCreate
+
+                init_db()
+                project = main_module.create_project(
+                    ProjectCreate(title="Summary Smoke", keyword="artifact schema"),
+                )
+                large_json = json.dumps(
+                    {
+                        "schema_version": "direction_review.v2",
+                        "payload": "x" * 5000,
+                    },
+                    ensure_ascii=False,
+                )
+                artifact = main_module.save_artifact(
+                    ArtifactCreate(
+                        project_id=project.id,
+                        title="direction_review_round_1.md",
+                        kind="markdown",
+                        content_markdown="# Direction Review\n\n" + "details " * 800,
+                        content_json=large_json,
+                    ),
+                )
+                summaries = main_module.list_project_artifact_summaries(project.id)
+                detail = main_module.get_artifact(artifact.id)
+
+        self.assertEqual(len(summaries), 1)
+        summary = summaries[0]
+        self.assertEqual(summary.json_schema_version, "direction_review.v2")
+        self.assertEqual(summary.json_bytes, len(detail.content_json.encode("utf-8")))
+        self.assertLess(len(summary.markdown_preview), len(detail.content_markdown))
+        self.assertFalse(hasattr(summary, "content_json"))
+        self.assertFalse(hasattr(summary, "content_markdown"))
+
+    def test_agent_plan_contains_real_research_tool_chain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api.database import init_db
+                try:
+                    from scholarflow_api import main as main_module
+                except ModuleNotFoundError as error:
+                    if error.name == "fastapi":
+                        self.skipTest("FastAPI is not installed in the current Python environment.")
+                    raise
+                from scholarflow_api.schemas import AgentPlanRequest, ProjectCreate
+
+                init_db()
+                project = main_module.create_project(
+                    ProjectCreate(title="Agent Plan Smoke", keyword="trustworthy VLM"),
+                )
+                plan = main_module.create_agent_plan(
+                    AgentPlanRequest(
+                        project_id=project.id,
+                        task="Run a trustworthy VLM research workflow",
+                        provider="local",
+                    ),
+                )
+
+        tools = [step.tool for step in plan.steps]
+        for required_tool in [
+            "literature_search",
+            "direction_review",
+            "research_memory_query",
+            "research_decision",
+            "save_artifact",
+            "update_timeline",
+        ]:
+            self.assertIn(required_tool, tools)
+        self.assertNotIn("search_mock_papers", tools)
 
     def test_new_user_project_starts_with_empty_paper_table(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

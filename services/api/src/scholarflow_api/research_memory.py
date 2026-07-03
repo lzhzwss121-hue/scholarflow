@@ -8,6 +8,8 @@ from typing import Any
 
 from scholarflow_api.text_utils import extract_terms, normalize_space, normalize_terms, score_term_overlap
 
+RESEARCH_MEMORY_SCHEMA_VERSION = "research_memory_answer.v2"
+
 
 @dataclass
 class PaperMemoryHit:
@@ -20,14 +22,25 @@ class PaperMemoryHit:
     snippets: list[str]
 
     def to_dict(self) -> dict[str, Any]:
+        paper = memory_record_to_paper(self.memory, self.score)
         return {
-            "memory": self.memory,
+            "paper": paper,
+            "direction": self.memory.get("direction", ""),
+            "round": int(self.memory.get("round_index") or 0),
             "score": self.score,
             "title_score": self.title_score,
             "keyword_score": self.keyword_score,
             "section_score": self.section_score,
             "priority_score": self.priority_score,
             "snippets": self.snippets,
+            "abstract_translation": self.memory.get("abstract_translation", ""),
+            "weakest_assumption": self.memory.get("weakest_assumption", ""),
+            "minimal_reproduction": self.memory.get("minimal_reproduction", ""),
+            "counterexample": self.memory.get("counterexample", ""),
+            "follow_up_idea": self.memory.get("follow_up_idea", ""),
+            "why_selected": self.memory.get("why_selected", ""),
+            "research_sight": safe_json_dict(self.memory.get("research_sight_json", "{}")),
+            "self_read_priority": bool(int(self.memory.get("self_read_priority") or 0)),
         }
 
 
@@ -93,6 +106,7 @@ class ResearchMemoryAnswer:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "schema_version": RESEARCH_MEMORY_SCHEMA_VERSION,
             "question": self.question,
             "top_k": self.top_k,
             "answer": self.answer,
@@ -188,7 +202,18 @@ def build_memory_payload_from_reading(
     now: str,
 ) -> dict[str, Any]:
     paper = reading.paper
-    sections = [section.to_dict() for section in reading.card.sections]
+    if hasattr(reading, "card"):
+        sections = [section.to_dict() for section in reading.card.sections]
+        weakest_assumption = reading.card.weakest_assumption
+        minimal_reproduction = reading.card.minimal_reproduction
+        counterexample = reading.card.counterexample
+        follow_up_idea = reading.card.follow_up_idea
+    else:
+        sections = list(getattr(reading, "sections", []) or [])
+        weakest_assumption = getattr(reading, "weakest_assumption", "")
+        minimal_reproduction = getattr(reading, "minimal_reproduction", "")
+        counterexample = getattr(reading, "counterexample", "")
+        follow_up_idea = getattr(reading, "follow_up_idea", "")
     return build_memory_payload(
         project_id=project_id,
         direction=direction,
@@ -196,10 +221,10 @@ def build_memory_payload_from_reading(
         paper=paper,
         abstract_translation=reading.abstract_translation,
         sections=sections,
-        weakest_assumption=reading.card.weakest_assumption,
-        minimal_reproduction=reading.card.minimal_reproduction,
-        counterexample=reading.card.counterexample,
-        follow_up_idea=reading.card.follow_up_idea,
+        weakest_assumption=weakest_assumption,
+        minimal_reproduction=minimal_reproduction,
+        counterexample=counterexample,
+        follow_up_idea=follow_up_idea,
         why_selected=reading.why_selected,
         research_sight=reading.research_sight.to_dict(),
         self_read_priority=reading.self_read_priority,
@@ -692,11 +717,11 @@ def backfill_project_research_memory(connection, project_id: str, now: str) -> i
             round_index=round_index,
             paper=paper,
             abstract_translation=payload.get("abstract_translation", ""),
-            sections=card.get("sections", []),
-            weakest_assumption=card.get("weakest_assumption", ""),
-            minimal_reproduction=card.get("minimal_reproduction", ""),
-            counterexample=card.get("counterexample", ""),
-            follow_up_idea=card.get("follow_up_idea", ""),
+            sections=payload.get("sections") or card.get("sections", []),
+            weakest_assumption=payload.get("weakest_assumption") or card.get("weakest_assumption", ""),
+            minimal_reproduction=payload.get("minimal_reproduction") or card.get("minimal_reproduction", ""),
+            counterexample=payload.get("counterexample") or card.get("counterexample", ""),
+            follow_up_idea=payload.get("follow_up_idea") or card.get("follow_up_idea", ""),
             why_selected=payload.get("why_selected", ""),
             self_read_priority=bool(payload.get("self_read_priority", False)),
             now=now,
@@ -768,6 +793,27 @@ def safe_json_dict(value: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def memory_record_to_paper(memory: dict[str, Any], score: float = 0.0) -> dict[str, Any]:
+    self_read_priority = bool(int(memory.get("self_read_priority") or 0))
+    return {
+        "id": memory.get("paper_id") or memory.get("id", ""),
+        "project_id": memory.get("project_id", ""),
+        "title": memory.get("title", ""),
+        "authors": memory.get("authors", ""),
+        "abstract": "",
+        "year": memory.get("year", ""),
+        "type": "memory",
+        "venue": memory.get("venue", ""),
+        "source": memory.get("source", ""),
+        "url": memory.get("url", ""),
+        "relation": memory.get("why_selected", ""),
+        "priority": "High" if self_read_priority else "Medium",
+        "code": "unknown",
+        "relevance_score": float(score),
+        "created_at": memory.get("created_at", ""),
+    }
 
 
 def extract_sight_focus(records: list[dict[str, Any]]) -> str:

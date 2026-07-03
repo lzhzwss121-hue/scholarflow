@@ -1,0 +1,1 @@
+export { ResearchMemoryView } from "./ProductViews";

@@ -5,6 +5,7 @@ import type {
   ApiAgentPlanResponse,
   ApiArtifact,
   ApiArtifactCreate,
+  ApiArtifactSummary,
   ApiDirectionReviewRequest,
   ApiDirectionReviewResponse,
   ApiHealth,
@@ -194,6 +195,10 @@ export function queryResearchMemory(projectId: string, payload: ApiResearchMemor
 
 export function listProjectArtifacts(projectId: string) {
   return request<ApiArtifact[]>(`/projects/${projectId}/artifacts`);
+}
+
+export function listProjectArtifactSummaries(projectId: string) {
+  return request<ApiArtifactSummary[]>(`/projects/${projectId}/artifacts/summary`);
 }
 
 export function saveArtifact(payload: ApiArtifactCreate) {

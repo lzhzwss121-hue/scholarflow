@@ -1,0 +1,1 @@
+export { ProductHomeView } from "./ProductViews";

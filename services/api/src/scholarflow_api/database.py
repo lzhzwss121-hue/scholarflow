@@ -590,6 +590,22 @@ def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row)
 
 
+def artifact_summary_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    data = dict(row)
+    return {
+        "id": data["id"],
+        "project_id": data["project_id"],
+        "title": data["title"],
+        "kind": data["kind"],
+        "created_at": data["created_at"],
+        "updated_at": data["updated_at"],
+        "markdown_bytes": int(data.get("markdown_bytes") or 0),
+        "json_bytes": int(data.get("json_bytes") or 0),
+        "markdown_preview": data.get("markdown_preview") or "",
+        "json_schema_version": data.get("json_schema_version") or "",
+    }
+
+
 def main() -> None:
     init_db()
     print(get_db_path())

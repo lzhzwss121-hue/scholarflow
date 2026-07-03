@@ -73,6 +73,19 @@ class Artifact(BaseModel):
     updated_at: str
 
 
+class ArtifactSummary(BaseModel):
+    id: str
+    project_id: str
+    title: str
+    kind: str
+    created_at: str
+    updated_at: str
+    markdown_bytes: int
+    json_bytes: int
+    markdown_preview: str
+    json_schema_version: str
+
+
 class ArtifactRef(BaseModel):
     id: str
     title: str
