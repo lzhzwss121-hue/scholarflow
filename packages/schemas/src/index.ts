@@ -96,6 +96,26 @@ export interface ApiArtifactRef {
   created_at: string;
 }
 
+export type ApiWorkflowStepStatus =
+  | "idle"
+  | "ready"
+  | "running"
+  | "partial"
+  | "complete"
+  | "blocked"
+  | "error";
+
+export interface ApiWorkflowStepState {
+  step_id: string;
+  status: ApiWorkflowStepStatus;
+  label: string;
+  summary: string;
+  warnings: string[];
+  errors: string[];
+  artifact_refs: ApiArtifactRef[];
+  updated_at: string;
+}
+
 export interface ApiArtifactCreate {
   project_id: string;
   title: string;
@@ -117,6 +137,7 @@ export interface ApiLiteratureSearchResponse {
   papers: ApiPaper[];
   artifact: ApiArtifact;
   errors: string[];
+  workflow_steps?: ApiWorkflowStepState[];
 }
 
 export interface ApiPaperCardCreateRequest {
@@ -273,6 +294,7 @@ export interface ApiDirectionReviewResponse {
   artifact_refs: ApiArtifactRef[];
   artifacts?: ApiArtifact[];
   errors: string[];
+  workflow_steps?: ApiWorkflowStepState[];
 }
 
 export interface ApiResearchDecisionRequest {
@@ -320,6 +342,7 @@ export interface ApiResearchDecisionResponse {
   validation: ApiIdeaValidation;
   experiment: ApiExperimentPlan;
   artifacts: ApiArtifact[];
+  workflow_steps?: ApiWorkflowStepState[];
 }
 
 export interface ApiResearchMemoryQueryRequest {
@@ -368,6 +391,7 @@ export interface ApiResearchMemoryQueryResponse {
   total_memories: number;
   artifact: ApiArtifact;
   warnings: string[];
+  workflow_steps?: ApiWorkflowStepState[];
 }
 
 export interface ApiAgentPlanRequest {

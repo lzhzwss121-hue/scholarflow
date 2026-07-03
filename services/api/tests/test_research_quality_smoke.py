@@ -394,6 +394,83 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertIn("baseline", suggestions)
         self.assertIn("metric", suggestions)
 
+    def test_literature_response_includes_workflow_step_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api.database import init_db
+                try:
+                    from scholarflow_api import main as main_module
+                except ModuleNotFoundError as error:
+                    if error.name == "fastapi":
+                        self.skipTest("FastAPI is not installed in the current Python environment.")
+                    raise
+                from scholarflow_api.schemas import LiteratureSearchRequest, ProjectCreate
+
+                init_db()
+                project = main_module.create_project(
+                    ProjectCreate(title="Workflow Step Literature", keyword="evidence faithfulness"),
+                )
+                fake_result = literature.LiteratureSearchResult(
+                    query=project.keyword,
+                    expanded_queries=[project.keyword],
+                    papers=[
+                        literature.PaperCandidate(
+                            title="Evidence Faithfulness Benchmark",
+                            year="2026",
+                            authors="A. Researcher",
+                            abstract="Dataset: POPE. Metric: accuracy.",
+                            type="Benchmark",
+                            venue="arXiv cs.CV",
+                            source="arxiv",
+                            url="https://arxiv.org/abs/2601.00004",
+                            relation="matches evidence faithfulness",
+                            priority="High",
+                            relevance_score=1.2,
+                        )
+                    ],
+                    errors=["using_cached_results:arxiv:evidence faithfulness: 使用缓存。"],
+                )
+                with patch.object(main_module, "search_literature", return_value=fake_result):
+                    response = main_module.search_project_literature(
+                        project.id,
+                        LiteratureSearchRequest(query=project.keyword),
+                    )
+
+        self.assertEqual(len(response.workflow_steps), 1)
+        step = response.workflow_steps[0]
+        self.assertEqual(step.step_id, "paper-table")
+        self.assertEqual(step.status, "partial")
+        self.assertTrue(step.warnings)
+        self.assertEqual(step.artifact_refs[0].title, "paper_table.md")
+
+    def test_research_decision_response_marks_blocked_experiment_step(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api.database import init_db
+                try:
+                    from scholarflow_api import main as main_module
+                except ModuleNotFoundError as error:
+                    if error.name == "fastapi":
+                        self.skipTest("FastAPI is not installed in the current Python environment.")
+                    raise
+                from scholarflow_api.schemas import ProjectCreate, ResearchDecisionRequest
+
+                init_db()
+                project = main_module.create_project(
+                    ProjectCreate(title="Blocked Workflow Step", keyword="trustworthy VLM"),
+                )
+                response = main_module.create_project_research_decisions(
+                    project.id,
+                    ResearchDecisionRequest(goal="one-week experiment"),
+                )
+
+        experiment_step = next(step for step in response.workflow_steps if step.step_id == "experiment-planner")
+        self.assertEqual(response.experiment.status, "blocked")
+        self.assertEqual(experiment_step.status, "blocked")
+        self.assertTrue(experiment_step.warnings)
+
     def test_manual_or_seed_paper_card_cannot_unlock_experiment_plan(self) -> None:
         manual_bundle = generate_research_decisions(
             project={"title": "Manual Card", "keyword": "trustworthy VLM"},

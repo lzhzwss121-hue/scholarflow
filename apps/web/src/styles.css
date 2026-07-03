@@ -5359,6 +5359,28 @@ td a {
   line-height: 1.5;
 }
 
+.partial-review-banner {
+  margin: 14px 0;
+  border: 1px solid #f0d894;
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  gap: 10px;
+  color: #7a4f00;
+  background: #fff9e8;
+}
+
+.partial-review-banner strong,
+.partial-review-banner p {
+  margin: 0;
+}
+
+.partial-review-banner p {
+  margin-top: 4px;
+  color: #7a4f00;
+  line-height: 1.45;
+}
+
 .protocol-list.compact {
   margin-top: 12px;
 }

@@ -60,6 +60,7 @@ import {
   type ViewId,
 } from "../mockData";
 import { ApiOfflineNotice } from "../components/ApiOfflineNotice";
+import { isRetrievalWarning } from "../apiClient";
 import { normalizeEvidencePack, normalizeResearchSight, toPlanStatus } from "../lib/artifactHydration";
 import type {
   ApiStatus,
@@ -1246,6 +1247,8 @@ export function ProductPaperTableView({
   const [highOnly, setHighOnly] = useState(false);
   const displayPapers = highOnly ? papers.filter((paper) => paper.priority === "High") : papers;
   const highCount = papers.filter((paper) => paper.priority === "High").length;
+  const retrievalWarnings = errors.filter(isRetrievalWarning);
+  const backendErrors = errors.filter((error) => !isRetrievalWarning(error));
   const tableRows = displayPapers.map((paper) => ({
     title: paper.title,
     authors: paper.authors,
@@ -1290,8 +1293,8 @@ export function ProductPaperTableView({
         <div className="table-metrics">
           <MetricCard icon={FileText} label="检索论文" value={String(papers.length)} />
           <MetricCard icon={Target} label="High Priority" value={String(highCount)} />
-          <MetricCard icon={Calendar} label="重点年份" value="2024-26" />
-          <MetricCard icon={ShieldCheck} label="检索质量提示" value={String(errors.length)} amber />
+          <MetricCard icon={ShieldCheck} label="Retrieval Warning" value={String(retrievalWarnings.length)} amber />
+          <MetricCard icon={AlertTriangle} label="Backend Error" value={String(backendErrors.length)} amber={backendErrors.length > 0} />
         </div>
 
         <div className="paper-search-strip">
@@ -1378,7 +1381,9 @@ export function ProductPaperTableView({
           <Lightbulb size={17} />
           <span>
             {errors.length
-              ? warningPreview(errors, 2)
+              ? retrievalWarnings.length
+                ? `检索源降级 warning：${warningPreview(retrievalWarnings, 2)}`
+                : `后端错误：${warningPreview(backendErrors, 2)}`
               : "当前没有检索警告。表格只展示本项目真实论文记录，不使用内置示例数据。"}
           </span>
         </div>
@@ -2233,6 +2238,15 @@ export function DirectionReviewView({
               </div>
             </div>
             <p>{review.direction_summary}</p>
+            {partialRoundWarning ? (
+              <div className="partial-review-banner">
+                <AlertTriangle size={18} />
+                <div>
+                  <strong>Partial Direction Review · {actualRoundCount}/{expectedRoundCount}</strong>
+                  <p>{partialRoundWarning}</p>
+                </div>
+              </div>
+            ) : null}
             {review.scope ? (
               <>
                 <div className="direction-scope-grid">

@@ -93,6 +93,17 @@ class ArtifactRef(BaseModel):
     created_at: str
 
 
+class WorkflowStepState(BaseModel):
+    step_id: str
+    status: Literal["idle", "ready", "running", "partial", "complete", "blocked", "error"]
+    label: str
+    summary: str
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    artifact_refs: list[ArtifactRef] = Field(default_factory=list)
+    updated_at: str
+
+
 class LiteratureSearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=300)
     max_results: int = Field(default=12, ge=1, le=30)
@@ -105,6 +116,7 @@ class LiteratureSearchResponse(BaseModel):
     papers: list[Paper]
     artifact: Artifact
     errors: list[str]
+    workflow_steps: list[WorkflowStepState] = Field(default_factory=list)
 
 
 class PaperCardCreateRequest(BaseModel):
@@ -256,6 +268,7 @@ class DirectionReviewResponse(BaseModel):
     direction_summary: str
     artifact_refs: list[ArtifactRef]
     errors: list[str]
+    workflow_steps: list[WorkflowStepState] = Field(default_factory=list)
 
 
 class ResearchDecisionRequest(BaseModel):
@@ -303,6 +316,7 @@ class ResearchDecisionResponse(BaseModel):
     validation: IdeaValidation
     experiment: ExperimentPlan
     artifacts: list[Artifact]
+    workflow_steps: list[WorkflowStepState] = Field(default_factory=list)
 
 
 class ResearchMemoryQueryRequest(BaseModel):
@@ -350,6 +364,7 @@ class ResearchMemoryQueryResponse(BaseModel):
     total_memories: int
     artifact: Artifact
     warnings: list[str]
+    workflow_steps: list[WorkflowStepState] = Field(default_factory=list)
 
 
 class AgentPlanRequest(BaseModel):

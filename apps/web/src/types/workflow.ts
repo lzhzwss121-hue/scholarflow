@@ -7,6 +7,8 @@ import type {
   ApiProject,
   ApiResearchDecisionResponse,
   ApiResearchMemoryQueryResponse,
+  ApiWorkflowStepState,
+  ApiWorkflowStepStatus,
 } from "@scholarflow/schemas";
 import type { ArtifactContent, PaperRow, TimelineEvent, ViewId } from "../mockData";
 
@@ -21,22 +23,10 @@ export type ProjectDraft = {
 
 export type ViewSelector = (view: ViewId) => void;
 
-export type WorkflowStepStatus =
-  | "idle"
-  | "ready"
-  | "running"
-  | "partial"
-  | "complete"
-  | "blocked"
-  | "error";
+export type WorkflowStepStatus = ApiWorkflowStepStatus;
 
-export type WorkflowStepView = {
+export type WorkflowStepView = ApiWorkflowStepState & {
   id: ViewId;
-  label: string;
-  summary: string;
-  status: WorkflowStepStatus;
-  warnings: string[];
-  errors: string[];
 };
 
 export type WorkflowNotice = {

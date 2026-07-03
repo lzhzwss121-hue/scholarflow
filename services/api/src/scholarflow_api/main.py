@@ -105,6 +105,7 @@ from scholarflow_api.schemas import (
     ResearchMemoryQueryResponse,
     Session,
     ToolEvent,
+    WorkflowStepState,
 )
 
 
@@ -120,6 +121,59 @@ app = FastAPI(
     description="Backend API and persistence layer for the ScholarFlow research workflow agent.",
     lifespan=lifespan,
 )
+
+
+def make_artifact_refs(artifacts: list[dict]) -> list[ArtifactRef]:
+    return [ArtifactRef.model_validate(artifact_ref(artifact)) for artifact in artifacts]
+
+
+def workflow_step_state(
+    step_id: str,
+    status: str,
+    label: str,
+    summary: str,
+    updated_at: str,
+    *,
+    warnings: list[str] | None = None,
+    errors: list[str] | None = None,
+    artifacts: list[dict] | None = None,
+) -> WorkflowStepState:
+    return WorkflowStepState(
+        step_id=step_id,
+        status=status,  # type: ignore[arg-type]
+        label=label,
+        summary=summary,
+        warnings=warnings or [],
+        errors=errors or [],
+        artifact_refs=make_artifact_refs(artifacts or []),
+        updated_at=updated_at,
+    )
+
+
+def literature_step_status(paper_count: int, errors: list[str]) -> str:
+    if paper_count <= 0:
+        return "error" if errors else "blocked"
+    if any(error.startswith("low_recall:") for error in errors):
+        return "partial"
+    if errors:
+        return "partial"
+    return "complete"
+
+
+def direction_step_status(review_status: str, round_read_count: int) -> str:
+    if review_status == "partial" or round_read_count < 5:
+        return "partial"
+    return "complete"
+
+
+def memory_step_status(hit_count: int, warnings: list[str]) -> str:
+    if hit_count <= 0:
+        return "partial" if warnings else "blocked"
+    return "partial" if warnings else "complete"
+
+
+def experiment_step_status(status: str) -> str:
+    return "blocked" if status == "blocked" else "complete"
 
 app.add_middleware(
     CORSMiddleware,
@@ -327,6 +381,17 @@ def search_project_literature(project_id: str, payload: LiteratureSearchRequest)
         papers=[Paper.model_validate(dict(row)) for row in rows],
         artifact=Artifact.model_validate(artifact),
         errors=result.errors,
+        workflow_steps=[
+            workflow_step_state(
+                step_id="paper-table",
+                status=literature_step_status(len(rows), result.errors),
+                label="Paper Table",
+                summary=f"检索返回 {len(rows)} 篇论文；warnings={len(result.errors)}。",
+                warnings=result.errors,
+                updated_at=completed_at,
+                artifacts=[artifact],
+            ),
+        ],
     )
 
 
@@ -608,8 +673,22 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
         total_read_count=bundle.total_read_count,
         recommended_paper_ids=bundle.recommended_paper_ids,
         direction_summary=bundle.direction_summary,
-        artifact_refs=[ArtifactRef.model_validate(artifact) for artifact in artifacts],
+        artifact_refs=make_artifact_refs(artifacts),
         errors=bundle.errors,
+        workflow_steps=[
+            workflow_step_state(
+                step_id="direction-review",
+                status=direction_step_status(bundle.review_status, len(bundle.readings)),
+                label="Direction Review",
+                summary=(
+                    f"第 {bundle.round} 轮读取 {len(bundle.readings)}/{bundle.target_paper_count} 篇；"
+                    f"累计 {bundle.total_read_count} 篇。"
+                ),
+                warnings=bundle.errors,
+                updated_at=completed_at,
+                artifacts=artifacts,
+            ),
+        ],
     )
 
 
@@ -689,6 +768,30 @@ def create_project_research_decisions(project_id: str, payload: ResearchDecision
         validation=bundle.validation.to_dict(),
         experiment=bundle.experiment.to_dict(),
         artifacts=[Artifact.model_validate(artifact) for artifact in artifacts],
+        workflow_steps=[
+            workflow_step_state(
+                step_id="gap-board",
+                status="complete" if bundle.gaps else "partial",
+                label="Gap Board",
+                summary=f"生成 {len(bundle.gaps)} 个 gap；novelty risk={bundle.validation.novelty_risk}。",
+                warnings=bundle.validation.key_risks,
+                updated_at=now,
+                artifacts=artifacts[:2],
+            ),
+            workflow_step_state(
+                step_id="experiment-planner",
+                status=experiment_step_status(bundle.experiment.status),
+                label="Experiment Plan",
+                summary=(
+                    "缺少可复现实验 anchor。"
+                    if bundle.experiment.status == "blocked"
+                    else f"实验 anchor：{bundle.experiment.anchor_paper_title or 'N/A'}。"
+                ),
+                warnings=bundle.experiment.unblock_suggestions,
+                updated_at=now,
+                artifacts=artifacts[2:],
+            ),
+        ],
     )
 
 
@@ -755,6 +858,17 @@ def query_project_research_memory(project_id: str, payload: ResearchMemoryQueryR
         total_memories=answer.total_memories,
         artifact=Artifact.model_validate(artifact),
         warnings=answer.warnings,
+        workflow_steps=[
+            workflow_step_state(
+                step_id="paper-memory",
+                status=memory_step_status(len(answer.hits), answer.warnings),
+                label="Paper Memory",
+                summary=f"命中 {len(answer.hits)} 篇论文记忆；memory bank 总量 {answer.total_memories}。",
+                warnings=answer.warnings,
+                updated_at=now,
+                artifacts=[artifact],
+            ),
+        ],
     )
 
 

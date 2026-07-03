@@ -9,6 +9,7 @@ import type {
   ApiProject,
   ApiResearchDecisionResponse,
   ApiResearchMemoryQueryResponse,
+  ApiWorkflowStepState,
 } from "@scholarflow/schemas";
 import {
   createAgentPlan,
@@ -132,6 +133,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
   const [decisionBusy, setDecisionBusy] = useState(false);
   const [researchDecision, setResearchDecision] = useState<ApiResearchDecisionResponse | null>(null);
   const [hydrationWarnings, setHydrationWarnings] = useState<string[]>([]);
+  const [backendWorkflowSteps, setBackendWorkflowSteps] = useState<ApiWorkflowStepState[]>([]);
 
   const activeProjectIdRef = useRef<string | null>(null);
   const requestStateRef = useRef<Record<RequestScope, { id: number; controller: AbortController | null }>>({
@@ -236,10 +238,12 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
         memoryResult,
         decisionBusy,
         researchDecision,
+        backendWorkflowSteps,
       }),
     [
       activeProject,
       apiStatus,
+      backendWorkflowSteps,
       decisionBusy,
       directionBusy,
       directionReview,
@@ -368,6 +372,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     setResearchDecision(null);
     setLatestPaperCard(null);
     setHydrationWarnings([]);
+    setBackendWorkflowSteps([]);
   }
 
   function resetRuntimeResources() {
@@ -630,6 +635,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       setPaperRows(result.papers.filter((paper) => !isSeedLikePaper(paper)).map(toPaperRow));
       setLastSavedArtifact(result.artifact);
       setLiteratureErrors(result.errors);
+      applyBackendWorkflowSteps(result.workflow_steps);
       setApiMessage(`检索完成：${result.papers.length} 篇论文，artifact: ${result.artifact.id}`);
       await loadProjectResources(projectId, guard);
     } catch (error) {
@@ -718,6 +724,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       }
       setDirectionReview(result);
       setSelectedDirectionPaperId("");
+      applyBackendWorkflowSteps(result.workflow_steps);
       const reviewArtifactRef =
         result.artifact_refs.find((artifact) => artifact.title.toLowerCase().includes("direction_review")) ??
         result.artifact_refs[0];
@@ -781,6 +788,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       }
       setMemoryResult(result);
       setLastSavedArtifact(result.artifact);
+      applyBackendWorkflowSteps(result.workflow_steps);
       setApiMessage(`论文记忆回答已生成：命中 ${result.hits.length} 篇，memory bank 总量 ${result.total_memories}。`);
       await loadProjectResources(projectId, guard);
     } catch (error) {
@@ -821,6 +829,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       }
       setResearchDecision(result);
       setLastSavedArtifact(result.artifacts[result.artifacts.length - 1] ?? null);
+      applyBackendWorkflowSteps(result.workflow_steps);
       setApiMessage(`研究决策已生成：${result.gaps.length} gaps + experiment plan`);
       await loadProjectResources(projectId, guard);
     } catch (error) {
@@ -872,6 +881,17 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       setApiMessage(messages[index]);
     }, intervalMs);
     return () => window.clearInterval(timer);
+  }
+
+  function applyBackendWorkflowSteps(steps: ApiWorkflowStepState[] | undefined) {
+    if (!steps?.length) {
+      return;
+    }
+    setBackendWorkflowSteps((current) => {
+      const byStepId = new Map(current.map((step) => [step.step_id, step]));
+      steps.forEach((step) => byStepId.set(step.step_id, step));
+      return [...byStepId.values()];
+    });
   }
 
   const viewModel: WorkflowViewModel = {
@@ -1026,6 +1046,7 @@ function emptyArtifactForView(view: ViewId): ArtifactContent {
 function buildWorkflowSteps(input: {
   apiStatus: ApiStatus;
   activeProject: ApiProject | null;
+  backendWorkflowSteps: ApiWorkflowStepState[];
   paperRows: PaperRow[];
   literatureBusy: boolean;
   literatureErrors: string[];
@@ -1042,17 +1063,19 @@ function buildWorkflowSteps(input: {
   const hasPapers = input.paperRows.length > 0;
   const directionStatus = input.directionReview?.review_status === "partial" ? "partial" : input.directionReview ? "complete" : null;
   const experimentStatus = input.researchDecision?.experiment?.status;
+  const updatedAt = input.activeProject?.updated_at ?? "";
 
-  return [
-    {
+  const localSteps: WorkflowStepView[] = [
+    toWorkflowStepView({
       id: "new-project",
       label: "新建项目",
       summary: hasProject ? input.activeProject?.title ?? "项目已选择" : "先创建研究项目",
       status: input.apiStatus === "offline" ? "blocked" : hasProject ? "complete" : "ready",
       warnings: [],
       errors: input.apiStatus === "offline" ? ["API 未连接"] : [],
-    },
-    {
+      updatedAt,
+    }),
+    toWorkflowStepView({
       id: "paper-table",
       label: "Paper Table",
       summary: hasPapers ? `${input.paperRows.length} 篇真实论文` : "运行 Literature Search",
@@ -1064,8 +1087,9 @@ function buildWorkflowSteps(input: {
       }),
       warnings: input.literatureErrors,
       errors: [],
-    },
-    {
+      updatedAt,
+    }),
+    toWorkflowStepView({
       id: "direction-review",
       label: "Direction Review",
       summary: input.directionReview
@@ -1079,8 +1103,9 @@ function buildWorkflowSteps(input: {
       }),
       warnings: input.directionReview?.errors ?? [],
       errors: [],
-    },
-    {
+      updatedAt,
+    }),
+    toWorkflowStepView({
       id: "paper-reader",
       label: "Deep Paper Card",
       summary: input.latestPaperCard ? `${input.latestPaperCard.sections.length} 个 section` : "选择论文生成 12 条阅读",
@@ -1092,8 +1117,9 @@ function buildWorkflowSteps(input: {
       }),
       warnings: [],
       errors: [],
-    },
-    {
+      updatedAt,
+    }),
+    toWorkflowStepView({
       id: "paper-memory",
       label: "Paper Memory",
       summary: input.memoryResult ? `${input.memoryResult.hits.length} 条命中` : "基于已读论文检索 3-8 篇",
@@ -1105,8 +1131,9 @@ function buildWorkflowSteps(input: {
       }),
       warnings: input.memoryResult?.warnings ?? [],
       errors: [],
-    },
-    {
+      updatedAt,
+    }),
+    toWorkflowStepView({
       id: "gap-board",
       label: "Gap Board",
       summary: input.researchDecision ? `${input.researchDecision.gaps.length} 个 gap` : "生成 novelty / feasibility 判断",
@@ -1118,8 +1145,9 @@ function buildWorkflowSteps(input: {
       }),
       warnings: [],
       errors: [],
-    },
-    {
+      updatedAt,
+    }),
+    toWorkflowStepView({
       id: "experiment-planner",
       label: "Experiment Plan",
       summary: experimentStatus === "blocked" ? "缺少可复现 anchor" : input.researchDecision ? "已生成实验计划" : "检查 anchor 后生成计划",
@@ -1130,8 +1158,58 @@ function buildWorkflowSteps(input: {
       }),
       warnings: input.researchDecision?.experiment?.unblock_suggestions ?? [],
       errors: [],
-    },
+      updatedAt,
+    }),
   ];
+
+  return mergeBackendWorkflowSteps(localSteps, input.backendWorkflowSteps);
+}
+
+function toWorkflowStepView(input: {
+  id: ViewId;
+  label: string;
+  status: WorkflowStepStatus;
+  summary: string;
+  warnings: string[];
+  errors: string[];
+  updatedAt: string;
+}): WorkflowStepView {
+  return {
+    id: input.id,
+    step_id: input.id,
+    status: input.status,
+    label: input.label,
+    summary: input.summary,
+    warnings: input.warnings,
+    errors: input.errors,
+    artifact_refs: [],
+    updated_at: input.updatedAt,
+  };
+}
+
+function mergeBackendWorkflowSteps(localSteps: WorkflowStepView[], backendSteps: ApiWorkflowStepState[]): WorkflowStepView[] {
+  if (!backendSteps.length) {
+    return localSteps;
+  }
+  const backendById = new Map(backendSteps.map((step) => [step.step_id, step]));
+  return localSteps.map((localStep) => {
+    const backendStep = backendById.get(localStep.step_id);
+    if (!backendStep || !isViewId(backendStep.step_id)) {
+      return localStep;
+    }
+    return {
+      ...localStep,
+      ...backendStep,
+      id: backendStep.step_id,
+      warnings: backendStep.warnings ?? localStep.warnings,
+      errors: backendStep.errors ?? localStep.errors,
+      artifact_refs: backendStep.artifact_refs ?? localStep.artifact_refs,
+    };
+  });
+}
+
+function isViewId(value: string): value is ViewId {
+  return value in workflowLabels;
 }
 
 function resolveStepStatus(input: {
