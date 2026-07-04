@@ -34,7 +34,7 @@ jobs:
         run: npm run build
 
       - name: Check E2E smoke entrypoint
-        run: npm run test:e2e -- --list
+        run: npm --workspace @scholarflow/web run test:e2e -- --list
 
       - name: Check CLI entry
         run: npm run version:cli
