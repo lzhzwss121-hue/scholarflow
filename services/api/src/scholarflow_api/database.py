@@ -74,6 +74,9 @@ def init_db() -> None:
                 priority TEXT NOT NULL DEFAULT 'Medium',
                 code TEXT NOT NULL DEFAULT '',
                 relevance_score REAL NOT NULL DEFAULT 0,
+                relevance_quality TEXT NOT NULL DEFAULT 'medium',
+                matched_terms_json TEXT NOT NULL DEFAULT '[]',
+                review_required INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
             );
@@ -229,6 +232,9 @@ def ensure_paper_columns(connection: sqlite3.Connection) -> None:
         "source": "TEXT NOT NULL DEFAULT ''",
         "url": "TEXT NOT NULL DEFAULT ''",
         "relevance_score": "REAL NOT NULL DEFAULT 0",
+        "relevance_quality": "TEXT NOT NULL DEFAULT 'medium'",
+        "matched_terms_json": "TEXT NOT NULL DEFAULT '[]'",
+        "review_required": "INTEGER NOT NULL DEFAULT 0",
     }
     for name, definition in columns.items():
         if name not in existing_columns:
@@ -470,9 +476,10 @@ def seed_papers(connection: sqlite3.Connection, project_id: str, now: str) -> No
         """
         INSERT INTO papers (
             id, project_id, title, authors, abstract, year, type, venue, source, url,
-            relation, priority, code, relevance_score, created_at
+            relation, priority, code, relevance_score, relevance_quality, matched_terms_json,
+            review_required, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -490,6 +497,9 @@ def seed_papers(connection: sqlite3.Connection, project_id: str, now: str) -> No
                 priority,
                 code,
                 relevance_score,
+                "strong" if priority == "High" else "medium",
+                "[]",
+                0,
                 now,
             )
             for (

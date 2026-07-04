@@ -127,6 +127,8 @@ def upsert_direction_reading_memories(
 ) -> list[str]:
     memory_ids: list[str] = []
     for reading in readings:
+        if not is_relevant_memory_paper(reading.paper):
+            continue
         payload = build_memory_payload_from_reading(project_id, direction, round_index, reading, now)
         upsert_paper_memory_payload(connection, payload)
         memory_ids.append(payload["id"])
@@ -710,6 +712,8 @@ def backfill_project_research_memory(connection, project_id: str, now: str) -> i
         except json.JSONDecodeError:
             continue
         paper = payload.get("paper") or {}
+        if not is_relevant_memory_paper(paper):
+            continue
         card = payload.get("card") or {}
         memory_payload = build_memory_payload(
             project_id=project_id,
@@ -733,6 +737,16 @@ def backfill_project_research_memory(connection, project_id: str, now: str) -> i
     for direction in touched_directions:
         upsert_direction_memory_snapshot(connection, project_id, direction, now)
     return count
+
+
+def is_relevant_memory_paper(paper: dict[str, Any]) -> bool:
+    quality = normalize_space(paper.get("relevance_quality", "")).lower()
+    if quality in {"strong", "medium"}:
+        return True
+    if quality in {"weak", "off_topic"}:
+        return False
+    priority = normalize_space(paper.get("priority", ""))
+    return priority in {"High", "Medium"}
 
 
 def fetch_direction_by_round(connection, project_id: str) -> dict[int, str]:

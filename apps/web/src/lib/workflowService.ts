@@ -652,7 +652,11 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       setLastSavedArtifact(result.artifact);
       setLiteratureErrors(result.errors);
       applyBackendWorkflowSteps(result.workflow_steps);
-      setApiMessage(`检索完成：${result.papers.length} 篇论文，artifact: ${result.artifact.id}`);
+      setApiMessage(
+        result.relevance_coverage
+          ? `检索完成：${result.relevance_coverage.candidate_count ?? result.papers.length} candidates / ${result.relevance_coverage.strong_match_count ?? 0} strong matches / ${result.relevance_coverage.off_topic_count ?? 0} off-topic filtered，artifact: ${result.artifact.id}`
+          : `检索完成：${result.papers.length} 篇论文，artifact: ${result.artifact.id}`,
+      );
       await loadProjectResources(projectId, guard);
     } catch (error) {
       if (!isAbortError(error) && guard.isCurrent()) {
@@ -762,8 +766,8 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
         }
       }
       setApiMessage(
-        result.review_status === "partial"
-          ? `方向精读 partial：第 ${result.round} 轮仅读取 ${result.round_read_count}/${result.target_paper_count} 篇，不能视为完整 10 篇方向精读。`
+        result.review_status !== "complete"
+          ? `方向精读 ${result.review_status}：第 ${result.round} 轮仅读取 ${result.relevant_read_count ?? result.round_read_count}/${result.target_paper_count} 篇强/中相关论文，off-topic=${result.off_topic_count ?? 0}。`
           : `方向精读完成：第 ${result.round} 轮，累计 ${result.total_read_count} 篇。`,
       );
       await loadProjectResources(projectId, guard);
@@ -1097,7 +1101,7 @@ function buildWorkflowSteps(input: {
 }): WorkflowStepView[] {
   const hasProject = Boolean(input.activeProject && !isDemoProject(input.activeProject.id));
   const hasPapers = input.paperRows.length > 0;
-  const directionStatus = input.directionReview?.review_status === "partial" ? "partial" : input.directionReview ? "complete" : null;
+  const directionStatus = input.directionReview?.review_status ?? null;
   const experimentStatus = input.researchDecision?.experiment?.status;
   const updatedAt = input.activeProject?.updated_at ?? "";
 
@@ -1114,7 +1118,9 @@ function buildWorkflowSteps(input: {
     toWorkflowStepView({
       id: "paper-table",
       label: "Paper Table",
-      summary: hasPapers ? `${input.paperRows.length} 篇真实论文` : "运行 Literature Search",
+      summary: hasPapers
+        ? `${input.paperRows.length} strong/medium papers`
+        : "运行 Literature Search",
       status: resolveStepStatus({
         blocked: !hasProject || input.apiStatus === "offline",
         running: input.literatureBusy,
@@ -1129,12 +1135,12 @@ function buildWorkflowSteps(input: {
       id: "direction-review",
       label: "Direction Review",
       summary: input.directionReview
-        ? `${input.directionReview.round_read_count}/${input.directionReview.target_paper_count} 本轮精读`
+        ? `${input.directionReview.relevant_read_count ?? input.directionReview.round_read_count}/${input.directionReview.target_paper_count} 强/中相关精读`
         : "每轮最多 10 篇方向精读",
       status: resolveStepStatus({
-        blocked: !hasProject || !hasPapers || input.apiStatus === "offline",
         running: input.directionBusy,
         partial: directionStatus === "partial",
+        blocked: directionStatus === "blocked" || !hasProject || !hasPapers || input.apiStatus === "offline",
         complete: directionStatus === "complete",
       }),
       warnings: input.directionReview?.errors ?? [],

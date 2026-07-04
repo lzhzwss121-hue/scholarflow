@@ -60,6 +60,71 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertTrue(any("low_recall" in warning for warning in result.errors))
         self.assertTrue(any("query_relaxed" in warning for warning in result.errors))
 
+    def test_chinese_multimodal_vqa_query_filters_off_topic_openalex_results(self) -> None:
+        candidates = [
+            literature.PaperCandidate(
+                title="Evaluating Object Hallucination in Large Vision-Language Models",
+                year="2025",
+                authors="A. Researcher",
+                abstract="This benchmark evaluates object hallucination and visual grounding in VLMs.",
+                type="Benchmark",
+                venue="arXiv cs.CV",
+                source="openalex",
+                url="https://openalex.org/W1",
+                relation="",
+                priority="Medium",
+            ),
+            literature.PaperCandidate(
+                title="A Study on Junior High School Mathematics Classroom Evaluation",
+                year="2025",
+                authors="B. Researcher",
+                abstract="This paper studies classroom evaluation in middle school mathematics.",
+                type="article",
+                venue="Education Journal",
+                source="openalex",
+                url="https://openalex.org/W2",
+                relation="",
+                priority="Medium",
+            ),
+            literature.PaperCandidate(
+                title="Cultural and Creative IP Design for Regional Tourism",
+                year="2024",
+                authors="C. Researcher",
+                abstract="This paper analyzes cultural IP and creative product design.",
+                type="article",
+                venue="Design Studies",
+                source="openalex",
+                url="https://openalex.org/W3",
+                relation="",
+                priority="Medium",
+            ),
+            literature.PaperCandidate(
+                title="Clinical Evaluation of Tuberculosis Treatment Outcomes",
+                year="2025",
+                authors="D. Researcher",
+                abstract="This work evaluates treatment outcomes for tuberculosis patients.",
+                type="article",
+                venue="Medical Journal",
+                source="openalex",
+                url="https://openalex.org/W4",
+                relation="",
+                priority="Medium",
+            ),
+        ]
+
+        ranked = literature.rank_and_deduplicate_result(
+            candidates,
+            "多模态大模型在视觉问答中的证据忠实性评估",
+        )
+
+        returned_titles = {paper.title for paper in ranked.papers}
+        self.assertIn("Evaluating Object Hallucination in Large Vision-Language Models", returned_titles)
+        self.assertNotIn("A Study on Junior High School Mathematics Classroom Evaluation", returned_titles)
+        self.assertNotIn("Cultural and Creative IP Design for Regional Tourism", returned_titles)
+        self.assertNotIn("Clinical Evaluation of Tuberculosis Treatment Outcomes", returned_titles)
+        self.assertEqual(ranked.coverage["off_topic_count"], 3)
+        self.assertTrue(all(paper.priority != "High" for paper in candidates[1:]))
+
     def test_request_text_uses_in_memory_cache(self) -> None:
         literature.REQUEST_CACHE.clear()
         url = "https://example.test/search?q=cache-smoke"
@@ -159,7 +224,7 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertIn("low_recall", joined)
         self.assertLess(len(compacted), 6)
 
-    def test_direction_review_marks_less_than_five_as_partial(self) -> None:
+    def test_direction_review_marks_zero_strong_matches_as_blocked(self) -> None:
         baseline_map = build_baseline_map("图像修复", [], [])
         bundle = build_direction_review_bundle(
             direction="图像修复",
@@ -172,11 +237,37 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         )
         markdown = render_direction_review_markdown(bundle)
 
-        self.assertEqual(bundle.review_status, "partial")
+        self.assertEqual(bundle.review_status, "blocked")
         self.assertEqual(bundle.target_paper_count, 10)
-        self.assertTrue(any("partial_direction_review" in warning for warning in bundle.errors))
-        self.assertIn("Partial Direction Review", markdown)
+        self.assertTrue(any("blocked_direction_review" in warning for warning in bundle.errors))
+        self.assertIn("Blocked Direction Review", markdown)
         self.assertIn("Coverage: 0/10", markdown)
+
+    def test_direction_review_does_not_complete_from_off_topic_ten_count(self) -> None:
+        baseline_map = build_baseline_map("多模态大模型在视觉问答中的证据忠实性评估", [], [])
+        bundle = build_direction_review_bundle(
+            direction="多模态大模型在视觉问答中的证据忠实性评估",
+            round_index=1,
+            scope=build_direction_scope("多模态大模型在视觉问答中的证据忠实性评估", 1),
+            baseline_map=baseline_map,
+            readings=[],
+            previous_read_count=0,
+            errors=[],
+            relevance_coverage={
+                "candidate_count": 10,
+                "returned_count": 0,
+                "strong_match_count": 0,
+                "medium_match_count": 0,
+                "weak_match_count": 0,
+                "off_topic_count": 10,
+                "filtered_count": 10,
+            },
+        )
+
+        self.assertEqual(bundle.review_status, "blocked")
+        self.assertEqual(bundle.relevant_read_count, 0)
+        self.assertEqual(bundle.off_topic_count, 10)
+        self.assertTrue(any("blocked_direction_review" in warning for warning in bundle.errors))
 
     def test_direction_review_artifact_uses_v2_flat_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -548,6 +639,106 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertEqual(len(response.card.sections), 12)
         self.assertTrue(response.card.weakest_assumption)
         self.assertTrue(response.artifact.id)
+
+    def test_paper_card_metadata_and_abstract_levels_mark_evidence_boundary(self) -> None:
+        from scholarflow_api.paper_card import generate_deep_paper_card
+
+        metadata_card = generate_deep_paper_card({"title": "Unknown Metadata Only Paper"})
+        abstract_card = generate_deep_paper_card(
+            {
+                "title": "Faithful Visual Question Answering Requires Grounded Evidence",
+                "abstract": "This paper studies visual grounding and evidence faithfulness in VQA.",
+            },
+        )
+
+        self.assertEqual(metadata_card.evidence_level, "metadata_only")
+        self.assertEqual(abstract_card.evidence_level, "abstract_only")
+        self.assertIn("不是全文级深读结论", metadata_card.sections[0].content)
+        self.assertIn("不能当作已讲清整篇论文", abstract_card.sections[0].content)
+
+    def test_memory_and_gap_do_not_use_off_topic_papers(self) -> None:
+        from scholarflow_api.paper_card import generate_deep_paper_card
+        from scholarflow_api.research_sight import build_research_sight
+        from scholarflow_api.research_memory import (
+            upsert_direction_reading_memories,
+        )
+
+        baseline_map = build_baseline_map("evidence faithfulness", [], [])
+        off_topic_paper = {
+            "id": "off_topic",
+            "project_id": "project_quality",
+            "title": "Clinical Evaluation of Tuberculosis Treatment Outcomes",
+            "authors": "D. Researcher",
+            "abstract": "This paper evaluates tuberculosis treatment outcomes.",
+            "year": "2025",
+            "type": "article",
+            "venue": "Medical Journal",
+            "source": "openalex",
+            "url": "https://openalex.org/W4",
+            "relation": "离题过滤",
+            "priority": "Watch",
+            "code": "unknown",
+            "relevance_score": 0.2,
+            "relevance_quality": "off_topic",
+            "matched_terms_json": "[]",
+            "review_required": 0,
+            "created_at": "now",
+        }
+        card = generate_deep_paper_card(off_topic_paper)
+        sections = [section.to_dict() for section in card.sections]
+        reading = type(
+            "Reading",
+            (),
+            {
+                "paper": off_topic_paper,
+                "card": card,
+                "abstract_translation": "",
+                "why_selected": "off-topic",
+                "research_sight": build_research_sight(
+                    off_topic_paper,
+                    sections,
+                    baseline_map,
+                    "evidence faithfulness",
+                    card.signals,
+                ),
+                "self_read_priority": False,
+            },
+        )()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api.database import get_connection, init_db
+
+                init_db()
+                with get_connection() as connection:
+                    memory_ids = upsert_direction_reading_memories(
+                        connection,
+                        "project_quality",
+                        "evidence faithfulness",
+                        1,
+                        [reading],
+                        "now",
+                    )
+
+        self.assertEqual(memory_ids, [])
+
+        bundle = generate_research_decisions(
+            project={"title": "Off Topic Gap", "keyword": "evidence faithfulness"},
+            papers=[off_topic_paper],
+            paper_cards=[
+                {
+                    "paper_id": "off_topic",
+                    "paper_title": off_topic_paper["title"],
+                    "minimal_reproduction": "Claim: works. Dataset: POPE. Metric: accuracy. Baseline: LLaVA.",
+                    "weakest_assumption": "Off-topic evidence should not unlock gap evidence.",
+                },
+            ],
+            goal="gap",
+        )
+
+        self.assertIn("当前没有 strong/medium 相关论文", bundle.gaps[0].evidence)
+        self.assertNotIn("Clinical Evaluation of Tuberculosis", bundle.gaps[0].evidence)
 
     def test_artifact_summary_endpoint_is_lightweight_and_reports_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

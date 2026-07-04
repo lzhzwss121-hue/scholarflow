@@ -109,18 +109,22 @@ def generate_research_decisions(
     paper_cards: list[dict[str, Any]],
     goal: str = "",
 ) -> ResearchDecisionBundle:
-    focus = infer_focus(project, papers, paper_cards, goal)
-    top_papers = ", ".join(paper.get("title", "") for paper in papers[:3] if paper.get("title")) or "当前 paper table"
+    evidence_papers = filter_evidence_papers(papers)
+    focus = infer_focus(project, evidence_papers, paper_cards, goal)
+    top_papers = (
+        ", ".join(paper.get("title", "") for paper in evidence_papers[:3] if paper.get("title"))
+        or "当前没有 strong/medium 相关论文可作为 gap evidence"
+    )
     weakest = first_nonempty([card.get("weakest_assumption", "") for card in paper_cards])
-    anchor = select_experiment_anchor(papers, paper_cards)
-    unblock_suggestions = build_unblock_suggestions(papers, paper_cards) if anchor is None else []
+    anchor = select_experiment_anchor(evidence_papers, paper_cards)
+    unblock_suggestions = build_unblock_suggestions(evidence_papers, paper_cards) if anchor is None else []
 
     gaps = [
         GapDecision(
             id="gap_evidence_mismatch",
             title="答案正确但证据链错误",
             kind="true_gap",
-            evidence=f"来自 paper table / paper card 的线索：{top_papers}。{weakest or '多篇工作关注最终指标，但证据一致性仍缺少稳定诊断。'}",
+            evidence=f"来自 strong/medium paper table / paper card 的线索：{top_papers}。{weakest or '多篇工作关注最终指标，但证据一致性仍缺少稳定诊断。'}",
             weakness="只看最终答案或平均分，会把真实视觉理解、语言先验和 benchmark shortcut 混在一起。",
             opportunity="构建 evidence-aware split，把 answer accuracy、evidence consistency、counterexample pass rate 分开评价。",
             novelty_risk="medium",
@@ -178,6 +182,20 @@ def generate_research_decisions(
     )
 
 
+def filter_evidence_papers(papers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [paper for paper in papers if is_relevant_evidence_paper(paper)]
+
+
+def is_relevant_evidence_paper(paper: dict[str, Any]) -> bool:
+    quality = normalize_space(paper.get("relevance_quality", "")).lower()
+    if quality in {"strong", "medium"}:
+        return True
+    if quality in {"weak", "off_topic"}:
+        return False
+    priority = normalize_space(paper.get("priority", ""))
+    return priority in {"High", "Medium"}
+
+
 def select_experiment_anchor(papers: list[dict[str, Any]], paper_cards: list[dict[str, Any]]) -> ExperimentAnchor | None:
     paper_by_id = {paper.get("id", ""): paper for paper in papers if paper.get("id")}
     candidates: list[ExperimentAnchor] = []
@@ -226,6 +244,9 @@ def merge_card_paper(card: dict[str, Any], paper: dict[str, Any]) -> dict[str, A
         "paper_priority": "priority",
         "paper_code": "code",
         "paper_relevance_score": "relevance_score",
+        "paper_relevance_quality": "relevance_quality",
+        "paper_matched_terms_json": "matched_terms_json",
+        "paper_review_required": "review_required",
     }
     for card_key, paper_key in field_map.items():
         value = card.get(card_key)

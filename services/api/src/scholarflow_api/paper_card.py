@@ -34,6 +34,7 @@ class PaperSignals:
 @dataclass
 class DeepPaperCard:
     paper_title: str
+    evidence_level: str
     signals: PaperSignals
     sections: list[PaperCardSection]
     weakest_assumption: str
@@ -44,6 +45,7 @@ class DeepPaperCard:
     def to_dict(self) -> dict[str, Any]:
         return {
             "paper_title": self.paper_title,
+            "evidence_level": self.evidence_level,
             "signals": self.signals.to_dict(),
             "sections": [section.to_dict() for section in self.sections],
             "weakest_assumption": self.weakest_assumption,
@@ -75,6 +77,7 @@ def generate_deep_paper_card(paper: dict[str, Any], extra_context: str = "") -> 
     venue = normalize_space(paper.get("venue") or paper.get("source") or "unknown venue")
     year = normalize_space(str(paper.get("year") or "unknown year"))
     context = normalize_space(f"{abstract} {extra_context}")
+    evidence_level = infer_card_evidence_level(abstract, extra_context)
     signals = extract_paper_signals(title=title, abstract=abstract, paper_text=extra_context, venue=venue)
     focus = infer_focus(title, context)
     limitation = signals.limitation if has_signal(signals.limitation) else infer_limitation(focus)
@@ -84,7 +87,8 @@ def generate_deep_paper_card(paper: dict[str, Any], extra_context: str = "") -> 
     follow_up = build_follow_up_idea(signals, focus)
     signal_summary = render_signal_summary(signals)
 
-    sections = [
+    sections = apply_evidence_boundary_to_sections(
+        [
         PaperCardSection(
             "research_problem",
             "1. 研究问题与背景",
@@ -167,10 +171,13 @@ def generate_deep_paper_card(paper: dict[str, Any], extra_context: str = "") -> 
             "12. 非增量 Follow-up Idea",
             follow_up,
         ),
-    ]
+        ],
+        evidence_level,
+    )
 
     return DeepPaperCard(
         paper_title=title,
+        evidence_level=evidence_level,
         signals=signals,
         sections=sections,
         weakest_assumption=weakest_assumption,
@@ -281,6 +288,44 @@ LIMITATION_MARKERS = [
     "inadequate",
     "gap",
 ]
+
+
+def infer_card_evidence_level(abstract: str, paper_text: str) -> str:
+    supplemental = normalize_space(paper_text)
+    if len(supplemental) >= 800:
+        return "full_text"
+    if normalize_space(abstract) or supplemental:
+        return "abstract_only"
+    return "metadata_only"
+
+
+def apply_evidence_boundary_to_sections(
+    sections: list[PaperCardSection],
+    evidence_level: str,
+) -> list[PaperCardSection]:
+    if evidence_level == "full_text":
+        return sections
+    boundary = evidence_boundary_sentence(evidence_level)
+    return [
+        PaperCardSection(
+            id=section.id,
+            title=section.title,
+            content=f"{boundary} {section.content}",
+        )
+        for section in sections
+    ]
+
+
+def evidence_boundary_sentence(evidence_level: str) -> str:
+    if evidence_level == "metadata_only":
+        return (
+            "证据边界（metadata_only）：当前没有 abstract/PDF/正文，下面是基于标题和元数据的阅读提纲，"
+            "不是全文级深读结论。"
+        )
+    return (
+        "证据边界（abstract_only）：当前没有 PDF/完整正文，下面是基于标题、摘要和可选片段的阅读提纲，"
+        "不能当作已讲清整篇论文。"
+    )
 
 
 def extract_paper_signals(title: str, abstract: str, paper_text: str = "", venue: str = "") -> PaperSignals:
@@ -645,6 +690,7 @@ def render_card_markdown(card: DeepPaperCard, paper: dict[str, Any]) -> str:
         f"Paper: {card.paper_title}",
         f"Authors: {paper.get('authors') or 'unknown'}",
         f"Venue/Year: {paper.get('venue') or paper.get('source') or 'unknown'} / {paper.get('year') or 'unknown'}",
+        f"Evidence level: {card.evidence_level}",
         "",
         "## Paper Signals",
         f"- Task: {card.signals.task}",
@@ -673,6 +719,7 @@ def render_card_json(card: DeepPaperCard, paper: dict[str, Any]) -> str:
                 "url": paper.get("url") or "",
             },
             "card": card.to_dict(),
+            "evidence_level": card.evidence_level,
         },
         ensure_ascii=False,
         indent=2,

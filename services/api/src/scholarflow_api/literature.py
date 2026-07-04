@@ -10,11 +10,12 @@ import urllib.parse
 import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 from scholarflow_api.database import get_connection, new_id, utc_now
+from scholarflow_api.text_utils import extract_terms, score_term_overlap
 
 try:
     import certifi
@@ -32,6 +33,30 @@ TRANSIENT_HTTP_STATUS = {429, 500, 502, 503, 504}
 REQUEST_CACHE: dict[str, tuple[float, str]] = {}
 SSL_CONTEXT: ssl.SSLContext | None = None
 SOURCE_FAILURE_THRESHOLD = 1
+RELEVANCE_QUALITIES = {"strong", "medium", "weak", "off_topic"}
+
+
+@dataclass
+class QueryIntent:
+    terms: set[str]
+    core_terms: set[str]
+    groups: dict[str, set[str]]
+    core_groups: set[str]
+
+
+@dataclass
+class CandidateRelevance:
+    score: float
+    reason: str
+    quality: str
+    matched_terms: list[str]
+    review_required: bool
+
+
+@dataclass
+class RankedPaperSet:
+    papers: list["PaperCandidate"]
+    coverage: dict[str, int]
 
 
 class SourceDegradedError(RuntimeError):
@@ -56,6 +81,9 @@ class PaperCandidate:
     priority: str
     code: str = "unknown"
     relevance_score: float = 0.0
+    relevance_quality: str = "medium"
+    matched_terms: list[str] = field(default_factory=list)
+    review_required: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -67,6 +95,7 @@ class LiteratureSearchResult:
     expanded_queries: list[str]
     papers: list[PaperCandidate]
     errors: list[str]
+    relevance_coverage: dict[str, int] = field(default_factory=dict)
 
 
 def search_literature(query: str, max_results: int = 12, sources: list[str] | None = None) -> LiteratureSearchResult:
@@ -80,8 +109,8 @@ def search_literature(query: str, max_results: int = 12, sources: list[str] | No
     for expanded_query in expanded_queries:
         candidates.extend(search_sources_for_query(expanded_query, per_query_limit, selected_sources, errors, source_failures))
 
-    ranked = rank_and_deduplicate(candidates, query)
-    if len(ranked) < LOW_RECALL_THRESHOLD:
+    ranked_result = rank_and_deduplicate_result(candidates, query)
+    if len(ranked_result.papers) < LOW_RECALL_THRESHOLD:
         relaxed_queries = build_relaxed_queries(query, expanded_queries)
         for relaxed_query in relaxed_queries:
             errors.append(f"query_relaxed:{relaxed_query}: 初始检索召回不足，已自动放宽检索式。")
@@ -95,21 +124,24 @@ def search_literature(query: str, max_results: int = 12, sources: list[str] | No
                     relaxed=True,
                 ),
             )
-            ranked = rank_and_deduplicate(candidates, query)
-            if len(ranked) >= LOW_RECALL_THRESHOLD:
+            ranked_result = rank_and_deduplicate_result(candidates, query)
+            if len(ranked_result.papers) >= LOW_RECALL_THRESHOLD:
                 break
 
-    ranked = rank_and_deduplicate(candidates, query)
-    if len(ranked) < LOW_RECALL_THRESHOLD:
+    ranked_result = rank_and_deduplicate_result(candidates, query)
+    if has_relevance_filtering(ranked_result.coverage):
+        errors.append(f"relevance_coverage:{format_relevance_coverage(ranked_result.coverage)}")
+    if len(ranked_result.papers) < LOW_RECALL_THRESHOLD:
         errors.append(
-            f"low_recall: only {len(ranked)} papers returned after query expansion and relaxation; "
+            f"low_recall: only {len(ranked_result.papers)} strong/medium papers returned after query expansion and relaxation; "
             "results are partial and should not be treated as a complete direction survey.",
         )
     return LiteratureSearchResult(
         query=query,
         expanded_queries=expanded_queries,
-        papers=ranked[:max_results],
+        papers=ranked_result.papers[:max_results],
         errors=compact_retrieval_errors(errors),
+        relevance_coverage=ranked_result.coverage,
     )
 
 
@@ -561,6 +593,9 @@ def compact_retrieval_errors(errors: list[str]) -> list[str]:
         if error.startswith("low_recall:"):
             output.append(error)
             continue
+        if error.startswith("relevance_coverage:"):
+            output.append(error)
+            continue
 
         source, reason = retrieval_error_key(error)
         grouped.setdefault((source, reason), []).append(error)
@@ -606,6 +641,10 @@ def extract_error_query(error: str) -> str:
 
 
 def rank_and_deduplicate(candidates: list[PaperCandidate], query: str) -> list[PaperCandidate]:
+    return rank_and_deduplicate_result(candidates, query).papers
+
+
+def rank_and_deduplicate_result(candidates: list[PaperCandidate], query: str) -> RankedPaperSet:
     deduped: dict[str, PaperCandidate] = {}
     for candidate in candidates:
         key = normalize_title_key(candidate.title)
@@ -613,66 +652,202 @@ def rank_and_deduplicate(candidates: list[PaperCandidate], query: str) -> list[P
         if existing is None or source_rank(candidate.source) > source_rank(existing.source):
             deduped[key] = candidate
 
-    query_terms = significant_terms(query)
+    intent = build_query_intent(query)
     ranked: list[PaperCandidate] = []
+    quality_counts = {"strong": 0, "medium": 0, "weak": 0, "off_topic": 0}
     for candidate in deduped.values():
-        score, reason = score_candidate(candidate, query_terms)
-        candidate.relevance_score = round(score, 4)
-        candidate.priority = priority_from_score(score)
-        candidate.relation = reason
-        ranked.append(candidate)
+        relevance = score_candidate(candidate, intent)
+        candidate.relevance_score = round(relevance.score, 4)
+        candidate.priority = priority_from_score(relevance.score, relevance.quality)
+        candidate.relation = relevance.reason
+        candidate.relevance_quality = relevance.quality
+        candidate.matched_terms = relevance.matched_terms
+        candidate.review_required = relevance.review_required
+        quality_counts[relevance.quality] = quality_counts.get(relevance.quality, 0) + 1
+        if relevance.quality in {"strong", "medium"}:
+            ranked.append(candidate)
 
-    return sorted(ranked, key=lambda paper: paper.relevance_score, reverse=True)
+    returned = sorted(ranked, key=lambda paper: paper.relevance_score, reverse=True)
+    coverage = {
+        "candidate_count": len(deduped),
+        "returned_count": len(returned),
+        "strong_match_count": quality_counts["strong"],
+        "medium_match_count": quality_counts["medium"],
+        "weak_match_count": quality_counts["weak"],
+        "off_topic_count": quality_counts["off_topic"],
+        "filtered_count": quality_counts["weak"] + quality_counts["off_topic"],
+    }
+    return RankedPaperSet(papers=returned, coverage=coverage)
 
 
-def score_candidate(candidate: PaperCandidate, query_terms: set[str]) -> tuple[float, str]:
+def score_candidate(candidate: PaperCandidate, query_terms: set[str] | QueryIntent) -> CandidateRelevance:
+    intent = query_terms if isinstance(query_terms, QueryIntent) else build_query_intent(" ".join(sorted(query_terms)))
     haystack = f"{candidate.title} {candidate.abstract} {candidate.venue}".lower()
-    matched_terms = sorted(term for term in query_terms if term in haystack)
+    title_text = candidate.title.lower()
+    term_overlap = score_term_overlap(haystack, intent.terms, weight=0.16, max_score=1.8)
+    core_overlap = score_term_overlap(haystack, intent.core_terms, weight=0.34, max_score=1.8)
+    title_overlap = score_term_overlap(title_text, intent.terms, weight=0.24, max_score=1.1)
+    title_core_overlap = score_term_overlap(title_text, intent.core_terms, weight=0.42, max_score=1.4)
+    matched_groups = [
+        group_name
+        for group_name, group_terms in intent.groups.items()
+        if score_term_overlap(haystack, group_terms, weight=0.1, max_score=0.1).matched_terms
+    ]
+    core_group_count = len([group for group in matched_groups if group in intent.core_groups])
+    group_coverage = len(matched_groups) / max(len(intent.groups), 1)
+    matched_terms = unique_preserve_order(
+        [
+            *title_core_overlap.matched_terms,
+            *core_overlap.matched_terms,
+            *title_overlap.matched_terms,
+            *term_overlap.matched_terms,
+        ],
+    )
     current_year = datetime.now(timezone.utc).year
     year = int(candidate.year) if candidate.year.isdigit() else current_year - 8
     recency_score = max(0.0, 1.0 - min(max(current_year - year, 0), 8) / 8)
     source_score = 0.25 if candidate.source == "arxiv" else 0.18
-    title_bonus = sum(0.2 for term in query_terms if term in candidate.title.lower())
-    match_score = len(matched_terms) / max(len(query_terms), 1)
-    score = match_score + recency_score * 0.35 + source_score + title_bonus + candidate.relevance_score
+    source_prior = min(max(float(candidate.relevance_score or 0.0), 0.0), 0.35)
+    score = (
+        term_overlap.score
+        + core_overlap.score
+        + title_overlap.score
+        + title_core_overlap.score
+        + group_coverage * 0.6
+        + recency_score * 0.25
+        + source_score
+        + source_prior
+    )
 
-    if matched_terms:
-        reason = f"匹配关键词：{', '.join(matched_terms[:6])}；年份 {candidate.year or 'unknown'}；来源 {candidate.source}。"
+    has_core_match = bool(core_overlap.matched_terms) or not intent.core_terms
+    if not has_core_match:
+        quality = "off_topic"
+        score = min(score, 0.25)
+    elif group_coverage >= 0.5 or (core_group_count >= 2 and title_core_overlap.matched_terms) or score >= 1.8:
+        quality = "strong"
+    elif group_coverage >= 0.22 or core_group_count >= 1 or score >= 0.85:
+        quality = "medium"
     else:
-        reason = f"弱匹配：由 {candidate.source} 返回，年份 {candidate.year or 'unknown'}，需要人工复核。"
-    return score, reason
+        quality = "weak"
+
+    review_required = quality == "weak"
+    if quality == "off_topic":
+        reason = (
+            f"离题过滤：未命中研究方向核心意图；来源 {candidate.source}，年份 {candidate.year or 'unknown'}。"
+        )
+    elif quality == "weak":
+        reason = (
+            f"弱匹配，需要人工复核：命中 {', '.join(matched_terms[:6]) or '少量泛化词'}；"
+            f"coverage={group_coverage:.2f}；来源 {candidate.source}，年份 {candidate.year or 'unknown'}。"
+        )
+    else:
+        reason = (
+            f"相关性 {quality}：命中 {', '.join(matched_terms[:8]) or '核心意图'}；"
+            f"coverage={group_coverage:.2f}；年份 {candidate.year or 'unknown'}；来源 {candidate.source}。"
+        )
+    return CandidateRelevance(
+        score=round(score, 4),
+        reason=reason,
+        quality=quality,
+        matched_terms=matched_terms[:12],
+        review_required=review_required,
+    )
 
 
-def priority_from_score(score: float) -> str:
-    if score >= 1.35:
+def priority_from_score(score: float, quality: str = "medium") -> str:
+    if quality == "strong" and score >= 1.35:
         return "High"
-    if score >= 0.75:
+    if quality in {"strong", "medium"} and score >= 0.75:
         return "Medium"
     return "Watch"
 
 
 def significant_terms(query: str) -> set[str]:
-    stop_words = {
-        "the",
-        "and",
-        "for",
-        "with",
-        "from",
-        "into",
-        "based",
-        "model",
-        "models",
-        "paper",
-        "research",
-        "方向",
-        "论文",
-        "科研",
-    }
-    return {
-        term
-        for term in re.findall(r"[A-Za-z0-9]+|[\u4e00-\u9fff]+", query.lower())
-        if len(term) > 1 and term not in stop_words
-    }
+    return build_query_intent(query).terms
+
+
+def build_query_intent(query: str) -> QueryIntent:
+    lower = normalize_space(query).lower()
+    terms = set(extract_terms(lower, limit=32))
+    groups: dict[str, set[str]] = {}
+    core_groups: set[str] = set()
+
+    def add_group(name: str, triggers: list[str], aliases: list[str], core: bool = True) -> None:
+        if any(trigger in lower for trigger in triggers):
+            normalized_aliases = {normalize_intent_term(alias) for alias in aliases if normalize_intent_term(alias)}
+            groups[name] = normalized_aliases
+            terms.update(normalized_aliases)
+            if core:
+                core_groups.add(name)
+
+    add_group(
+        "multimodal_vlm",
+        ["多模态", "vision-language", "vision language", "vlm", "mllm", "multimodal", "multi modal"],
+        ["multimodal", "multi modal", "vision language", "vision language model", "vlm", "mllm", "large vision language model"],
+    )
+    add_group(
+        "visual_question_answering",
+        ["视觉问答", "visual question", "vqa"],
+        ["visual question answering", "visual question", "vqa", "vqa v2", "ok vqa"],
+    )
+    add_group(
+        "evidence_faithfulness",
+        ["证据", "忠实", "faithful", "faithfulness", "evidence", "grounding", "grounded"],
+        ["evidence", "faithfulness", "faithful", "evidence faithfulness", "grounding", "grounded evidence", "visual grounding"],
+    )
+    add_group(
+        "hallucination",
+        ["幻觉", "hallucination", "hallucinated"],
+        ["hallucination", "object hallucination", "visual hallucination", "hallucination benchmark"],
+    )
+    add_group(
+        "image_restoration",
+        ["图像修复", "image restoration", "超分辨率", "super resolution", "super-resolution", "sisr"],
+        ["image restoration", "blind image restoration", "super resolution", "super-resolution", "single image super resolution", "sisr"],
+    )
+    add_group(
+        "research_agent",
+        ["智能体", "agent", "workflow", "工具调用", "科研"],
+        ["agent", "research agent", "workflow", "tool augmented agent", "scientific discovery workflow"],
+    )
+    add_group(
+        "evaluation",
+        ["评估", "评价", "benchmark", "evaluation", "eval", "metric", "测评"],
+        ["evaluation", "benchmark", "metric", "assessment", "evaluating"],
+        core=False,
+    )
+    add_group(
+        "large_language_model",
+        ["大模型", "large language model", "llm", "foundation model"],
+        ["large language model", "llm", "foundation model"],
+        core=False,
+    )
+
+    core_terms = set().union(*(groups[name] for name in core_groups)) if core_groups else set(terms)
+    return QueryIntent(
+        terms={term for term in terms if term},
+        core_terms={term for term in core_terms if term},
+        groups=groups or {"query": terms},
+        core_groups=core_groups or {"query"},
+    )
+
+
+def normalize_intent_term(value: str) -> str:
+    return normalize_space(value.lower().replace("vision-language", "vision language"))
+
+
+def has_relevance_filtering(coverage: dict[str, int]) -> bool:
+    return coverage.get("filtered_count", 0) > 0 or coverage.get("off_topic_count", 0) > 0
+
+
+def format_relevance_coverage(coverage: dict[str, int]) -> str:
+    return (
+        f"{coverage.get('candidate_count', 0)} candidates / "
+        f"{coverage.get('strong_match_count', 0)} strong matches / "
+        f"{coverage.get('medium_match_count', 0)} medium matches / "
+        f"{coverage.get('weak_match_count', 0)} weak filtered / "
+        f"{coverage.get('off_topic_count', 0)} off-topic filtered"
+    )
 
 
 def contains_cjk(value: str) -> bool:
@@ -738,6 +913,8 @@ def render_paper_table_markdown(result: LiteratureSearchResult) -> str:
             "\n".join(f"- {query}" for query in result.expanded_queries),
             "## Ranked Papers",
             "\n".join(rows),
+            "## Relevance Coverage",
+            format_relevance_coverage(result.relevance_coverage or {}),
             "## Retrieval Notes",
             errors,
         ],
@@ -751,6 +928,7 @@ def render_paper_table_json(result: LiteratureSearchResult) -> str:
             "expanded_queries": result.expanded_queries,
             "papers": [paper.to_dict() for paper in result.papers],
             "errors": result.errors,
+            "relevance_coverage": result.relevance_coverage,
         },
         ensure_ascii=False,
         indent=2,

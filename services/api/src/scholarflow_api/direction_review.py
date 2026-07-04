@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from scholarflow_api.baseline_map import BaselineMap, render_baseline_map_markdown
-from scholarflow_api.literature import PaperCandidate, search_literature
+from scholarflow_api.literature import PaperCandidate, format_relevance_coverage, search_literature
 from scholarflow_api.paper_card import DeepPaperCard, generate_deep_paper_card
 from scholarflow_api.research_sight import ResearchSight, build_research_sight
 
@@ -69,6 +69,7 @@ class DirectionPaperReading:
         return {
             "paper": self.paper,
             "abstract_translation": self.abstract_translation,
+            "evidence_level": self.card.evidence_level,
             "signals": self.card.signals.to_dict(),
             "sections": [section.to_dict() for section in self.card.sections],
             "research_sight": self.research_sight.to_dict(),
@@ -88,6 +89,10 @@ class DirectionReviewBundle:
     round: int
     review_status: str
     target_paper_count: int
+    relevant_read_count: int
+    low_relevance_count: int
+    off_topic_count: int
+    relevance_coverage: dict[str, int]
     scope: DirectionScope
     baseline_map: BaselineMap
     readings: list[DirectionPaperReading]
@@ -104,6 +109,10 @@ class DirectionReviewBundle:
             "review_status": self.review_status,
             "target_paper_count": self.target_paper_count,
             "round_read_count": len(self.readings),
+            "relevant_read_count": self.relevant_read_count,
+            "low_relevance_count": self.low_relevance_count,
+            "off_topic_count": self.off_topic_count,
+            "relevance_coverage": self.relevance_coverage,
             "scope": self.scope.to_dict(),
             "baseline_map": self.baseline_map.to_dict(),
             "papers": [reading.to_dict() for reading in self.readings],
@@ -138,22 +147,24 @@ def retrieve_direction_candidate_pool(
     direction: str,
     round_index: int,
     previously_read_titles: list[str],
-) -> tuple[DirectionScope, list[PaperCandidate], list[PaperCandidate], list[str]]:
+) -> tuple[DirectionScope, list[PaperCandidate], list[PaperCandidate], list[str], dict[str, int]]:
     scope = build_direction_scope(direction, round_index)
     candidates: list[PaperCandidate] = []
     errors: list[str] = []
+    relevance_coverage = empty_relevance_coverage()
 
     for query in scope.queries:
         result = search_literature(query, max_results=30, sources=["arxiv", "openalex"])
         candidates.extend(result.papers)
         errors.extend(result.errors)
+        relevance_coverage = merge_relevance_coverage(relevance_coverage, result.relevance_coverage)
 
     selected = select_top_direction_papers(candidates, direction, previously_read_titles, limit=10)
-    return scope, candidates, selected, errors
+    return scope, candidates, selected, errors, relevance_coverage
 
 
 def retrieve_direction_candidates(direction: str, round_index: int, previously_read_titles: list[str]) -> tuple[DirectionScope, list[PaperCandidate], list[str]]:
-    scope, _candidate_pool, selected, errors = retrieve_direction_candidate_pool(direction, round_index, previously_read_titles)
+    scope, _candidate_pool, selected, errors, _coverage = retrieve_direction_candidate_pool(direction, round_index, previously_read_titles)
     return scope, selected, errors
 
 
@@ -172,6 +183,8 @@ def select_top_direction_papers(
         key = normalize_title_key(candidate.title)
         if not key or key in previous_keys:
             continue
+        if not is_relevant_candidate(candidate):
+            continue
         year = parse_year(candidate.year)
         if year and year < min_year:
             continue
@@ -180,18 +193,7 @@ def select_top_direction_papers(
             deduped[key] = candidate
 
     ranked = sorted(deduped.values(), key=lambda paper: score_direction_paper(paper, direction), reverse=True)
-    if len(ranked) >= limit:
-        return ranked[:limit]
-
-    relaxed: dict[str, PaperCandidate] = {normalize_title_key(paper.title): paper for paper in ranked}
-    for candidate in candidates:
-        key = normalize_title_key(candidate.title)
-        if not key or key in previous_keys or key in relaxed:
-            continue
-        relaxed[key] = candidate
-        if len(relaxed) >= limit:
-            break
-    return sorted(relaxed.values(), key=lambda paper: score_direction_paper(paper, direction), reverse=True)[:limit]
+    return ranked[:limit]
 
 
 def build_direction_readings(
@@ -273,16 +275,25 @@ def build_direction_review_bundle(
     readings: list[DirectionPaperReading],
     previous_read_count: int,
     errors: list[str],
+    relevance_coverage: dict[str, int] | None = None,
 ) -> DirectionReviewBundle:
     recommended = [reading.paper.get("id", "") for reading in readings if reading.self_read_priority]
-    total_read_count = previous_read_count + len(readings)
+    coverage = normalize_direction_coverage(relevance_coverage, readings)
+    relevant_read_count = sum(1 for reading in readings if is_relevant_paper_dict(reading.paper))
+    total_read_count = previous_read_count + relevant_read_count
     target_paper_count = 10
-    review_status = "partial" if len(readings) < 5 else "complete"
-    if review_status == "partial":
+    review_status = determine_review_status(
+        relevant_read_count=relevant_read_count,
+        low_relevance_count=coverage.get("weak_match_count", 0),
+        off_topic_count=coverage.get("off_topic_count", 0),
+        target_paper_count=target_paper_count,
+    )
+    if review_status in {"partial", "blocked"}:
         errors = [
             *errors,
             (
-                f"partial_direction_review: only {len(readings)}/{target_paper_count} papers were read; "
+                f"{review_status}_direction_review: only {relevant_read_count}/{target_paper_count} strong/medium papers were read; "
+                f"low_relevance={coverage.get('weak_match_count', 0)}, off_topic={coverage.get('off_topic_count', 0)}. "
                 "this is not a complete ten-paper direction review."
             ),
         ]
@@ -291,6 +302,10 @@ def build_direction_review_bundle(
         round=round_index,
         review_status=review_status,
         target_paper_count=target_paper_count,
+        relevant_read_count=relevant_read_count,
+        low_relevance_count=coverage.get("weak_match_count", 0),
+        off_topic_count=coverage.get("off_topic_count", 0),
+        relevance_coverage=coverage,
         scope=scope,
         baseline_map=baseline_map,
         readings=readings,
@@ -299,6 +314,52 @@ def build_direction_review_bundle(
         total_read_count=total_read_count,
         errors=errors,
     )
+
+
+def normalize_direction_coverage(
+    relevance_coverage: dict[str, int] | None,
+    readings: list[DirectionPaperReading],
+) -> dict[str, int]:
+    coverage = empty_relevance_coverage()
+    if relevance_coverage:
+        coverage.update({key: int(value) for key, value in relevance_coverage.items() if isinstance(value, int)})
+    if coverage.get("returned_count", 0) == 0 and readings:
+        relevant_count = sum(1 for reading in readings if is_relevant_paper_dict(reading.paper))
+        coverage.update(
+            {
+                "candidate_count": len(readings),
+                "returned_count": len(readings),
+                "strong_match_count": sum(
+                    1 for reading in readings if reading.paper.get("relevance_quality") == "strong"
+                ),
+                "medium_match_count": sum(
+                    1 for reading in readings if reading.paper.get("relevance_quality") != "strong"
+                ),
+                "weak_match_count": 0,
+                "off_topic_count": 0,
+                "filtered_count": 0,
+            },
+        )
+        if relevant_count and not coverage.get("strong_match_count") and not coverage.get("medium_match_count"):
+            coverage["medium_match_count"] = relevant_count
+    return coverage
+
+
+def determine_review_status(
+    relevant_read_count: int,
+    low_relevance_count: int,
+    off_topic_count: int,
+    target_paper_count: int,
+) -> str:
+    if relevant_read_count <= 0:
+        return "blocked"
+    if relevant_read_count < 5:
+        return "partial"
+    if relevant_read_count < target_paper_count and off_topic_count > relevant_read_count:
+        return "partial"
+    if low_relevance_count + off_topic_count > relevant_read_count * 2 and relevant_read_count < target_paper_count:
+        return "partial"
+    return "complete"
 
 
 def build_direction_summary(
@@ -314,9 +375,10 @@ def build_direction_summary(
     focus_terms = ", ".join(infer_subtopics(direction)[:4])
     baseline_titles = [item.title for item in baseline_map.recent_strong_baselines[:2]]
     baseline_note = "; ".join(baseline_titles) if baseline_titles else "当前 baseline 信号不足，需要继续检索"
-    if review_status == "partial":
+    if review_status != "complete":
+        status_label = "Blocked Direction Review" if review_status == "blocked" else "Partial Direction Review"
         return (
-            f"Partial Direction Review：本轮仅实际读取 {len(readings)}/{target_paper_count} 篇候选论文，"
+            f"{status_label}：本轮仅实际读取 {len(readings)}/{target_paper_count} 篇强/中相关候选论文，"
             "低于可信方向级精读的最低阈值 5 篇，因此不能声称已完成 10 篇方向综述。"
             f"当前累计已读 {total_read_count} 篇，ScholarFlow 只能给出临时判断："
             f"`{direction}` 暂时应围绕 {focus_terms or '任务定义、评价方式和失败模式'} 继续补充候选论文。"
@@ -361,13 +423,14 @@ def render_direction_review_markdown(bundle: DirectionReviewBundle) -> str:
 
     return "\n\n".join(
         [
-            f"# {'Partial Direction Review' if bundle.review_status == 'partial' else 'Direction Review'} Round {bundle.round}",
+            f"# {'Direction Review' if bundle.review_status == 'complete' else bundle.review_status.title() + ' Direction Review'} Round {bundle.round}",
             f"Direction: {bundle.direction}",
             f"Status: {bundle.review_status}",
-            f"Coverage: {len(bundle.readings)}/{bundle.target_paper_count}",
+            f"Coverage: {bundle.relevant_read_count}/{bundle.target_paper_count}",
+            f"Relevance coverage: {format_relevance_coverage(bundle.relevance_coverage)}",
             (
-                "Warning: this is a partial review and must not be presented as a completed ten-paper direction review."
-                if bundle.review_status == "partial"
+                "Warning: this review is partial/blocked and must not be presented as a completed ten-paper direction review."
+                if bundle.review_status != "complete"
                 else "Coverage note: completed enough papers for a direction-level review."
             ),
             f"Year range: {bundle.scope.year_range}",
@@ -401,6 +464,24 @@ def score_direction_paper(candidate: PaperCandidate, direction: str) -> float:
     return score_direction_paper_dict(candidate.to_dict(), direction)
 
 
+def is_relevant_candidate(candidate: PaperCandidate) -> bool:
+    quality = normalize_space(getattr(candidate, "relevance_quality", "")).lower()
+    if quality in {"strong", "medium"}:
+        return True
+    if quality in {"weak", "off_topic"}:
+        return False
+    return candidate.priority in {"High", "Medium"} and float(candidate.relevance_score or 0.0) >= 0.75
+
+
+def is_relevant_paper_dict(paper: dict[str, Any]) -> bool:
+    quality = normalize_space(str(paper.get("relevance_quality", ""))).lower()
+    if quality in {"strong", "medium"}:
+        return True
+    if quality in {"weak", "off_topic"}:
+        return False
+    return paper.get("priority") in {"High", "Medium"} and float(paper.get("relevance_score") or 0.0) >= 0.75
+
+
 def score_direction_paper_dict(paper: dict[str, Any], direction: str) -> float:
     text = f"{paper.get('title', '')} {paper.get('abstract', '')} {paper.get('venue', '')}".lower()
     terms = significant_terms(direction)
@@ -414,11 +495,34 @@ def score_direction_paper_dict(paper: dict[str, Any], direction: str) -> float:
     return base + term_score + title_score + recency + venue
 
 
+def empty_relevance_coverage() -> dict[str, int]:
+    return {
+        "candidate_count": 0,
+        "returned_count": 0,
+        "strong_match_count": 0,
+        "medium_match_count": 0,
+        "weak_match_count": 0,
+        "off_topic_count": 0,
+        "filtered_count": 0,
+    }
+
+
+def merge_relevance_coverage(left: dict[str, int], right: dict[str, int]) -> dict[str, int]:
+    merged = dict(left)
+    for key, value in (right or {}).items():
+        if isinstance(value, int):
+            merged[key] = merged.get(key, 0) + value
+    return merged
+
+
 def build_selection_reason(paper: dict[str, Any], direction: str) -> str:
-    terms = [term for term in significant_terms(direction) if term in f"{paper.get('title', '')} {paper.get('abstract', '')}".lower()]
+    terms = safe_json_list(paper.get("matched_terms_json", "[]")) or [
+        term for term in significant_terms(direction) if term in f"{paper.get('title', '')} {paper.get('abstract', '')}".lower()
+    ]
     venue = detect_venue_signal(str(paper.get("venue", "")))
+    quality = normalize_space(str(paper.get("relevance_quality", ""))) or "medium"
     if terms:
-        return f"匹配方向关键词：{', '.join(terms[:5])}；{venue}；近三年候选论文。"
+        return f"相关性 {quality}；匹配方向关键词：{', '.join(terms[:5])}；{venue}；近三年候选论文。"
     return f"与方向存在弱相关，需要人工复核；{venue}；用于补全方法或评测背景。"
 
 
@@ -524,6 +628,16 @@ def unique_preserve_order(values: list[str]) -> list[str]:
 
 def contains_cjk(value: str) -> bool:
     return bool(re.search(r"[\u4e00-\u9fff]", value))
+
+
+def safe_json_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except json.JSONDecodeError:
+        return []
+    return [str(item) for item in parsed] if isinstance(parsed, list) else []
 
 
 def escape_table(value: str) -> str:

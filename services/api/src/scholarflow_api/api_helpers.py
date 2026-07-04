@@ -111,7 +111,10 @@ def fetch_project_paper_card_dicts(connection, project_id: str) -> list[dict]:
             p.relation AS paper_relation,
             p.priority AS paper_priority,
             p.code AS paper_code,
-            p.relevance_score AS paper_relevance_score
+            p.relevance_score AS paper_relevance_score,
+            p.relevance_quality AS paper_relevance_quality,
+            p.matched_terms_json AS paper_matched_terms_json,
+            p.review_required AS paper_review_required
         FROM paper_cards pc
         LEFT JOIN papers p ON p.id = pc.paper_id
         WHERE pc.project_id = ?
@@ -257,6 +260,9 @@ def build_paper_card_source(connection, project_id: str, payload: PaperCardCreat
         "priority": "High",
         "code": "unknown",
         "relevance_score": 1.0,
+        "relevance_quality": "strong",
+        "matched_terms_json": "[]",
+        "review_required": False,
         "created_at": "",
     }
 
@@ -444,9 +450,10 @@ def insert_paper_candidates(connection, project_id: str, papers: list, now: str)
             """
             INSERT INTO papers (
                 id, project_id, title, authors, abstract, year, type, venue, source, url,
-                relation, priority, code, relevance_score, created_at
+                relation, priority, code, relevance_score, relevance_quality, matched_terms_json,
+                review_required, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 authors = excluded.authors,
@@ -459,7 +466,10 @@ def insert_paper_candidates(connection, project_id: str, papers: list, now: str)
                 relation = excluded.relation,
                 priority = excluded.priority,
                 code = excluded.code,
-                relevance_score = excluded.relevance_score
+                relevance_score = excluded.relevance_score,
+                relevance_quality = excluded.relevance_quality,
+                matched_terms_json = excluded.matched_terms_json,
+                review_required = excluded.review_required
             """,
             (
                 paper_id,
@@ -476,6 +486,9 @@ def insert_paper_candidates(connection, project_id: str, papers: list, now: str)
                 paper.priority,
                 paper.code,
                 paper.relevance_score,
+                getattr(paper, "relevance_quality", "medium"),
+                json.dumps(getattr(paper, "matched_terms", []) or [], ensure_ascii=False),
+                1 if getattr(paper, "review_required", False) else 0,
                 now,
             ),
         )

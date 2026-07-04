@@ -44,6 +44,9 @@ export interface PaperRow {
   priority: "High" | "Medium" | "Watch";
   code: string;
   relevanceScore: number;
+  relevanceQuality?: "strong" | "medium" | "weak" | "off_topic";
+  matchedTerms?: string[];
+  reviewRequired?: boolean;
 }
 
 export interface GapItem {

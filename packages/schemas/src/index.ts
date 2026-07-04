@@ -61,6 +61,10 @@ export interface ApiPaper {
   priority: string;
   code: string;
   relevance_score: number;
+  relevance_quality?: "strong" | "medium" | "weak" | "off_topic";
+  matched_terms?: string[];
+  matched_terms_json?: string;
+  review_required?: boolean;
   created_at: string;
 }
 
@@ -137,6 +141,7 @@ export interface ApiLiteratureSearchResponse {
   papers: ApiPaper[];
   artifact: ApiArtifact;
   errors: string[];
+  relevance_coverage?: Record<string, number>;
   workflow_steps?: ApiWorkflowStepState[];
 }
 
@@ -236,6 +241,7 @@ export interface ApiPaperCard {
   project_id: string;
   paper_id: string | null;
   artifact_id: string | null;
+  evidence_level?: "metadata_only" | "abstract_only" | "full_text";
   signals?: ApiPaperSignals;
   sections: ApiPaperCardSection[];
   weakest_assumption: string;
@@ -266,6 +272,7 @@ export interface ApiDirectionScope {
 export interface ApiDirectionPaperReading {
   paper: ApiPaper;
   abstract_translation: string;
+  evidence_level?: "metadata_only" | "abstract_only" | "full_text";
   signals?: ApiPaperSignals;
   sections: ApiPaperCardSection[];
   research_sight: ApiResearchSight;
@@ -282,9 +289,13 @@ export interface ApiDirectionReviewResponse {
   schema_version?: string;
   direction: string;
   round: number;
-  review_status: "complete" | "partial";
+  review_status: "complete" | "partial" | "blocked";
   target_paper_count: number;
   round_read_count: number;
+  relevant_read_count?: number;
+  low_relevance_count?: number;
+  off_topic_count?: number;
+  relevance_coverage?: Record<string, number>;
   total_read_count: number;
   scope?: ApiDirectionScope;
   baseline_map?: ApiBaselineMap;

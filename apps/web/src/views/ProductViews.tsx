@@ -1263,7 +1263,10 @@ export function ProductPaperTableView({
 }) {
   const [highOnly, setHighOnly] = useState(false);
   const displayPapers = highOnly ? papers.filter((paper) => paper.priority === "High") : papers;
-  const highCount = papers.filter((paper) => paper.priority === "High").length;
+  const relevanceCoverage = derivePaperTableCoverage(papers, errors);
+  const strongCount = relevanceCoverage.strong_match_count;
+  const mediumCount = relevanceCoverage.medium_match_count;
+  const offTopicCount = relevanceCoverage.off_topic_count;
   const retrievalWarnings = errors.filter(isRetrievalWarning);
   const backendErrors = errors.filter((error) => !isRetrievalWarning(error));
   const isDemo = isDemoProject(activeProject);
@@ -1276,6 +1279,8 @@ export function ProductPaperTableView({
     priority: paper.priority,
     relation: paper.relation,
     url: paper.url,
+    relevanceQuality: paper.relevanceQuality,
+    matchedTerms: paper.matchedTerms,
   }));
   const csvDisabledReason = tableRows.length === 0 ? "没有可导出的真实论文。请先运行 Literature Search。" : "";
   const searchDisabledReason = isDemo
@@ -1360,9 +1365,9 @@ export function ProductPaperTableView({
         </div>
 
         <div className="table-metrics">
-          <MetricCard icon={FileText} label="检索论文" value={String(papers.length)} />
-          <MetricCard icon={Target} label="High Priority" value={String(highCount)} />
-          <MetricCard icon={ShieldCheck} label="Retrieval Warning" value={String(retrievalWarnings.length)} amber />
+          <MetricCard icon={FileText} label="候选 / 返回" value={`${relevanceCoverage.candidate_count}/${papers.length}`} />
+          <MetricCard icon={Target} label="Strong / Medium" value={`${strongCount}/${mediumCount}`} />
+          <MetricCard icon={ShieldCheck} label="Off-topic Filtered" value={String(offTopicCount)} amber={offTopicCount > 0} />
           <MetricCard icon={AlertTriangle} label="Backend Error" value={String(backendErrors.length)} amber={backendErrors.length > 0} />
         </div>
 
@@ -1424,8 +1429,12 @@ export function ProductPaperTableView({
                   <td>{paper.source}</td>
                   <td>
                     <span className={`priority ${paper.priority.toLowerCase()}`}>{paper.priority}</span>
+                    <small>{paper.relevanceQuality ?? "medium"}</small>
                   </td>
-                  <td>{paper.relation}</td>
+                  <td>
+                    {paper.relation}
+                    {paper.matchedTerms?.length ? <small>Matched: {paper.matchedTerms.slice(0, 5).join(", ")}</small> : null}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -1461,6 +1470,53 @@ export function ProductPaperTableView({
       <ConferenceLogoBelt withTitle={false} />
     </div>
   );
+}
+
+function derivePaperTableCoverage(papers: PaperRow[], errors: string[]): Record<string, number> {
+  const parsed = parseRelevanceCoverage(errors);
+  const strongFromRows = papers.filter((paper) => paper.relevanceQuality === "strong").length;
+  const mediumFromRows = papers.filter((paper) => paper.relevanceQuality === "medium" || !paper.relevanceQuality).length;
+  return {
+    candidate_count: parsed.candidate_count ?? papers.length,
+    returned_count: papers.length,
+    strong_match_count: parsed.strong_match_count ?? strongFromRows,
+    medium_match_count: parsed.medium_match_count ?? mediumFromRows,
+    weak_match_count: parsed.weak_match_count ?? 0,
+    off_topic_count: parsed.off_topic_count ?? 0,
+    filtered_count: parsed.filtered_count ?? (parsed.weak_match_count ?? 0) + (parsed.off_topic_count ?? 0),
+  };
+}
+
+function parseRelevanceCoverage(errors: string[]): Partial<Record<string, number>> {
+  const coverageWarning = errors.find((error) => error.startsWith("relevance_coverage:"));
+  if (!coverageWarning) {
+    return {};
+  }
+  const numbers = coverageWarning.match(/\d+/g)?.map((value) => Number(value)) ?? [];
+  if (numbers.length < 5) {
+    return {};
+  }
+  return {
+    candidate_count: numbers[0],
+    strong_match_count: numbers[1],
+    medium_match_count: numbers[2],
+    weak_match_count: numbers[3],
+    off_topic_count: numbers[4],
+    filtered_count: numbers[3] + numbers[4],
+  };
+}
+
+function formatEvidenceLevel(level: string): string {
+  if (level === "full_text") {
+    return "全文级深读";
+  }
+  if (level === "abstract_only") {
+    return "标题/摘要级阅读";
+  }
+  if (level === "metadata_only") {
+    return "标题/元数据级提纲";
+  }
+  return level || "未知证据等级";
 }
 
 function MetricCard({
@@ -1612,6 +1668,7 @@ export function ProductPaperReaderView({
             <div>
               <strong>{card ? "Paper Card 摘要" : "待生成 Paper Card"}</strong>
               <p>{selectedSummary || "请先在 Paper Table 选择论文，或粘贴摘要/正文片段后生成 Paper Card。"}</p>
+              {card?.evidence_level ? <small>Evidence level: {formatEvidenceLevel(card.evidence_level)}</small> : null}
             </div>
           </article>
 
@@ -1675,8 +1732,8 @@ export function ProductPaperReaderView({
                 <span>Priority</span>
               </div>
               <div>
-                <strong>{cardSections.length}</strong>
-                <span>Sections</span>
+                <strong>{card?.evidence_level ? formatEvidenceLevel(card.evidence_level) : "N/A"}</strong>
+                <span>Evidence</span>
               </div>
             </div>
           </section>
@@ -1704,7 +1761,15 @@ export function ProductPaperReaderView({
               <span>3</span>
               <div>
                 <strong>输入来源</strong>
-                <p>{selectedPaper ? "来自当前项目 Paper Table。" : supplementalInput.trim() ? "来自用户粘贴内容。" : "暂无输入。"}</p>
+                <p>
+                  {card?.evidence_level
+                    ? `${formatEvidenceLevel(card.evidence_level)}；${card.evidence_level === "full_text" ? "包含用户提供正文片段。" : "没有 PDF/完整正文，不应视为全文级深读。"}`
+                    : selectedPaper
+                      ? "来自当前项目 Paper Table。"
+                      : supplementalInput.trim()
+                        ? "来自用户粘贴内容。"
+                        : "暂无输入。"}
+                </p>
               </div>
             </div>
           </section>
@@ -2236,11 +2301,13 @@ export function DirectionReviewView({
     readings.filter((reading) => recommendedPaperIds.includes(reading.paper.id) || reading.self_read_priority) ?? [];
   const canGenerate = apiStatus === "online" && !isGenerating && direction.trim().length > 0;
   const expectedRoundCount = review?.target_paper_count ?? 10;
-  const actualRoundCount = review?.round_read_count ?? readings.length;
+  const actualRoundCount = review?.relevant_read_count ?? review?.round_read_count ?? readings.length;
   const isPartialReview = review?.review_status === "partial";
+  const isBlockedReview = review?.review_status === "blocked";
+  const coverage = review?.relevance_coverage ?? {};
   const partialRoundWarning =
-    review && (isPartialReview || actualRoundCount < expectedRoundCount)
-      ? `本轮实际只读取 ${actualRoundCount}/${expectedRoundCount} 篇。可能是检索源限流、候选不足或去重后不足 10 篇。`
+    review && (isPartialReview || isBlockedReview || actualRoundCount < expectedRoundCount)
+      ? `本轮实际只读取 ${actualRoundCount}/${expectedRoundCount} 篇 strong/medium 论文；weak=${review.low_relevance_count ?? coverage.weak_match_count ?? 0}，off-topic=${review.off_topic_count ?? coverage.off_topic_count ?? 0}。`
       : "";
   const reviewWarnings = review ? [partialRoundWarning, ...review.errors].filter(Boolean) : [];
 
@@ -2300,8 +2367,9 @@ export function DirectionReviewView({
               </div>
               <div className="direction-stat-grid">
                 <span>Round {review.round}</span>
-                <span>{isPartialReview ? "Partial" : "Complete"}</span>
-                <span>本轮 {actualRoundCount}/{expectedRoundCount}</span>
+                <span>{review.review_status === "complete" ? "Complete" : review.review_status === "blocked" ? "Blocked" : "Partial"}</span>
+                <span>强/中相关 {actualRoundCount}/{expectedRoundCount}</span>
+                <span>过滤离题 {review.off_topic_count ?? coverage.off_topic_count ?? 0}</span>
                 <span>累计 {review.total_read_count} papers</span>
                 {review.scope ? <span>{review.scope.year_range}</span> : null}
               </div>
@@ -2311,7 +2379,7 @@ export function DirectionReviewView({
               <div className="partial-review-banner">
                 <AlertTriangle size={18} />
                 <div>
-                  <strong>Partial Direction Review · {actualRoundCount}/{expectedRoundCount}</strong>
+                  <strong>{isBlockedReview ? "Blocked" : "Partial"} Direction Review · {actualRoundCount}/{expectedRoundCount}</strong>
                   <p>{partialRoundWarning}</p>
                 </div>
               </div>
@@ -2470,7 +2538,7 @@ function BaselineMapPanel({ baselineMap }: { baselineMap: NonNullable<ApiDirecti
           <p className="section-kicker">BaselineMap</p>
           <h3>方向背景与对比参照</h3>
         </div>
-        <span>{baselineMap.generated_from.length} candidates</span>
+          <span>{baselineMap.generated_from.length} candidates</span>
       </div>
       <p>{baselineMap.task_definition}</p>
       <div className="baseline-map-grid">
@@ -2569,6 +2637,7 @@ function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }
 
       <article className="direction-abstract">
         <h3>摘要中文内容</h3>
+        <small>Evidence level: {formatEvidenceLevel(reading.evidence_level ?? "metadata_only")}</small>
         <p>{reading.abstract_translation}</p>
       </article>
 
@@ -2629,7 +2698,9 @@ function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }
         <div className="research-sight-score-grid">
           <div>
             <strong>证据等级</strong>
-            <span>{evidencePack.grounding_summary}</span>
+            <span>
+              {formatEvidenceLevel(reading.evidence_level ?? evidencePack.evidence_level)}；{evidencePack.grounding_summary}
+            </span>
           </div>
           <div>
             <strong>动机锋利度</strong>

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class HealthResponse(BaseModel):
@@ -49,7 +50,23 @@ class Paper(BaseModel):
     priority: str
     code: str
     relevance_score: float
+    relevance_quality: Literal["strong", "medium", "weak", "off_topic"] = "medium"
+    matched_terms: list[str] = Field(default_factory=list)
+    matched_terms_json: str = "[]"
+    review_required: bool = False
     created_at: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def hydrate_matched_terms(cls, data):
+        if isinstance(data, dict) and "matched_terms" not in data:
+            try:
+                parsed = json.loads(str(data.get("matched_terms_json") or "[]"))
+            except json.JSONDecodeError:
+                parsed = []
+            data = dict(data)
+            data["matched_terms"] = [str(item) for item in parsed] if isinstance(parsed, list) else []
+        return data
 
 
 class ArtifactCreate(BaseModel):
@@ -116,6 +133,7 @@ class LiteratureSearchResponse(BaseModel):
     papers: list[Paper]
     artifact: Artifact
     errors: list[str]
+    relevance_coverage: dict[str, int] = Field(default_factory=dict)
     workflow_steps: list[WorkflowStepState] = Field(default_factory=list)
 
 
@@ -215,6 +233,7 @@ class PaperCard(BaseModel):
     project_id: str
     paper_id: str | None
     artifact_id: str | None
+    evidence_level: Literal["metadata_only", "abstract_only", "full_text"] = "metadata_only"
     signals: PaperSignals = Field(default_factory=PaperSignals)
     sections: list[PaperCardSection]
     weakest_assumption: str
@@ -245,6 +264,7 @@ class DirectionScope(BaseModel):
 class DirectionPaperReading(BaseModel):
     paper: Paper
     abstract_translation: str
+    evidence_level: Literal["metadata_only", "abstract_only", "full_text"] = "metadata_only"
     signals: PaperSignals = Field(default_factory=PaperSignals)
     sections: list[PaperCardSection]
     research_sight: ResearchSight
@@ -260,9 +280,13 @@ class DirectionPaperReading(BaseModel):
 class DirectionReviewResponse(BaseModel):
     direction: str
     round: int
-    review_status: Literal["complete", "partial"] = "complete"
+    review_status: Literal["complete", "partial", "blocked"] = "complete"
     target_paper_count: int = 10
     round_read_count: int
+    relevant_read_count: int = 0
+    low_relevance_count: int = 0
+    off_topic_count: int = 0
+    relevance_coverage: dict[str, int] = Field(default_factory=dict)
     total_read_count: int
     recommended_paper_ids: list[str]
     direction_summary: str

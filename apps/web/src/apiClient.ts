@@ -192,6 +192,7 @@ export function isRetrievalWarning(value: string): boolean {
     "openalex_cooldown",
     "arxiv_rate_limited",
     "low_recall",
+    "relevance_coverage",
     "too many requests",
     "503",
     "504",

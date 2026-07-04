@@ -156,6 +156,7 @@ export function normalizeDirectionReading(
   return {
     paper: normalizeApiPaper(reading.paper, artifactProjectId, artifactCreatedAt),
     abstract_translation: asString(reading.abstract_translation),
+    evidence_level: firstString(reading.evidence_level, card.evidence_level) as ApiDirectionPaperReading["evidence_level"],
     signals: normalizePaperSignals(reading.signals ?? card.signals),
     sections: sectionPayloads.map(normalizePaperCardSection),
     research_sight: normalizeResearchSight(reading.research_sight),
@@ -235,8 +236,22 @@ function normalizeApiPaper(payload: unknown, artifactProjectId: string, artifact
     priority: asString(paper.priority) || "Medium",
     code: asString(paper.code) || "unknown",
     relevance_score: asNumber(paper.relevance_score),
+    relevance_quality: normalizeRelevanceQuality(paper.relevance_quality),
+    matched_terms: asStringArray(paper.matched_terms).length
+      ? asStringArray(paper.matched_terms)
+      : parseMatchedTerms(asString(paper.matched_terms_json)),
+    matched_terms_json: asString(paper.matched_terms_json),
+    review_required: asBoolean(paper.review_required),
     created_at: asString(paper.created_at) || artifactCreatedAt,
   };
+}
+
+function normalizeRelevanceQuality(value: unknown): ApiPaper["relevance_quality"] {
+  const quality = asString(value);
+  if (quality === "strong" || quality === "medium" || quality === "weak" || quality === "off_topic") {
+    return quality;
+  }
+  return "medium";
 }
 
 function normalizePaperSignals(payload: unknown): ApiPaperSignals | undefined {
@@ -347,9 +362,15 @@ function hydrateDirectionReview(items: ApiArtifact[]): ApiDirectionReviewRespons
     ...(payload as Partial<ApiDirectionReviewResponse>),
     direction: asString(payload.direction),
     round: asNumber(payload.round, 1),
-    review_status: asString(payload.review_status) === "partial" ? "partial" : "complete",
+    review_status: normalizeReviewStatus(payload.review_status),
     target_paper_count: asNumber(payload.target_paper_count, 10),
     round_read_count: asNumber(payload.round_read_count, papers.length),
+    relevant_read_count: asNumber(payload.relevant_read_count, asNumber(payload.round_read_count, papers.length)),
+    low_relevance_count: asNumber(payload.low_relevance_count),
+    off_topic_count: asNumber(payload.off_topic_count),
+    relevance_coverage: isRecord(payload.relevance_coverage)
+      ? (payload.relevance_coverage as Record<string, number>)
+      : {},
     total_read_count: asNumber(payload.total_read_count, papers.length),
     papers,
     recommended_paper_ids: asStringArray(payload.recommended_paper_ids),
@@ -358,6 +379,14 @@ function hydrateDirectionReview(items: ApiArtifact[]): ApiDirectionReviewRespons
     artifacts: relatedArtifacts,
     errors: asStringArray(payload.errors),
   };
+}
+
+function normalizeReviewStatus(value: unknown): ApiDirectionReviewResponse["review_status"] {
+  const status = asString(value);
+  if (status === "partial" || status === "blocked" || status === "complete") {
+    return status;
+  }
+  return "complete";
 }
 
 function hydrateResearchMemory(items: ApiArtifact[]): ApiResearchMemoryQueryResponse | null {
@@ -423,6 +452,7 @@ function hydratePaperCard(items: ApiArtifact[]): ApiPaperCard | null {
     project_id: artifact.artifact.project_id,
     paper_id: typeof paper.id === "string" ? paper.id : null,
     artifact_id: artifact.artifact.id,
+    evidence_level: firstString(card.evidence_level, artifact.payload.evidence_level) as ApiPaperCard["evidence_level"],
     signals: isRecord(card.signals) ? (card.signals as unknown as ApiPaperCard["signals"]) : undefined,
     sections: Array.isArray(card.sections) ? (card.sections as ApiPaperCard["sections"]) : [],
     weakest_assumption: typeof card.weakest_assumption === "string" ? card.weakest_assumption : "",
@@ -574,7 +604,22 @@ export function toPaperRow(paper: ApiPaper): PaperRow {
     priority: paper.priority === "High" || paper.priority === "Medium" || paper.priority === "Watch" ? paper.priority : "Medium",
     code: paper.code,
     relevanceScore: paper.relevance_score,
+    relevanceQuality: paper.relevance_quality ?? "medium",
+    matchedTerms: paper.matched_terms ?? parseMatchedTerms(paper.matched_terms_json),
+    reviewRequired: Boolean(paper.review_required),
   };
+}
+
+function parseMatchedTerms(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.map((item) => String(item)) : [];
+  } catch {
+    return [];
+  }
 }
 
 export function toTimelineEvent(event: ApiToolEvent): TimelineEvent {

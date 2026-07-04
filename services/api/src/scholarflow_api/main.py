@@ -161,6 +161,8 @@ def literature_step_status(paper_count: int, errors: list[str]) -> str:
 
 
 def direction_step_status(review_status: str, round_read_count: int) -> str:
+    if review_status == "blocked":
+        return "blocked"
     if review_status == "partial" or round_read_count < 5:
         return "partial"
     return "complete"
@@ -381,12 +383,17 @@ def search_project_literature(project_id: str, payload: LiteratureSearchRequest)
         papers=[Paper.model_validate(dict(row)) for row in rows],
         artifact=Artifact.model_validate(artifact),
         errors=result.errors,
+        relevance_coverage=result.relevance_coverage,
         workflow_steps=[
             workflow_step_state(
                 step_id="paper-table",
                 status=literature_step_status(len(rows), result.errors),
                 label="Paper Table",
-                summary=f"检索返回 {len(rows)} 篇论文；warnings={len(result.errors)}。",
+                summary=(
+                    f"{result.relevance_coverage.get('candidate_count', len(rows))} candidates / "
+                    f"{result.relevance_coverage.get('strong_match_count', 0)} strong matches / "
+                    f"{result.relevance_coverage.get('off_topic_count', 0)} off-topic filtered"
+                ),
                 warnings=result.errors,
                 updated_at=completed_at,
                 artifacts=[artifact],
@@ -460,6 +467,7 @@ def create_project_paper_card(project_id: str, payload: PaperCardCreateRequest) 
             project_id=project_id,
             paper_id=payload.paper_id,
             artifact_id=artifact["id"],
+            evidence_level=card.evidence_level,
             signals=card.signals.to_dict(),
             sections=[section.to_dict() for section in card.sections],
             weakest_assumption=card.weakest_assumption,
@@ -486,7 +494,11 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
             now,
         )
 
-    scope, candidate_pool, candidates, errors = retrieve_direction_candidate_pool(payload.direction, payload.round, previous_titles)
+    scope, candidate_pool, candidates, errors, relevance_coverage = retrieve_direction_candidate_pool(
+        payload.direction,
+        payload.round,
+        previous_titles,
+    )
     completed_at = utc_now()
     artifacts: list[dict] = []
     with get_connection() as connection:
@@ -508,6 +520,7 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
             readings,
             previous_read_count=len(previous_titles),
             errors=errors,
+            relevance_coverage=relevance_coverage,
         )
         baseline_artifact = insert_artifact_row(
             connection=connection,
@@ -613,9 +626,9 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
             "direction.retrieve",
             "done" if readings else "queued",
             (
-                f"partial：第 {payload.round} 轮仅筛选 {len(readings)}/10 篇论文，不能视为完整方向级 10 篇精读。"
-                if len(readings) < 5
-                else f"第 {payload.round} 轮检索并筛选 {len(readings)} 篇近三年高相关论文。"
+                f"{bundle.review_status}：第 {payload.round} 轮仅筛选 {bundle.relevant_read_count}/10 篇强/中相关论文；off-topic={bundle.off_topic_count}。"
+                if bundle.review_status != "complete"
+                else f"第 {payload.round} 轮检索并筛选 {bundle.relevant_read_count} 篇近三年高相关论文。"
             ),
             completed_at,
         )
@@ -625,8 +638,8 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
             "direction.read",
             "done" if readings else "queued",
             (
-                f"partial：已生成 {len(readings)} 张论文精读卡片，低于 5 篇可信阈值。"
-                if len(readings) < 5
+                f"{bundle.review_status}：已生成 {len(readings)} 张论文阅读卡片，低于可信完整综述阈值。"
+                if bundle.review_status != "complete"
                 else f"已生成 {len(readings)} 张 12 条规则论文精读卡片。"
             ),
             completed_at,
@@ -645,8 +658,8 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
             "direction.summarize",
             "done",
             (
-                f"partial：已生成临时方向总结；本轮仅 {len(readings)}/10 篇，推荐需谨慎使用。"
-                if bundle.review_status == "partial"
+                f"{bundle.review_status}：已生成临时方向总结；本轮仅 {bundle.relevant_read_count}/10 篇强/中相关论文，推荐需谨慎使用。"
+                if bundle.review_status != "complete"
                 else f"已生成方向总结，并推荐 {len(bundle.recommended_paper_ids)} 篇用户亲自精读论文。"
             ),
             completed_at,
@@ -670,6 +683,10 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
         review_status=bundle.review_status,
         target_paper_count=bundle.target_paper_count,
         round_read_count=len(bundle.readings),
+        relevant_read_count=bundle.relevant_read_count,
+        low_relevance_count=bundle.low_relevance_count,
+        off_topic_count=bundle.off_topic_count,
+        relevance_coverage=bundle.relevance_coverage,
         total_read_count=bundle.total_read_count,
         recommended_paper_ids=bundle.recommended_paper_ids,
         direction_summary=bundle.direction_summary,
@@ -681,8 +698,8 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
                 status=direction_step_status(bundle.review_status, len(bundle.readings)),
                 label="Direction Review",
                 summary=(
-                    f"第 {bundle.round} 轮读取 {len(bundle.readings)}/{bundle.target_paper_count} 篇；"
-                    f"累计 {bundle.total_read_count} 篇。"
+                    f"第 {bundle.round} 轮读取 {bundle.relevant_read_count}/{bundle.target_paper_count} 篇强/中相关论文；"
+                    f"off-topic filtered={bundle.off_topic_count}；累计 {bundle.total_read_count} 篇。"
                 ),
                 warnings=bundle.errors,
                 updated_at=completed_at,
@@ -1286,7 +1303,11 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
         direction = infer_agent_direction(context)
         round_index = next_agent_direction_round(connection, context.project["id"])
         previous_titles = fetch_read_paper_titles(connection, context.project["id"]) if round_index > 1 else []
-        scope, candidate_pool, candidates, errors = retrieve_direction_candidate_pool(direction, round_index, previous_titles)
+        scope, candidate_pool, candidates, errors, relevance_coverage = retrieve_direction_candidate_pool(
+            direction,
+            round_index,
+            previous_titles,
+        )
         now = utc_now()
         paper_ids = insert_paper_candidates(connection, context.project["id"], candidates, now)
         paper_dicts = [fetch_paper_dict(connection, context.project["id"], paper_id) for paper_id in paper_ids]
@@ -1304,6 +1325,7 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
             readings,
             previous_read_count=len(previous_titles),
             errors=errors,
+            relevance_coverage=relevance_coverage,
         )
         artifacts: list[dict] = []
         baseline_artifact = insert_artifact_row(
@@ -1398,10 +1420,16 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
         return ToolResult(
             tool="direction_review",
             status="done",
-            summary=f"已完成第 {round_index} 轮方向精读，生成 {len(readings)} 张 Paper Card。",
+            summary=(
+                f"{bundle.review_status}：第 {round_index} 轮生成 {len(readings)} 张 Paper Card；"
+                f"strong/medium={bundle.relevant_read_count}, off-topic filtered={bundle.off_topic_count}。"
+            ),
             summary_metrics={
                 "review_status": bundle.review_status,
                 "round_read_count": len(readings),
+                "relevant_read_count": bundle.relevant_read_count,
+                "low_relevance_count": bundle.low_relevance_count,
+                "off_topic_count": bundle.off_topic_count,
                 "total_read_count": bundle.total_read_count,
                 "artifact_count": len(artifacts),
                 "warning_count": len(bundle.errors),
