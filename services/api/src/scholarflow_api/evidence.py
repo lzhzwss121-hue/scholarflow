@@ -162,11 +162,23 @@ def infer_confidence(snippets: list[EvidenceSnippet], missing: list[str], paper:
 
 
 def infer_evidence_level(paper: dict[str, Any], sections: list[dict[str, Any]]) -> str:
-    if sections and normalize_space(paper.get("abstract", "")):
-        return "metadata+abstract+paper-card"
+    explicit = normalize_evidence_level(paper.get("evidence_level", ""))
+    if explicit:
+        return explicit
     if normalize_space(paper.get("abstract", "")):
-        return "metadata+abstract"
-    return "metadata-only"
+        return "abstract_only"
+    return "metadata_only"
+
+
+def normalize_evidence_level(value: Any) -> str:
+    normalized = normalize_space(value).lower().replace("-", "_").replace("+", "_")
+    if normalized in {"metadata_only", "abstract_only", "full_text"}:
+        return normalized
+    if normalized in {"metadata_abstract", "metadata_abstract_paper_card"}:
+        return "abstract_only"
+    if normalized in {"metadata", "metadataonly"}:
+        return "metadata_only"
+    return ""
 
 
 def build_grounding_summary(

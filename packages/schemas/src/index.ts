@@ -163,6 +163,7 @@ export interface ApiPaperSignals {
   method: string;
   dataset: string;
   metric: string;
+  baseline: string;
   claim: string;
   limitation: string;
   contribution_type: string;

@@ -22,6 +22,7 @@ class PaperSignals:
     method: str
     dataset: str
     metric: str
+    baseline: str
     claim: str
     limitation: str
     contribution_type: str
@@ -106,8 +107,9 @@ def generate_deep_paper_card(paper: dict[str, Any], extra_context: str = "") -> 
                 f"当前可见不足信号：{limitation}。"
                 f"如果这篇论文是 `{signals.contribution_type}` 类型工作，需要检查它是否真的补上了 prior work 的关键缺口："
                 f"数据集/benchmark 是否明确（{signals.dataset}），指标是否能测到目标能力（{signals.metric}），"
+                f"对照 baseline 是否可复核（{signals.baseline}），"
                 f"核心 claim 是否能被实验闭环支持（{signals.claim}）。"
-                f"{missing_signal_sentence(signals, ['dataset', 'metric', 'claim'])}"
+                f"{missing_signal_sentence(signals, ['dataset', 'metric', 'baseline', 'claim'])}"
             ),
         ),
         PaperCardSection(
@@ -119,16 +121,16 @@ def generate_deep_paper_card(paper: dict[str, Any], extra_context: str = "") -> 
                 f"再发现已有工作无法同时解释任务、方法、数据、指标和 claim 的对应关系。"
                 f"在这种前提下，比较自然的思路是围绕 `{signals.claim}` 设计一个更可诊断的切口，"
                 "而不是先假设作者的方法一定正确。"
-                f"{missing_signal_sentence(signals, ['method', 'dataset', 'metric'])}"
+                f"{missing_signal_sentence(signals, ['method', 'dataset', 'metric', 'baseline'])}"
             ),
         ),
         PaperCardSection(
             "intuition",
             "4. 核心 Intuition",
             (
-                f"核心 intuition：用 `{signals.method}` 去处理 `{signals.task}`，并通过 `{signals.metric}` 在 `{signals.dataset}` 上验证 `{signals.claim}`。"
+                f"核心 intuition：用 `{signals.method}` 去处理 `{signals.task}`，并通过 `{signals.metric}` 在 `{signals.dataset}` 上相对 `{signals.baseline}` 验证 `{signals.claim}`。"
                 "如果上述四个环节都清楚，这篇论文的 idea 才能从“看起来合理”变成“可验证”。"
-                f"{missing_signal_sentence(signals, ['method', 'dataset', 'metric', 'claim'])}"
+                f"{missing_signal_sentence(signals, ['method', 'dataset', 'metric', 'baseline', 'claim'])}"
             ),
         ),
         PaperCardSection(
@@ -292,7 +294,21 @@ LIMITATION_MARKERS = [
 
 def infer_card_evidence_level(abstract: str, paper_text: str) -> str:
     supplemental = normalize_space(paper_text)
-    if len(supplemental) >= 800:
+    lower = supplemental.lower()
+    full_text_markers = [
+        "method",
+        "experiment",
+        "results",
+        "dataset",
+        "baseline",
+        "ablation",
+        "evaluation",
+        "we propose",
+        "we compare",
+        "we evaluate",
+    ]
+    marker_count = sum(1 for marker in full_text_markers if marker in lower)
+    if len(supplemental) >= 800 or (len(supplemental) >= 220 and marker_count >= 3):
         return "full_text"
     if normalize_space(abstract) or supplemental:
         return "abstract_only"
@@ -310,7 +326,13 @@ def apply_evidence_boundary_to_sections(
         PaperCardSection(
             id=section.id,
             title=section.title,
-            content=f"{boundary} {section.content}",
+            content=(
+                f"{boundary}\n"
+                f"阅读提纲：阅读原文时应重点核验「{section.title}」对应的证据。\n"
+                f"当前可见线索：{section.content}\n"
+                f"证据缺口：{evidence_gap_sentence(evidence_level)}\n"
+                "需要验证的问题：补充 PDF/正文后，检查这一段是否有原文方法、实验表、消融或失败样本支撑。"
+            ),
         )
         for section in sections
     ]
@@ -320,7 +342,7 @@ def evidence_boundary_sentence(evidence_level: str) -> str:
     if evidence_level == "metadata_only":
         return (
             "证据边界（metadata_only）：当前没有 abstract/PDF/正文，下面是基于标题和元数据的阅读提纲，"
-            "不是全文级深读结论。"
+            "不是完整正文阅读结论。"
         )
     return (
         "证据边界（abstract_only）：当前没有 PDF/完整正文，下面是基于标题、摘要和可选片段的阅读提纲，"
@@ -328,14 +350,32 @@ def evidence_boundary_sentence(evidence_level: str) -> str:
     )
 
 
+def evidence_gap_sentence(evidence_level: str) -> str:
+    if evidence_level == "metadata_only":
+        return "缺少 abstract、method、experiment、baseline、dataset、metric 和 failure case 原文证据。"
+    return "缺少 PDF/完整正文中的 method、experiment、baseline、ablation、failure case 和表格证据。"
+
+
 def extract_paper_signals(title: str, abstract: str, paper_text: str = "", venue: str = "") -> PaperSignals:
-    combined = normalize_space(f"{title}. {abstract} {paper_text}")
-    evidence_text = normalize_space(f"{abstract} {paper_text}") or combined
+    title_text = normalize_space(title)
+    abstract_text = normalize_space(abstract)
+    full_text = normalize_space(paper_text)
+    combined = normalize_space(f"{title_text}. {abstract_text} {full_text}")
+    evidence_text = full_text or abstract_text or combined
     contribution_type = infer_contribution_type(title, combined, venue)
     task = extract_task_signal(title, abstract, combined, contribution_type)
     method = extract_method_signal(evidence_text, contribution_type)
-    dataset = extract_named_signal(combined, DATASET_NAMES, "未发现明确 dataset/benchmark 名称")
-    metric = extract_named_signal(combined, METRIC_NAMES, "未发现明确 metric/evaluation 指标")
+    dataset = extract_named_signal_priority(
+        [full_text, abstract_text, title_text],
+        DATASET_NAMES,
+        "未发现明确 dataset/benchmark 名称",
+    )
+    metric = extract_named_signal_priority(
+        [full_text, abstract_text, title_text],
+        METRIC_NAMES,
+        "未发现明确 metric/evaluation 指标",
+    )
+    baseline = extract_baseline_signal(evidence_text)
     claim = extract_claim_signal(evidence_text, title)
     limitation = extract_limitation_signal(evidence_text)
     signals = PaperSignals(
@@ -343,6 +383,7 @@ def extract_paper_signals(title: str, abstract: str, paper_text: str = "", venue
         method=method,
         dataset=dataset,
         metric=metric,
+        baseline=baseline,
         claim=claim,
         limitation=limitation,
         contribution_type=contribution_type,
@@ -350,7 +391,7 @@ def extract_paper_signals(title: str, abstract: str, paper_text: str = "", venue
     )
     signals.missing_signals = [
         field
-        for field in ["method", "dataset", "metric", "claim", "limitation"]
+        for field in ["method", "dataset", "metric", "baseline", "claim", "limitation"]
         if not has_signal(getattr(signals, field))
     ]
     return signals
@@ -429,6 +470,34 @@ def extract_named_signal(text: str, names: list[str], missing_reason: str) -> st
     return insufficient(missing_reason)
 
 
+def extract_named_signal_priority(texts: list[str], names: list[str], missing_reason: str) -> str:
+    for text in texts:
+        if not normalize_space(text):
+            continue
+        signal = extract_named_signal(text, names, missing_reason)
+        if has_signal(signal):
+            return signal
+    return insufficient(missing_reason)
+
+
+def extract_baseline_signal(text: str) -> str:
+    normalized = normalize_space(text)
+    if not normalized:
+        return insufficient("摘要/正文未发现 baseline、comparison 或对照方法")
+    patterns = [
+        r"\b[Bb]aselines?\s*(?:include|are|:)\s*([^.;。！？!?]{2,160})",
+        r"\b[Cc]ompared\s+(?:with|against|to)\s+([^.;。！？!?]{2,140})",
+        r"\b[Cc]omparison\s+(?:with|against|to)\s+([^.;。！？!?]{2,140})",
+        r"\b[Oo]utperform(?:s|ed|ing)?\s+([^.;。！？!?]{2,120})",
+        r"\bvs\.?\s+([^.;。！？!?]{2,100})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized)
+        if match:
+            return f"Baseline evidence: {truncate_text(match.group(1), 180)}"
+    return insufficient("未发现 Baseline:, compared with, outperform, vs. 或 comparison 等对照信号")
+
+
 def find_sentence(text: str, markers: list[str]) -> str:
     for sentence in split_sentences(text):
         lower = sentence.lower()
@@ -464,7 +533,7 @@ def has_signal(value: str) -> bool:
 def render_signal_summary(signals: PaperSignals) -> str:
     return (
         f"task={signals.task}; method={signals.method}; dataset={signals.dataset}; "
-        f"metric={signals.metric}; claim={signals.claim}; limitation={signals.limitation}; "
+        f"metric={signals.metric}; baseline={signals.baseline}; claim={signals.claim}; limitation={signals.limitation}; "
         f"type={signals.contribution_type}"
     )
 
@@ -474,6 +543,7 @@ def missing_signal_sentence(signals: PaperSignals, fields: list[str]) -> str:
         "method": "方法机制",
         "dataset": "数据集/benchmark",
         "metric": "评价指标",
+        "baseline": "对照 baseline",
         "claim": "核心 claim",
         "limitation": "已有不足",
     }
@@ -539,10 +609,10 @@ def build_method_pipeline_section(signals: PaperSignals) -> str:
     return (
         f"Input: 面向 `{signals.task}` 的样本或实验设置，当前数据集信号为 `{signals.dataset}`。\n"
         f"Processing: {signals.method}\n"
-        f"Output: 用 `{signals.metric}` 支撑或反驳 `{signals.claim}`。\n"
+        f"Output: 用 `{signals.metric}` 相对 `{signals.baseline}` 支撑或反驳 `{signals.claim}`。\n"
         "真实例子：如果输入是一篇 VLM hallucination benchmark 论文，不能只记录最终答案是否正确，"
         "还要记录视觉证据是否被使用、负样本如何构造、指标是否能暴露 answer-correct-evidence-wrong 的失败模式。"
-        f"{missing_signal_sentence(signals, ['dataset', 'metric', 'claim'])}"
+        f"{missing_signal_sentence(signals, ['dataset', 'metric', 'baseline', 'claim'])}"
     )
 
 
@@ -553,16 +623,16 @@ def build_experiment_logic_section(signals: PaperSignals) -> str:
             "实验层面应改为验证它的文献图谱是否完整：它覆盖了哪些范式，遗漏了哪些近三年关键 baseline，"
             "以及分类轴是否能帮助研究者定位真实 gap。"
         )
-    if not all(has_signal(getattr(signals, field)) for field in ["claim", "dataset", "metric"]):
+    if not all(has_signal(getattr(signals, field)) for field in ["claim", "dataset", "metric", "baseline"]):
         return (
             f"Question: {signals.claim}\n"
-            "Experiment: 当前证据不足，缺少可闭环的 claim/dataset/metric 组合。"
-            f"{missing_signal_sentence(signals, ['claim', 'dataset', 'metric'])}\n"
+            "Experiment: 当前证据不足，缺少可闭环的 claim/dataset/metric/baseline 组合。"
+            f"{missing_signal_sentence(signals, ['claim', 'dataset', 'metric', 'baseline'])}\n"
             "Answer: 不能直接判断论文实验是否支持 claim；需要补充 PDF 实验表、ablation、baseline 和数据构造细节后再评估。"
         )
     return (
         f"提出了什么问题 -> `{signals.task}` 是否被论文方法真正改善或更好测量。\n"
-        f"设计了什么实验 -> 在 `{signals.dataset}` 上使用 `{signals.metric}`，对照 baseline 来验证 `{signals.claim}`。\n"
+        f"设计了什么实验 -> 在 `{signals.dataset}` 上使用 `{signals.metric}`，对照 `{signals.baseline}` 来验证 `{signals.claim}`。\n"
         "问题的答案是什么 -> 如果指标提升来自核心机制且失败样本分析能支持 claim，则实验较可信；"
         "如果只在有利 benchmark 上提升或缺少反例切片，则 claim 仍然脆弱。"
     )
@@ -576,10 +646,10 @@ def build_takeaways_section(signals: PaperSignals, focus: str) -> str:
         )
     return (
         f"任务层面：这篇论文应被理解为 `{signals.task}` 下的 `{signals.contribution_type}` 工作。"
-        f" 证据层面：可信判断依赖 `{signals.claim}`、`{signals.dataset}` 和 `{signals.metric}` 是否形成闭环。"
+        f" 证据层面：可信判断依赖 `{signals.claim}`、`{signals.dataset}`、`{signals.metric}` 和 `{signals.baseline}` 是否形成闭环。"
         f" 方法层面：{signals.method}"
         f" 迁移层面：围绕 `{focus}` 做后续研究时，应优先攻击最脆弱假设，而不是只延续论文的平均指标。"
-        f"{missing_signal_sentence(signals, ['method', 'dataset', 'metric', 'claim'])}"
+        f"{missing_signal_sentence(signals, ['method', 'dataset', 'metric', 'baseline', 'claim'])}"
     )
 
 
@@ -632,23 +702,41 @@ def build_minimal_reproduction(signals: PaperSignals, title: str) -> str:
             "更合适的一周任务是：用它的分类轴抽取 10 篇候选方法/benchmark 论文，检查是否遗漏近三年关键 baseline，"
             "并产出一个可复现论文图谱，而不是复现模型性能。"
         )
-    missing = [field for field in ["claim", "dataset", "metric"] if not has_signal(getattr(signals, field))]
+    required_fields = ["claim", "dataset", "metric", "baseline"]
+    missing = [field for field in required_fields if not has_signal(getattr(signals, field))]
     if missing:
+        checklist = "\n".join(
+            f"- [ ] 补充 {field}: {unblock_hint_for_signal(field)}"
+            for field in missing
+        )
         return (
-            f"需要补充 PDF/实验细节：当前缺少 {', '.join(missing)}，无法设计可信的一周最小复现实验。"
-            "补齐后，最小复现必须绑定一个具体 claim、一个具体 dataset/benchmark 和一个具体 metric，"
-            "否则会退化成泛泛跑 baseline。"
+            "Status: blocked\n"
+            f"当前缺少 {', '.join(missing)}，不能生成可信的一周最小复现实验。\n"
+            "Unblock checklist:\n"
+            f"{checklist}\n"
+            "补齐后，最小复现必须同时绑定 claim + dataset + metric + baseline；否则只会退化成泛泛跑模型。"
         )
     return (
+        "Status: ready\n"
         f"Claim to test: `{signals.claim}`\n"
         f"Minimal dataset/subset: 从 `{signals.dataset}` 中抽 50-100 条与核心失败模式直接相关的样本。\n"
-        "Baseline: 选择一个公开可调用的强 baseline 和一个简单 baseline。\n"
+        f"Baseline: {signals.baseline}；同时加入一个 simple/no-op baseline。\n"
         "Compute: 优先单卡推理或 API 推理，不做大规模训练。\n"
         f"Metric: 同时记录论文指标 `{signals.metric}` 和一个反例指标。\n"
         "Steps: 1) 复现输入格式；2) 跑 baseline；3) 按论文指标和反例指标同时评价；4) 手动检查失败样本；5) 写出复现实验报告。\n"
         f"Success criterion: 在小规模设置下观察到 `{title}` 的核心现象，并能定位至少一类稳定失败模式。\n"
         "Failure criterion: 现象只出现在少量样本或高度依赖人工挑选，无法支持论文主张。"
     )
+
+
+def unblock_hint_for_signal(field: str) -> str:
+    hints = {
+        "claim": "从 introduction/abstract/results 中找到 Claim: ... 或 we show/demonstrate 句子。",
+        "dataset": "从 experiment setup 中找到 Dataset: ... 或 benchmark/subset 名称。",
+        "metric": "从 evaluation metrics 中找到 Metric: ...，至少包含论文主指标。",
+        "baseline": "从 comparisons 中找到 Baseline: ...、compared with、vs. 或 outperform 对照对象。",
+    }
+    return hints.get(field, "补充原文证据。")
 
 
 def build_counterexample(signals: PaperSignals, focus: str) -> str:
@@ -686,7 +774,7 @@ def build_follow_up_idea(signals: PaperSignals, focus: str) -> str:
 
 def render_card_markdown(card: DeepPaperCard, paper: dict[str, Any]) -> str:
     header = [
-        "# Deep Paper Card",
+        f"# {card_markdown_title(card.evidence_level)}",
         f"Paper: {card.paper_title}",
         f"Authors: {paper.get('authors') or 'unknown'}",
         f"Venue/Year: {paper.get('venue') or paper.get('source') or 'unknown'} / {paper.get('year') or 'unknown'}",
@@ -698,6 +786,7 @@ def render_card_markdown(card: DeepPaperCard, paper: dict[str, Any]) -> str:
         f"- Method: {card.signals.method}",
         f"- Dataset: {card.signals.dataset}",
         f"- Metric: {card.signals.metric}",
+        f"- Baseline: {card.signals.baseline}",
         f"- Claim: {card.signals.claim}",
         f"- Limitation: {card.signals.limitation}",
         f"- Missing signals: {', '.join(card.signals.missing_signals) if card.signals.missing_signals else 'none'}",
@@ -707,16 +796,29 @@ def render_card_markdown(card: DeepPaperCard, paper: dict[str, Any]) -> str:
     return "\n".join(header + sections)
 
 
+def card_markdown_title(evidence_level: str) -> str:
+    if evidence_level == "full_text":
+        return "Full-text Paper Card"
+    if evidence_level == "abstract_only":
+        return "Abstract-level Paper Card"
+    return "Metadata Reading Outline"
+
+
 def render_card_json(card: DeepPaperCard, paper: dict[str, Any]) -> str:
     return json.dumps(
         {
             "paper": {
+                "id": paper.get("id") or "",
+                "project_id": paper.get("project_id") or "",
                 "title": paper.get("title") or card.paper_title,
                 "authors": paper.get("authors") or "",
+                "abstract": paper.get("abstract") or "",
                 "year": paper.get("year") or "",
+                "type": paper.get("type") or "",
                 "venue": paper.get("venue") or "",
                 "source": paper.get("source") or "",
                 "url": paper.get("url") or "",
+                "priority": paper.get("priority") or "",
             },
             "card": card.to_dict(),
             "evidence_level": card.evidence_level,

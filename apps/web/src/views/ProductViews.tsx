@@ -835,6 +835,7 @@ export function ActiveView({
             artifactCount={artifactCount}
             apiStatus={apiStatus}
             card={latestPaperCard}
+            directionReview={directionReview}
             artifactSummaries={artifactSummaries}
             isGenerating={paperCardBusy}
             onGenerate={onGeneratePaperCard}
@@ -1543,6 +1544,7 @@ export function ProductPaperReaderView({
   artifactSummaries,
   apiStatus,
   card,
+  directionReview,
   isGenerating,
   onGenerate,
   onInputChange,
@@ -1560,6 +1562,7 @@ export function ProductPaperReaderView({
   artifactSummaries: ApiArtifactSummary[];
   apiStatus: ApiStatus;
   card: ApiPaperCard | null;
+  directionReview: ApiDirectionReviewResponse | null;
   isGenerating: boolean;
   onGenerate: () => void;
   onInputChange: (value: string) => void;
@@ -1573,8 +1576,13 @@ export function ProductPaperReaderView({
 }) {
   const [activeQuestion, setActiveQuestion] = useState(1);
   const selectedPaper = papers.find((paper) => paper.id === selectedPaperId) ?? papers[0];
-  const cardSections = card?.sections ?? [];
-  const signals = card?.signals;
+  const directionCard = selectedPaper ? findDirectionPaperCard(directionReview, selectedPaper) : null;
+  const displayCard = isCardForSelectedPaper(card, selectedPaper) ? card : directionCard;
+  const cardSections = displayCard?.sections ?? [];
+  const signals = displayCard?.signals;
+  const evidenceLevel = displayCard?.evidence_level ?? "metadata_only";
+  const readerTitle = formatReaderTitle(evidenceLevel, Boolean(displayCard));
+  const missingEvidence = buildMissingEvidenceChecklist(displayCard);
   const expectedSections = [
     "研究问题与背景",
     "已有研究与不足",
@@ -1594,6 +1602,7 @@ export function ProductPaperReaderView({
     signals?.method ? `method: ${signals.method}` : "",
     signals?.dataset ? `dataset: ${signals.dataset}` : "",
     signals?.metric ? `metric: ${signals.metric}` : "",
+    signals?.baseline ? `baseline: ${signals.baseline}` : "",
     signals?.claim ? `claim: ${signals.claim}` : "",
   ].filter(Boolean);
   const selectedSummary = selectedPaper?.abstract || selectedPaper?.relation || "";
@@ -1620,12 +1629,12 @@ export function ProductPaperReaderView({
           </button>
           <div className="reader-title-row">
             <div>
-              <h1>论文精读 · Deep Paper Card</h1>
+              <h1>{readerTitle}</h1>
               <p>
                 {selectedPaper?.title ?? "尚未选择论文"}
                 {selectedPaper?.venue || selectedPaper?.year ? <span>{selectedPaper.venue || selectedPaper.year}</span> : null}
               </p>
-              <small>只展示当前项目真实论文和已生成的 Paper Card；没有生成时不会填充示例结论。</small>
+              <small>只展示当前项目真实论文和已生成的 Paper Card；摘要级/元数据级卡片不会被标成完整正文阅读。</small>
             </div>
             <div className="reader-actions">
               <button
@@ -1659,11 +1668,21 @@ export function ProductPaperReaderView({
           <article className="summary-card">
             <Sparkles size={23} />
             <div>
-              <strong>{card ? "Paper Card 摘要" : "待生成 Paper Card"}</strong>
+              <strong>{displayCard ? `${formatEvidenceLevel(evidenceLevel)}卡片` : "待生成 Paper Card"}</strong>
               <p>{selectedSummary || "请先在 Paper Table 选择论文，或粘贴摘要/正文片段后生成 Paper Card。"}</p>
-              {card?.evidence_level ? <small>Evidence level: {formatEvidenceLevel(card.evidence_level)}</small> : null}
+              {displayCard?.evidence_level ? <small>Evidence level: {formatEvidenceLevel(displayCard.evidence_level)}</small> : null}
             </div>
           </article>
+
+          {missingEvidence.length ? (
+            <section className="reader-empty-state compact" aria-label="missing evidence checklist">
+              <AlertTriangle size={19} />
+              <div>
+                <h3>Missing evidence checklist</h3>
+                <p>{missingEvidence.join("；")}</p>
+              </div>
+            </section>
+          ) : null}
 
           <section className="question-board">
             <div className="question-board-head">
@@ -1725,7 +1744,7 @@ export function ProductPaperReaderView({
                 <span>Priority</span>
               </div>
               <div>
-                <strong>{card?.evidence_level ? formatEvidenceLevel(card.evidence_level) : "N/A"}</strong>
+                <strong>{displayCard?.evidence_level ? formatEvidenceLevel(displayCard.evidence_level) : "N/A"}</strong>
                 <span>Evidence</span>
               </div>
             </div>
@@ -1734,20 +1753,20 @@ export function ProductPaperReaderView({
           <section className="evidence-chain-card">
             <div className="aside-heading compact">
               <h2>生成状态</h2>
-              <span>{card ? "已生成" : "待生成"}</span>
+              <span>{displayCard ? "已生成" : "待生成"}</span>
             </div>
             <div className="chain-step">
               <span>1</span>
               <div>
                 <strong>最脆弱假设</strong>
-                <p>{card?.weakest_assumption || "尚未生成，系统不会编造论文局限。"}</p>
+                <p>{displayCard?.weakest_assumption || "尚未生成，系统不会编造论文局限。"}</p>
               </div>
             </div>
             <div className="chain-step">
               <span>2</span>
               <div>
                 <strong>一周最小复现</strong>
-                <p>{card?.minimal_reproduction || "需要生成 Paper Card 后才能给出具体实验切口。"}</p>
+                <p>{displayCard?.minimal_reproduction || "需要生成 Paper Card 后才能给出具体实验切口。"}</p>
               </div>
             </div>
             <div className="chain-step">
@@ -1755,8 +1774,8 @@ export function ProductPaperReaderView({
               <div>
                 <strong>输入来源</strong>
                 <p>
-                  {card?.evidence_level
-                    ? `${formatEvidenceLevel(card.evidence_level)}；${card.evidence_level === "full_text" ? "包含用户提供正文片段。" : "没有 PDF/完整正文，不应视为全文级深读。"}`
+                  {displayCard?.evidence_level
+                    ? `${formatEvidenceLevel(displayCard.evidence_level)}；${displayCard.evidence_level === "full_text" ? "包含用户提供正文片段。" : "没有 PDF/完整正文，只能作为阅读提纲或摘要级分析。"}`
                     : selectedPaper
                       ? "来自当前项目 Paper Table。"
                       : supplementalInput.trim()
@@ -1779,6 +1798,7 @@ export function ProductPaperReaderView({
                   ["Method", signals.method],
                   ["Dataset", signals.dataset],
                   ["Metric", signals.metric],
+                  ["Baseline", signals.baseline],
                   ["Claim", signals.claim],
                   ["Limitation", signals.limitation],
                 ].map(([label, value], index) => (
@@ -1802,6 +1822,80 @@ export function ProductPaperReaderView({
       </section>
     </div>
   );
+}
+
+function isCardForSelectedPaper(card: ApiPaperCard | null, paper: PaperRow | undefined): boolean {
+  if (!card || !paper) {
+    return false;
+  }
+  if (card.paper_id && card.paper_id === paper.id) {
+    return true;
+  }
+  return false;
+}
+
+function findDirectionPaperCard(
+  directionReview: ApiDirectionReviewResponse | null,
+  paper: PaperRow,
+): ApiPaperCard | null {
+  const reading = (directionReview?.papers ?? []).find((item) => {
+    if (item.paper.id && item.paper.id === paper.id) {
+      return true;
+    }
+    return stableTitleKey(item.paper.title) === stableTitleKey(paper.title);
+  });
+  return reading ? directionReadingToPaperCard(reading) : null;
+}
+
+function directionReadingToPaperCard(reading: ApiDirectionPaperReading): ApiPaperCard {
+  return {
+    id: `direction-card-${reading.paper.id || stableTitleKey(reading.paper.title)}`,
+    project_id: reading.paper.project_id,
+    paper_id: reading.paper.id || null,
+    artifact_id: null,
+    evidence_level: reading.evidence_level,
+    signals: reading.signals,
+    sections: reading.sections,
+    weakest_assumption: reading.weakest_assumption,
+    minimal_reproduction: reading.minimal_reproduction,
+    created_at: reading.paper.created_at,
+  };
+}
+
+function stableTitleKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/gi, "");
+}
+
+function formatReaderTitle(evidenceLevel: string, hasCard: boolean): string {
+  if (!hasCard) {
+    return "论文阅读 · Paper Card";
+  }
+  if (evidenceLevel === "full_text") {
+    return "全文级深读 · Paper Card";
+  }
+  if (evidenceLevel === "abstract_only") {
+    return "摘要级阅读 · Paper Card";
+  }
+  return "阅读提纲 · Paper Card";
+}
+
+function buildMissingEvidenceChecklist(card: ApiPaperCard | null): string[] {
+  if (!card) {
+    return [];
+  }
+  const checklist: string[] = [];
+  if (card.evidence_level === "metadata_only") {
+    checklist.push("缺 abstract/PDF/正文");
+  }
+  if (card.evidence_level === "abstract_only") {
+    checklist.push("缺 PDF/完整正文、method/experiment 表格和 failure case");
+  }
+  const missingSignals = card.signals?.missing_signals ?? [];
+  missingSignals.forEach((signal) => checklist.push(`缺 ${signal}`));
+  if (card.minimal_reproduction.toLowerCase().includes("status: blocked")) {
+    checklist.push("最小复现实验未解锁：需要补齐 claim + dataset + metric + baseline");
+  }
+  return [...new Set(checklist)];
 }
 
 function ConferenceMarquee() {

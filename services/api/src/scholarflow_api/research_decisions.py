@@ -472,6 +472,7 @@ def is_survey_like(paper: dict[str, Any], card: dict[str, Any]) -> bool:
 def is_invalid_minimal_reproduction(value: str) -> bool:
     lower = value.lower()
     invalid_markers = [
+        "status: blocked",
         "需要补充 pdf",
         "缺少 claim",
         "缺少可复现 anchor",

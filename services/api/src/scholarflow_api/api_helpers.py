@@ -114,15 +114,47 @@ def fetch_project_paper_card_dicts(connection, project_id: str) -> list[dict]:
             p.relevance_score AS paper_relevance_score,
             p.relevance_quality AS paper_relevance_quality,
             p.matched_terms_json AS paper_matched_terms_json,
-            p.review_required AS paper_review_required
+            p.review_required AS paper_review_required,
+            a.content_json AS artifact_content_json
         FROM paper_cards pc
         LEFT JOIN papers p ON p.id = pc.paper_id
+        LEFT JOIN artifacts a ON a.id = pc.artifact_id
         WHERE pc.project_id = ?
         ORDER BY pc.created_at DESC, pc.rowid DESC
         """,
         (project_id,),
     ).fetchall()
-    return [dict(row) for row in rows]
+    return [enrich_paper_card_row(dict(row)) for row in rows]
+
+
+def enrich_paper_card_row(row: dict) -> dict:
+    payload = parse_json_object(row.pop("artifact_content_json", "") or "")
+    card_payload = payload.get("card") if isinstance(payload.get("card"), dict) else payload
+    signals = card_payload.get("signals") if isinstance(card_payload.get("signals"), dict) else payload.get("signals")
+    sections = card_payload.get("sections") if isinstance(card_payload.get("sections"), list) else payload.get("sections")
+    if isinstance(signals, dict):
+        row["signals"] = signals
+        row["signals_json"] = json.dumps(signals, ensure_ascii=False)
+    if isinstance(sections, list) and sections:
+        row["sections_json"] = json.dumps(sections, ensure_ascii=False)
+    row["evidence_level"] = normalize_card_evidence_level(card_payload.get("evidence_level") or payload.get("evidence_level"))
+    row["artifact_id"] = row.get("artifact_id") or payload.get("artifact_id") or ""
+    return row
+
+
+def parse_json_object(value: str) -> dict:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def normalize_card_evidence_level(value) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if normalized in {"metadata_only", "abstract_only", "full_text"}:
+        return normalized
+    return "metadata_only"
 
 
 def fetch_read_paper_titles(connection, project_id: str) -> list[str]:

@@ -690,8 +690,40 @@ class ResearchQualitySmokeTest(unittest.TestCase):
 
         self.assertEqual(metadata_card.evidence_level, "metadata_only")
         self.assertEqual(abstract_card.evidence_level, "abstract_only")
-        self.assertIn("不是全文级深读结论", metadata_card.sections[0].content)
+        self.assertNotIn("全文级深读", metadata_card.sections[0].content)
+        self.assertIn("不是完整正文阅读结论", metadata_card.sections[0].content)
+        self.assertTrue(all("证据边界" in section.content for section in abstract_card.sections))
         self.assertIn("不能当作已讲清整篇论文", abstract_card.sections[0].content)
+        self.assertIn("Status: blocked", abstract_card.minimal_reproduction)
+
+    def test_full_text_card_extracts_dataset_metric_baseline_and_ready_minimal_reproduction(self) -> None:
+        from scholarflow_api.paper_card import generate_deep_paper_card
+
+        paper_text = (
+            "We propose a grounded evidence evaluation method for visual question answering. "
+            "The method builds contrastive visual evidence and evaluates answers with evidence rationales. "
+            "Experiments use Dataset: POPE, A-OKVQA and GQA. "
+            "Evaluation metrics include accuracy and F1 for answer correctness and grounding faithfulness. "
+            "Baselines include LLaVA, BLIP-2, and a no-grounding prompting baseline. "
+            "Compared with LLaVA, our method improves evidence faithfulness and reduces hallucination rate. "
+            "We show the benchmark exposes object hallucination failures under conflicting visual evidence."
+        )
+        card = generate_deep_paper_card(
+            {
+                "title": "Grounded Evidence Evaluation for Visual Question Answering",
+                "abstract": "We propose a grounded evidence evaluation method for VQA.",
+            },
+            paper_text,
+        )
+
+        self.assertEqual(card.evidence_level, "full_text")
+        self.assertIn("POPE", card.signals.dataset)
+        self.assertIn("A-OKVQA", card.signals.dataset)
+        self.assertIn("GQA", card.signals.dataset)
+        self.assertTrue("accuracy" in card.signals.metric.lower() or "F1" in card.signals.metric)
+        self.assertIn("LLaVA", card.signals.baseline)
+        self.assertIn("Status: ready", card.minimal_reproduction)
+        self.assertIn("Baseline:", card.minimal_reproduction)
 
     def test_memory_and_gap_do_not_use_off_topic_papers(self) -> None:
         from scholarflow_api.paper_card import generate_deep_paper_card

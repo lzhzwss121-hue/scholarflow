@@ -155,6 +155,7 @@ class PaperSignals(BaseModel):
     method: str = ""
     dataset: str = ""
     metric: str = ""
+    baseline: str = ""
     claim: str = ""
     limitation: str = ""
     contribution_type: str = ""

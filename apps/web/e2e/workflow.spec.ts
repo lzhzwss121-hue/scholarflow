@@ -707,17 +707,20 @@ test("hydrates real direction review and memory artifact shapes without blank vi
       {
         paper,
         abstract_translation: "本文研究视觉证据约束下的幻觉评估。",
+        evidence_level: "abstract_only",
         signals: {
           task: "VLM hallucination evaluation",
           method: "benchmark construction",
           dataset: "counterfactual visual grounding set",
           metric: "grounding faithfulness",
+          baseline: "LLaVA and POPE-style hallucination baseline",
           claim: "benchmark exposes object hallucination",
           limitation: "negative samples may be narrow",
           contribution_type: "benchmark",
           missing_signals: [],
         },
         card: {
+          evidence_level: "abstract_only",
           sections: [
             {
               id: "section_1",
@@ -907,6 +910,11 @@ test("hydrates real direction review and memory artifact shapes without blank vi
   await expect(page.getByRole("button", { name: /Artifact Shape Paper/ }).first()).toBeVisible();
   await page.getByRole("button", { name: /Artifact Shape Paper/ }).first().click();
   await expect(page.getByText("研究问题与背景")).toBeVisible();
+
+  await page.goto("/#paper-reader");
+  await expect(page.getByRole("heading", { name: "摘要级阅读 · Paper Card" })).toBeVisible();
+  await expect(page.getByText("研究问题与背景")).toBeVisible();
+  await expect(page.getByText("待生成 Paper Card")).toHaveCount(0);
 
   await page.goto("/#paper-memory");
   await expect(page.getByText("Memory-Grounded Answer")).toBeVisible();

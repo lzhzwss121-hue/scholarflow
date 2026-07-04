@@ -272,6 +272,7 @@ def normalize_signals(signals: PaperSignals | dict[str, Any] | None) -> PaperSig
             method=normalize_space(signals.get("method", "")),
             dataset=normalize_space(signals.get("dataset", "")),
             metric=normalize_space(signals.get("metric", "")),
+            baseline=normalize_space(signals.get("baseline", "")),
             claim=normalize_space(signals.get("claim", "")),
             limitation=normalize_space(signals.get("limitation", "")),
             contribution_type=normalize_space(signals.get("contribution_type", "")),
@@ -282,10 +283,11 @@ def normalize_signals(signals: PaperSignals | dict[str, Any] | None) -> PaperSig
         method="",
         dataset="",
         metric="",
+        baseline="",
         claim="",
         limitation="",
         contribution_type="",
-        missing_signals=["method", "dataset", "metric", "claim", "limitation"],
+        missing_signals=["method", "dataset", "metric", "baseline", "claim", "limitation"],
     )
 
 

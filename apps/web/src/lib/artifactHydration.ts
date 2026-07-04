@@ -179,7 +179,7 @@ export function normalizeDirectionReading(
   return {
     paper: normalizeApiPaper(reading.paper, artifactProjectId, artifactCreatedAt),
     abstract_translation: asString(reading.abstract_translation),
-    evidence_level: firstString(reading.evidence_level, card.evidence_level) as ApiDirectionPaperReading["evidence_level"],
+    evidence_level: (normalizeEvidenceLevel(firstString(reading.evidence_level, card.evidence_level)) || "metadata_only") as ApiDirectionPaperReading["evidence_level"],
     signals: normalizePaperSignals(reading.signals ?? card.signals),
     sections: sectionPayloads.map(normalizePaperCardSection),
     research_sight: normalizeResearchSight(reading.research_sight),
@@ -286,6 +286,7 @@ function normalizePaperSignals(payload: unknown): ApiPaperSignals | undefined {
     method: asString(payload.method),
     dataset: asString(payload.dataset),
     metric: asString(payload.metric),
+    baseline: asString(payload.baseline),
     claim: asString(payload.claim),
     limitation: asString(payload.limitation),
     contribution_type: asString(payload.contribution_type),
@@ -333,7 +334,7 @@ export function normalizeResearchSight(payload: unknown): ApiResearchSight {
 export function normalizeEvidencePack(payload: unknown): ApiEvidencePack {
   const pack: Record<string, unknown> = isRecord(payload) ? payload : {};
   return {
-    evidence_level: asString(pack.evidence_level) || "unknown",
+    evidence_level: normalizeEvidenceLevel(asString(pack.evidence_level)) || "unknown",
     confidence: asString(pack.confidence) || "low",
     snippets: Array.isArray(pack.snippets)
       ? pack.snippets.map((item, index) => {
@@ -351,6 +352,20 @@ export function normalizeEvidencePack(payload: unknown): ApiEvidencePack {
     missing_evidence: asStringArray(pack.missing_evidence),
     grounding_summary: asString(pack.grounding_summary) || "暂无 EvidencePack",
   };
+}
+
+function normalizeEvidenceLevel(value: string): string {
+  const normalized = value.trim().toLowerCase().replace(/[-+]/g, "_");
+  if (["metadata_only", "abstract_only", "full_text"].includes(normalized)) {
+    return normalized;
+  }
+  if (normalized === "metadata_abstract" || normalized === "metadata_abstract_paper_card") {
+    return "abstract_only";
+  }
+  if (normalized === "metadata" || normalized === "metadataonly") {
+    return "metadata_only";
+  }
+  return "";
 }
 
 function hydrateDirectionReview(items: ApiArtifact[]): ApiDirectionReviewResponse | null {
@@ -463,21 +478,22 @@ function hydratePaperCard(items: ApiArtifact[]): ApiPaperCard | null {
   const artifact = findArtifactPayload(
     items,
     (title) => title.includes("paper_card"),
-    (payload) => isRecord(payload.card) && Array.isArray(payload.card.sections),
+    (payload) => (isRecord(payload.card) && Array.isArray(payload.card.sections)) || Array.isArray(payload.sections),
   );
-  if (!artifact || !isRecord(artifact.payload.card)) {
+  if (!artifact) {
     return null;
   }
-  const card = artifact.payload.card;
+  const card = isRecord(artifact.payload.card) ? artifact.payload.card : artifact.payload;
   const paper = isRecord(artifact.payload.paper) ? artifact.payload.paper : {};
+  const sections = Array.isArray(card.sections) ? card.sections.map(normalizePaperCardSection) : [];
   return {
     id: artifact.artifact.id,
     project_id: artifact.artifact.project_id,
     paper_id: typeof paper.id === "string" ? paper.id : null,
     artifact_id: artifact.artifact.id,
-    evidence_level: firstString(card.evidence_level, artifact.payload.evidence_level) as ApiPaperCard["evidence_level"],
-    signals: isRecord(card.signals) ? (card.signals as unknown as ApiPaperCard["signals"]) : undefined,
-    sections: Array.isArray(card.sections) ? (card.sections as ApiPaperCard["sections"]) : [],
+    evidence_level: (normalizeEvidenceLevel(firstString(card.evidence_level, artifact.payload.evidence_level)) || "metadata_only") as ApiPaperCard["evidence_level"],
+    signals: normalizePaperSignals(card.signals),
+    sections,
     weakest_assumption: typeof card.weakest_assumption === "string" ? card.weakest_assumption : "",
     minimal_reproduction: typeof card.minimal_reproduction === "string" ? card.minimal_reproduction : "",
     created_at: artifact.artifact.created_at,

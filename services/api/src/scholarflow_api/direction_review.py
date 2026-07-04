@@ -375,11 +375,13 @@ def build_direction_summary(
     focus_terms = ", ".join(infer_subtopics(direction)[:4])
     baseline_titles = [item.title for item in baseline_map.recent_strong_baselines[:2]]
     baseline_note = "; ".join(baseline_titles) if baseline_titles else "当前 baseline 信号不足，需要继续检索"
+    evidence_note = render_evidence_coverage_note(readings)
     if review_status != "complete":
         status_label = "Blocked Direction Review" if review_status == "blocked" else "Partial Direction Review"
         return (
-            f"{status_label}：本轮仅实际读取 {len(readings)}/{target_paper_count} 篇强/中相关候选论文，"
-            "低于可信方向级精读的最低阈值 5 篇，因此不能声称已完成 10 篇方向综述。"
+            f"{status_label}：本轮仅完成 {len(readings)}/{target_paper_count} 篇强/中相关候选论文的证据边界阅读，"
+            "低于可信方向级阅读的最低阈值 5 篇，因此不能声称已完成 10 篇方向综述。"
+            f"{evidence_note}"
             f"当前累计已读 {total_read_count} 篇，ScholarFlow 只能给出临时判断："
             f"`{direction}` 暂时应围绕 {focus_terms or '任务定义、评价方式和失败模式'} 继续补充候选论文。"
             f" BaselineMap 当前线索：{baseline_note}。"
@@ -388,6 +390,7 @@ def build_direction_summary(
         )
     return (
         f"基于当前累计已读 {total_read_count} 篇论文，ScholarFlow 对 `{direction}` 的理解是："
+        f"{evidence_note}"
         f"这个方向的核心不只是提出一个新模型，而是围绕 {focus_terms or '任务定义、评价方式和失败模式'} "
         "建立可验证的问题边界。近三年的高相关论文通常分成三类：第一类定义任务或 benchmark，"
         "第二类提出方法或系统改进，第三类暴露现有评测和方法的脆弱假设。"
@@ -396,6 +399,27 @@ def build_direction_summary(
         f"本轮最值得亲自精读的是：{'; '.join(top_titles) if top_titles else '当前结果不足三篇，需要继续检索或人工补充'}。"
         f" 主要 venue/source 信号包括：{', '.join(venues[:6]) if venues else 'venue metadata insufficient'}。"
     )
+
+
+def render_evidence_coverage_note(readings: list[DirectionPaperReading]) -> str:
+    counts = evidence_level_counts(readings)
+    return (
+        " 证据覆盖："
+        f"metadata_only={counts.get('metadata_only', 0)}，"
+        f"abstract_only={counts.get('abstract_only', 0)}，"
+        f"full_text={counts.get('full_text', 0)}。"
+        "Direction Review 的 complete 只表示方向级候选阅读达到阈值，不表示这些论文都经过完整正文阅读。"
+    )
+
+
+def evidence_level_counts(readings: list[DirectionPaperReading]) -> dict[str, int]:
+    counts = {"metadata_only": 0, "abstract_only": 0, "full_text": 0}
+    for reading in readings:
+        level = normalize_space(reading.card.evidence_level) or "metadata_only"
+        if level not in counts:
+            level = "metadata_only"
+        counts[level] += 1
+    return counts
 
 
 def render_direction_review_markdown(bundle: DirectionReviewBundle) -> str:
@@ -428,10 +452,11 @@ def render_direction_review_markdown(bundle: DirectionReviewBundle) -> str:
             f"Status: {bundle.review_status}",
             f"Coverage: {bundle.relevant_read_count}/{bundle.target_paper_count}",
             f"Relevance coverage: {format_relevance_coverage(bundle.relevance_coverage)}",
+            f"Evidence coverage: {render_evidence_coverage_note(bundle.readings)}",
             (
                 "Warning: this review is partial/blocked and must not be presented as a completed ten-paper direction review."
                 if bundle.review_status != "complete"
-                else "Coverage note: completed enough papers for a direction-level review."
+                else "Coverage note: completed enough strong/medium candidates for a direction-level review; this is not a full-text reading guarantee."
             ),
             f"Year range: {bundle.scope.year_range}",
             "## Scope",
