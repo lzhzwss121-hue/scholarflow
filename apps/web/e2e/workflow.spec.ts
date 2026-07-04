@@ -78,6 +78,158 @@ test("empty user project paper table does not show mock or demo papers", async (
   await expect(page.getByText(/Synthetic Example/)).toHaveCount(0);
 });
 
+test("new project page has no inert action buttons and saves drafts locally", async ({ page }) => {
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
+  });
+  await page.route("**/projects", async (route) => {
+    await route.fulfill({ json: [] });
+  });
+
+  await page.goto("/#new-project");
+  await expect(page.getByRole("button", { name: /导入已有论文/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Artificial Intelligence/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Survey/ })).toHaveCount(0);
+
+  await page.getByPlaceholder("例如：多模态大模型在视觉问答证据真实性研究").fill("科研工作台按钮回归");
+  await page.getByPlaceholder("输入关键词，多个关键词请用英文逗号分隔").fill("trustworthy agent workflow");
+  await page.getByRole("button", { name: /保存草稿/ }).click();
+  await expect(page.getByText(/草稿已保存到本机浏览器 localStorage/)).toBeVisible();
+  const savedDraft = await page.evaluate(() => window.localStorage.getItem("scholarflow.projectDraft"));
+  expect(savedDraft).toContain("trustworthy agent workflow");
+});
+
+test("paper table CSV export downloads current real papers", async ({ page }) => {
+  const project = {
+    id: "project_e2e_csv",
+    title: "CSV 导出回归",
+    description: "csv export regression",
+    keyword: "trustworthy paper export",
+    field: "Artificial Intelligence",
+    language: "zh-CN",
+    workflow: "survey-to-experiment",
+    stage: "api",
+    active_session_id: "session_e2e_csv",
+    created_at: "2026-07-02T00:00:00+00:00",
+    updated_at: "2026-07-02T00:00:00+00:00",
+  };
+  const paper = {
+    id: "paper_e2e_csv",
+    project_id: project.id,
+    title: "Trustworthy Agent Workflow Evaluation",
+    authors: "C. Researcher",
+    abstract: "Dataset: AgentBench. Metric: task success.",
+    year: "2026",
+    type: "Benchmark",
+    venue: "arXiv",
+    source: "arxiv",
+    url: "https://arxiv.org/abs/2601.00004",
+    relation: "匹配 trustworthy agent workflow。",
+    priority: "High",
+    code: "unknown",
+    relevance_score: 1.3,
+    created_at: "2026-07-02T00:00:00+00:00",
+  };
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
+  });
+  await page.route("**/projects", async (route) => {
+    await route.fulfill({ json: [project] });
+  });
+  await page.route(`**/projects/${project.id}/papers`, async (route) => {
+    await route.fulfill({ json: [paper] });
+  });
+  await page.route(`**/projects/${project.id}/timeline`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+
+  await page.goto("/#paper-table");
+  await expect(page.getByText(paper.title, { exact: true })).toBeVisible();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: /导出 CSV/ }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toContain("papers.csv");
+});
+
+test("demo project is explicit and does not pollute real project paper table", async ({ page }) => {
+  const demoProject = {
+    id: "local-bootstrap",
+    title: "ScholarFlow Demo",
+    description: "seed demo project",
+    keyword: "demo",
+    field: "Artificial Intelligence",
+    language: "zh-CN",
+    workflow: "demo-preview",
+    stage: "seed",
+    active_session_id: "session_demo",
+    created_at: "2026-07-02T00:00:00+00:00",
+    updated_at: "2026-07-02T00:00:00+00:00",
+  };
+  const realProject = {
+    id: "project_e2e_real_no_demo",
+    title: "真实用户项目",
+    description: "real project should not receive demo papers",
+    keyword: "grounded evidence evaluation",
+    field: "Artificial Intelligence",
+    language: "zh-CN",
+    workflow: "survey-to-experiment",
+    stage: "api",
+    active_session_id: "session_real_no_demo",
+    created_at: "2026-07-02T00:00:00+00:00",
+    updated_at: "2026-07-02T00:00:00+00:00",
+  };
+  const demoPaper = {
+    id: "paper_seed_demo",
+    project_id: demoProject.id,
+    title: "Synthetic Example: Demo Paper Should Stay Hidden",
+    authors: "Demo",
+    abstract: "seed paper",
+    year: "2026",
+    type: "Method",
+    venue: "Demo",
+    source: "seed",
+    url: "",
+    relation: "seed data",
+    priority: "High",
+    code: "demo",
+    relevance_score: 1,
+    created_at: "2026-07-02T00:00:00+00:00",
+  };
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
+  });
+  await page.route("**/projects", async (route) => {
+    await route.fulfill({ json: [demoProject, realProject] });
+  });
+  for (const project of [demoProject, realProject]) {
+    await page.route(`**/projects/${project.id}/timeline`, async (route) => {
+      await route.fulfill({ json: [] });
+    });
+    await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
+      await route.fulfill({ json: [] });
+    });
+  }
+  await page.route(`**/projects/${demoProject.id}/papers`, async (route) => {
+    await route.fulfill({ json: [demoPaper] });
+  });
+  await page.route(`**/projects/${realProject.id}/papers`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+
+  await page.goto("/#paper-table");
+  await expect(page.getByRole("heading", { name: realProject.title })).toBeVisible();
+  await expect(page.getByText(demoPaper.title, { exact: true })).toHaveCount(0);
+  await page.getByLabel("项目").selectOption(demoProject.id);
+  await expect(page.getByText(/Demo 项目仅用于界面预览/).first()).toBeVisible();
+  await expect(page.getByText(demoPaper.title, { exact: true })).toHaveCount(0);
+  await expect(page.getByText("本次没有可展示论文")).toBeVisible();
+});
+
 test("workflow shell exposes core steps without synthetic rows", async ({ page }) => {
   const project = {
     id: "project_e2e_shell",

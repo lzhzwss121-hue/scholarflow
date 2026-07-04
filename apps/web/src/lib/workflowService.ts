@@ -464,6 +464,10 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       setApiMessage("没有可写入的后端项目，请先创建或启动 API。");
       return;
     }
+    if (isDemoProject(activeProject.id)) {
+      blockDemoProjectAction();
+      return;
+    }
 
     const guard = beginRequest("artifact");
     const artifactToSave = artifactDraft ?? activeArtifact;
@@ -534,6 +538,10 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       setApiMessage("没有可运行的项目，请先创建项目或启动 API。");
       return;
     }
+    if (isDemoProject(activeProject.id)) {
+      blockDemoProjectAction();
+      return;
+    }
 
     const projectId = activeProject.id;
     const guard = beginRequest("agent");
@@ -568,6 +576,10 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
   async function handleExecuteAgentRun() {
     if (!agentPlan) {
       setApiMessage("请先生成 Research Plan。");
+      return;
+    }
+    if (isDemoProject(agentPlan.project_id)) {
+      blockDemoProjectAction();
       return;
     }
 
@@ -606,6 +618,10 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
   async function handleSearchLiterature() {
     if (!activeProject) {
       setApiMessage("没有可写入的后端项目，请先创建或启动 API。");
+      return;
+    }
+    if (isDemoProject(activeProject.id)) {
+      blockDemoProjectAction();
       return;
     }
 
@@ -656,6 +672,10 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       setApiMessage("没有可写入的后端项目，请先创建或启动 API。");
       return;
     }
+    if (isDemoProject(activeProject.id)) {
+      blockDemoProjectAction();
+      return;
+    }
 
     const selectedPaper = paperRows.find((paper) => paper.id === selectedPaperId) ?? paperRows[0];
     if (!selectedPaper && !paperCardInput.trim()) {
@@ -698,6 +718,10 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
   async function handleCreateDirectionReview() {
     if (!activeProject) {
       setApiMessage("没有可写入的后端项目，请先创建或启动 API。");
+      return;
+    }
+    if (isDemoProject(activeProject.id)) {
+      blockDemoProjectAction();
       return;
     }
 
@@ -764,6 +788,10 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       setApiMessage("没有可写入的后端项目，请先创建或启动 API。");
       return;
     }
+    if (isDemoProject(activeProject.id)) {
+      blockDemoProjectAction();
+      return;
+    }
 
     const projectId = activeProject.id;
     const guard = beginRequest("memory");
@@ -805,6 +833,10 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
   async function handleCreateResearchDecision() {
     if (!activeProject) {
       setApiMessage("没有可写入的后端项目，请先创建或启动 API。");
+      return;
+    }
+    if (isDemoProject(activeProject.id)) {
+      blockDemoProjectAction();
       return;
     }
 
@@ -894,6 +926,10 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     });
   }
 
+  function blockDemoProjectAction() {
+    setApiMessage("Demo 项目仅用于界面预览，不会运行或保存真实 workflow。请创建真实项目后再操作。");
+  }
+
   const viewModel: WorkflowViewModel = {
     activeArtifact,
     activeProject,
@@ -976,9 +1012,9 @@ function selectInitialProject(loadedProjects: ApiProject[]): ApiProject | null {
       if (project.id !== storedProjectId) {
         return false;
       }
-      return !isDemoProject(project.id) || latestUserProject === null;
+      return !isDemoProject(project.id);
     }) ?? null;
-  return storedProject ?? latestUserProject ?? loadedProjects[0] ?? null;
+  return storedProject ?? latestUserProject;
 }
 
 function readStoredActiveProjectId(): string | null {
@@ -1059,7 +1095,7 @@ function buildWorkflowSteps(input: {
   decisionBusy: boolean;
   researchDecision: ApiResearchDecisionResponse | null;
 }): WorkflowStepView[] {
-  const hasProject = Boolean(input.activeProject);
+  const hasProject = Boolean(input.activeProject && !isDemoProject(input.activeProject.id));
   const hasPapers = input.paperRows.length > 0;
   const directionStatus = input.directionReview?.review_status === "partial" ? "partial" : input.directionReview ? "complete" : null;
   const experimentStatus = input.researchDecision?.experiment?.status;

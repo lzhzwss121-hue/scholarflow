@@ -933,10 +933,26 @@
   text-align: left;
 }
 
+.readonly-field {
+  height: auto;
+  min-height: 45px;
+  align-items: flex-start;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  cursor: default;
+}
+
+.readonly-field small {
+  color: #737d9f;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .form-action-row {
   margin-top: 24px;
   display: grid;
-  grid-template-columns: 200px 200px 200px;
+  grid-template-columns: 200px 200px;
   gap: 17px;
 }
 
@@ -957,6 +973,13 @@
   gap: 13px;
   color: #657092;
   background: linear-gradient(180deg, rgba(248, 250, 255, 0.9), rgba(255, 255, 255, 0.74));
+}
+
+.draft-status-note {
+  margin: 12px 0 0;
+  color: #657092;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .project-status-note svg {

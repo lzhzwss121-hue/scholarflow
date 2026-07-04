@@ -19,7 +19,6 @@ import {
   GitBranch,
   LayoutDashboard,
   Lightbulb,
-  MoreHorizontal,
   Network,
   Play,
   Plus,
@@ -31,7 +30,6 @@ import {
   Table2,
   Target,
   Trophy,
-  Upload,
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -107,6 +105,8 @@ const coreViews = new Set<ViewId>([
   "experiment-planner",
 ]);
 
+const PROJECT_DRAFT_STORAGE_KEY = "scholarflow.projectDraft";
+
 export function WorkflowShell({
   activeView,
   actions,
@@ -142,10 +142,10 @@ export function WorkflowShell({
             value={viewModel.activeProject?.id ?? ""}
             onChange={(event) => actions.onSelectProject(event.target.value)}
           >
-            {!viewModel.projects.length ? <option value="">尚未创建项目</option> : null}
+            <option value="">创建真实项目开始</option>
             {viewModel.projects.map((project) => (
               <option key={project.id} value={project.id}>
-                {project.id === "local-bootstrap" ? "Demo: " : ""}
+                {isDemoProject(project) ? "Demo 项目（示例，不代表真实 workflow）: " : ""}
                 {project.title}
               </option>
             ))}
@@ -179,8 +179,14 @@ export function WorkflowShell({
         <header className="workflow-header">
           <div>
             <p className="section-kicker">Current Workspace</p>
-            <h1>{viewModel.activeProject?.title ?? "尚未选择项目"}</h1>
-            <span>{viewModel.activeProject?.workflow ?? "创建项目后开始真实科研工作流"}</span>
+            <h1>{viewModel.activeProject?.title ?? "创建真实项目开始"}</h1>
+            <span>
+              {viewModel.activeProject
+                ? isDemoProject(viewModel.activeProject)
+                  ? "Demo 项目仅用于界面预览，不代表真实 workflow 输出"
+                  : viewModel.activeProject.workflow
+                : "Demo 不会被自动选择；创建项目后开始真实科研工作流"}
+            </span>
           </div>
           <div className="workflow-header-meta">
             <span className={`api-chip ${viewModel.apiStatus}`}>{viewModel.apiStatus}</span>
@@ -1040,6 +1046,7 @@ export function ProductNewProjectView({
   paperCount: number;
   projectCount: number;
 }) {
+  const [draftStatus, setDraftStatus] = useState("");
   const suggestions = [
     {
       title: "多模态大模型在视觉问答中的证据真实性评估",
@@ -1083,6 +1090,19 @@ export function ProductNewProjectView({
       keyword: title,
       description: `围绕「${title}」检索近三年相关论文，识别证据约束、benchmark 偏差与一周可验证实验。`,
     });
+  }
+
+  function saveDraftToLocalStorage() {
+    if (!draft.title.trim() && !draft.keyword.trim() && !draft.description.trim()) {
+      setDraftStatus("请先填写标题、关键词或目标，再保存草稿。");
+      return;
+    }
+    try {
+      window.localStorage.setItem(PROJECT_DRAFT_STORAGE_KEY, JSON.stringify({ ...draft, saved_at: new Date().toISOString() }));
+      setDraftStatus("草稿已保存到本机浏览器 localStorage，不会写入后端或 GitHub。");
+    } catch {
+      setDraftStatus("草稿保存失败：浏览器阻止了 localStorage 写入。");
+    }
   }
 
   return (
@@ -1134,17 +1154,17 @@ export function ProductNewProjectView({
           </label>
           <label>
             <span>研究领域 <sup>*</sup></span>
-            <button className="select-like" type="button">
-              {draft.field || "Artificial Intelligence / Multimodal Learning"}
-              <ChevronDown size={18} />
-            </button>
+            <div className="select-like readonly-field" aria-readonly="true">
+              <span>{draft.field || "Artificial Intelligence / Multimodal Learning"}</span>
+              <small>只读，可在标题和关键词中细化方向</small>
+            </div>
           </label>
           <label>
             <span>工作流模板 <sup>*</sup></span>
-            <button className="select-like" type="button">
-              Survey → Deep Reading → Memory → Gap → Experiment
-              <ChevronDown size={18} />
-            </button>
+            <div className="select-like readonly-field" aria-readonly="true">
+              <span>Survey → Deep Reading → Memory → Gap → Experiment</span>
+              <small>固定模板</small>
+            </div>
           </label>
         </div>
 
@@ -1152,15 +1172,12 @@ export function ProductNewProjectView({
           <button className="gradient-button form-primary" disabled={apiStatus === "checking"} type="button" onClick={onCreateProject}>
             创建项目
           </button>
-          <button className="outline-button form-secondary" type="button">
-            <Upload size={17} />
-            导入已有论文
-          </button>
-          <button className="outline-button form-secondary" type="button">
+          <button className="outline-button form-secondary" type="button" onClick={saveDraftToLocalStorage}>
             <Save size={17} />
             保存草稿
           </button>
         </div>
+        {draftStatus ? <p className="draft-status-note">{draftStatus}</p> : null}
 
         <div className={`project-status-note ${apiStatus}`}>
           <Lightbulb size={18} />
@@ -1249,6 +1266,7 @@ export function ProductPaperTableView({
   const highCount = papers.filter((paper) => paper.priority === "High").length;
   const retrievalWarnings = errors.filter(isRetrievalWarning);
   const backendErrors = errors.filter((error) => !isRetrievalWarning(error));
+  const isDemo = isDemoProject(activeProject);
   const tableRows = displayPapers.map((paper) => ({
     title: paper.title,
     authors: paper.authors,
@@ -1257,7 +1275,52 @@ export function ProductPaperTableView({
     source: paper.source,
     priority: paper.priority,
     relation: paper.relation,
+    url: paper.url,
   }));
+  const csvDisabledReason = tableRows.length === 0 ? "没有可导出的真实论文。请先运行 Literature Search。" : "";
+  const searchDisabledReason = isDemo
+    ? "Demo 项目仅用于界面预览。请新建真实项目后再检索。"
+    : query.trim().length === 0
+      ? "请输入检索关键词。"
+      : apiStatus !== "online"
+        ? "API 未连接，无法检索。"
+        : "";
+  const directionDisabledReason = isDemo
+    ? "Demo 项目不能生成真实 Direction Review。"
+    : apiStatus !== "online"
+      ? "API 未连接，无法生成 Direction Review。"
+      : "";
+
+  function exportCsv() {
+    if (!tableRows.length) {
+      return;
+    }
+    const headers = ["Title", "Authors", "Year", "Type", "Source", "Priority", "Relevance Reason", "URL"];
+    const csvRows = [
+      headers,
+      ...tableRows.map((paper) => [
+        paper.title,
+        paper.authors,
+        paper.year,
+        paper.type,
+        paper.source,
+        paper.priority,
+        paper.relation,
+        paper.url,
+      ]),
+    ];
+    const csv = csvRows.map((row) => row.map(escapeCsvCell).join(",")).join("\n");
+    const blob = new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8" });
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    const projectSlug = slugify(activeProject?.title ?? "scholarflow");
+    anchor.href = url;
+    anchor.download = `${projectSlug}-papers.csv`;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    window.URL.revokeObjectURL(url);
+  }
 
   return (
     <div className="table-canvas">
@@ -1279,11 +1342,17 @@ export function ProductPaperTableView({
             <p>优先检索近三年高相关论文，并标记 Method / Benchmark / Survey / Analysis。</p>
           </div>
           <div className="table-header-actions">
-            <button className="outline-button" type="button">
+            <button className="outline-button" disabled={!tableRows.length} title={csvDisabledReason} type="button" onClick={exportCsv}>
               <Download size={17} />
               导出 CSV
             </button>
-            <button className="gradient-button" disabled={apiStatus !== "online"} type="button" onClick={() => onSelectView("direction-review")}>
+            <button
+              className="gradient-button"
+              disabled={apiStatus !== "online" || isDemo}
+              title={directionDisabledReason}
+              type="button"
+              onClick={() => onSelectView("direction-review")}
+            >
               <Sparkles size={17} />
               生成 Direction Review
             </button>
@@ -1313,7 +1382,8 @@ export function ProductPaperTableView({
           </label>
           <button
             className="outline-button search-again"
-            disabled={apiStatus !== "online" || isSearching || query.trim().length === 0}
+            disabled={apiStatus !== "online" || isSearching || query.trim().length === 0 || isDemo}
+            title={searchDisabledReason}
             type="button"
             onClick={onSearch}
           >
@@ -1323,9 +1393,6 @@ export function ProductPaperTableView({
           <button className={highOnly ? "outline-button active-filter" : "outline-button"} type="button" onClick={() => setHighOnly((value) => !value)}>
             <Filter size={17} />
             筛选 High
-          </button>
-          <button className="square-more" type="button" aria-label="more">
-            <MoreHorizontal size={20} />
           </button>
         </div>
 
@@ -1384,6 +1451,8 @@ export function ProductPaperTableView({
               ? retrievalWarnings.length
                 ? `检索源降级 warning：${warningPreview(retrievalWarnings, 2)}`
                 : `后端错误：${warningPreview(backendErrors, 2)}`
+              : isDemo
+                ? "当前选择的是 Demo 项目。Paper Table 不展示 seed/demo 论文，也不会把示例数据当作真实结果。"
               : "当前没有检索警告。表格只展示本项目真实论文记录，不使用内置示例数据。"}
           </span>
         </div>
@@ -3222,6 +3291,24 @@ function warningPreview(warnings: string[], limit: number) {
   const visible = warnings.slice(0, limit);
   const suffix = warnings.length > limit ? ` / 另有 ${warnings.length - limit} 条已折叠` : "";
   return `${visible.join(" / ")}${suffix}`;
+}
+
+function escapeCsvCell(value: string | number | null | undefined) {
+  const text = String(value ?? "");
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function slugify(value: string) {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/gi, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "scholarflow";
+}
+
+function isDemoProject(project: Pick<ApiProject, "id"> | null | undefined) {
+  return project?.id === "local-bootstrap";
 }
 
 function getDirectionArtifactRefs(review: ApiDirectionReviewResponse | null): ApiArtifactRef[] {
