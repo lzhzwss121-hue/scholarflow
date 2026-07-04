@@ -112,6 +112,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
   );
   const [agentPlan, setAgentPlan] = useState<ApiAgentPlanResponse | null>(null);
   const [agentBusy, setAgentBusy] = useState(false);
+  const [agentRunWarnings, setAgentRunWarnings] = useState<string[]>([]);
   const [literatureQuery, setLiteratureQuery] = useState("");
   const [literatureBusy, setLiteratureBusy] = useState(false);
   const [literatureErrors, setLiteratureErrors] = useState<string[]>([]);
@@ -271,9 +272,19 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
         literatureErrors,
         directionReview,
         memoryResult,
+        agentRunWarnings,
         researchDecision,
       }),
-    [apiMessage, apiStatus, hydrationWarnings, literatureErrors, directionReview, memoryResult, researchDecision],
+    [
+      agentRunWarnings,
+      apiMessage,
+      apiStatus,
+      hydrationWarnings,
+      literatureErrors,
+      directionReview,
+      memoryResult,
+      researchDecision,
+    ],
   );
 
   async function loadWorkspace(guard: RequestGuard) {
@@ -568,6 +579,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
         return;
       }
       setAgentPlan(plan);
+      setAgentRunWarnings([]);
       setLastSavedArtifact(plan.artifact);
       setApiMessage(`Research Plan 已生成，run: ${plan.run_id}`);
       await loadProjectResources(projectId, guard);
@@ -586,7 +598,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       setApiMessage("请先生成 Research Plan。");
       return;
     }
-    if (isDemoProject(agentPlan.project_id)) {
+    if (isDemoProject(agentPlan.project_id) || isDemoProject(activeProject)) {
       blockDemoProjectAction();
       return;
     }
@@ -609,8 +621,14 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
         steps: result.steps,
         artifact: result.artifact,
       });
+      setAgentRunWarnings(result.warnings ?? []);
       setLastSavedArtifact(result.artifact);
-      setApiMessage(`Agent Run 已完成，artifact: ${result.artifact.id}`);
+      applyBackendWorkflowSteps(result.workflow_steps);
+      setApiMessage(
+        result.run_status_summary
+          ? `Agent Run ${result.run_status_summary} artifact: ${result.artifact.id}`
+          : `Agent Run 已完成，artifact: ${result.artifact.id}`,
+      );
       await loadProjectResources(agentPlan.project_id, guard);
     } catch (error) {
       if (!isAbortError(error) && guard.isCurrent()) {
@@ -1051,8 +1069,20 @@ function storeActiveProjectId(projectId: string | null) {
   }
 }
 
-function isDemoProject(projectId: string | undefined | null): boolean {
-  return projectId === "local-bootstrap";
+function isDemoProject(projectOrId: ApiProject | string | undefined | null): boolean {
+  if (!projectOrId) {
+    return false;
+  }
+  if (typeof projectOrId === "string") {
+    return projectOrId === "local-bootstrap";
+  }
+  return (
+    projectOrId.is_demo === true ||
+    projectOrId.id === "local-bootstrap" ||
+    projectOrId.workflow === "demo-preview" ||
+    projectOrId.stage === "seed" ||
+    projectOrId.stage === "demo"
+  );
 }
 
 function isSeedLikePaper(paper: ApiPaper | PaperRow): boolean {
@@ -1121,6 +1151,8 @@ function buildWorkflowSteps(input: {
     (hasPapers && returnedCount < 5);
   const directionStatus = input.directionReview?.review_status ?? null;
   const experimentStatus = input.researchDecision?.experiment?.status;
+  const decisionStatus = input.researchDecision?.decision_status ?? "complete";
+  const decisionEvidencePartial = isDecisionEvidencePartial(input.researchDecision);
   const updatedAt = input.activeProject?.updated_at ?? "";
 
   const localSteps: WorkflowStepView[] = [
@@ -1200,10 +1232,13 @@ function buildWorkflowSteps(input: {
       status: resolveStepStatus({
         blocked: !hasProject || (!hasPapers && !input.latestPaperCard) || input.apiStatus === "offline",
         running: input.decisionBusy,
-        partial: Boolean(input.researchDecision && input.researchDecision.gaps.length === 0),
+        partial: Boolean(
+          input.researchDecision &&
+            (input.researchDecision.gaps.length === 0 || decisionStatus !== "complete" || decisionEvidencePartial),
+        ),
         complete: Boolean(input.researchDecision && input.researchDecision.gaps.length > 0),
       }),
-      warnings: [],
+      warnings: input.researchDecision?.warnings ?? [],
       errors: [],
       updatedAt,
     }),
@@ -1223,6 +1258,16 @@ function buildWorkflowSteps(input: {
   ];
 
   return mergeBackendWorkflowSteps(localSteps, input.backendWorkflowSteps);
+}
+
+function isDecisionEvidencePartial(decision: ApiResearchDecisionResponse | null): boolean {
+  const quality = decision?.evidence_quality;
+  if (!quality) {
+    return false;
+  }
+  const gapEvidenceCount = Number(quality.gap_evidence_paper_count ?? 0);
+  const threshold = Number(quality.minimum_gap_evidence_threshold ?? 5);
+  return Number.isFinite(gapEvidenceCount) && Number.isFinite(threshold) && gapEvidenceCount < threshold;
 }
 
 function toWorkflowStepView(input: {
@@ -1261,11 +1306,25 @@ function mergeBackendWorkflowSteps(localSteps: WorkflowStepView[], backendSteps:
       ...localStep,
       ...backendStep,
       id: backendStep.step_id,
+      status: mergeWorkflowStatus(localStep.status, backendStep.status),
       warnings: backendStep.warnings ?? localStep.warnings,
       errors: backendStep.errors ?? localStep.errors,
       artifact_refs: backendStep.artifact_refs ?? localStep.artifact_refs,
     };
   });
+}
+
+function mergeWorkflowStatus(localStatus: WorkflowStepStatus, backendStatus: WorkflowStepStatus): WorkflowStepStatus {
+  const severity: Record<WorkflowStepStatus, number> = {
+    idle: 0,
+    ready: 1,
+    complete: 2,
+    partial: 3,
+    running: 4,
+    blocked: 5,
+    error: 6,
+  };
+  return severity[localStatus] > severity[backendStatus] ? localStatus : backendStatus;
 }
 
 function isViewId(value: string): value is ViewId {
@@ -1296,6 +1355,7 @@ function resolveStepStatus(input: {
 function buildWorkflowWarnings(input: {
   apiStatus: ApiStatus;
   apiMessage: string;
+  agentRunWarnings: string[];
   hydrationWarnings: string[];
   literatureErrors: string[];
   directionReview: ApiDirectionReviewResponse | null;
@@ -1308,6 +1368,9 @@ function buildWorkflowWarnings(input: {
   }
   input.hydrationWarnings.forEach((message, index) => {
     notices.push({ id: `hydration-${index}`, kind: "warning", message });
+  });
+  input.agentRunWarnings.forEach((message, index) => {
+    notices.push({ id: `agent-run-${index}`, kind: "warning", message });
   });
   input.literatureErrors.forEach((message, index) => {
     notices.push({
@@ -1324,6 +1387,9 @@ function buildWorkflowWarnings(input: {
   });
   input.researchDecision?.experiment?.unblock_suggestions.forEach((message, index) => {
     notices.push({ id: `experiment-unblock-${index}`, kind: "warning", message });
+  });
+  input.researchDecision?.warnings?.forEach((message, index) => {
+    notices.push({ id: `decision-warning-${index}`, kind: "warning", message });
   });
   return notices.slice(0, 8);
 }

@@ -35,6 +35,7 @@ export interface ApiProject {
   active_session_id: string | null;
   created_at: string;
   updated_at: string;
+  is_demo?: boolean;
 }
 
 export interface ApiProjectCreate {
@@ -354,6 +355,9 @@ export interface ApiResearchDecisionResponse {
   validation: ApiIdeaValidation;
   experiment: ApiExperimentPlan;
   artifacts: ApiArtifact[];
+  decision_status?: "complete" | "partial" | "blocked";
+  evidence_quality?: Record<string, unknown>;
+  warnings?: string[];
   workflow_steps?: ApiWorkflowStepState[];
 }
 
@@ -431,7 +435,7 @@ export interface ApiAgentPlanResponse {
   session_id: string;
   task: string;
   provider: string;
-  status: "planned" | "running" | "completed";
+  status: "planned" | "running" | "completed" | "completed_with_warnings" | "partial";
   rationale: string;
   steps: ApiAgentPlanStep[];
   artifact: ApiArtifact;
@@ -439,11 +443,15 @@ export interface ApiAgentPlanResponse {
 
 export interface ApiAgentExecuteResponse {
   run_id: string;
-  status: "completed";
+  status: "completed" | "completed_with_warnings" | "partial";
   artifact: ApiArtifact;
   papers: Array<Record<string, unknown>>;
   paper_count: number;
   summary_metrics: Record<string, unknown>;
+  run_status_summary?: string;
+  warnings?: string[];
+  artifact_refs?: ApiArtifactRef[];
+  workflow_steps?: ApiWorkflowStepState[];
   steps: ApiAgentPlanStep[];
 }
 

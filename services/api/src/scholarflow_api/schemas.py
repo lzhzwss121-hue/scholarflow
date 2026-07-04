@@ -33,6 +33,7 @@ class Project(BaseModel):
     active_session_id: str | None
     created_at: str
     updated_at: str
+    is_demo: bool = False
 
 
 class Paper(BaseModel):
@@ -341,6 +342,9 @@ class ResearchDecisionResponse(BaseModel):
     validation: IdeaValidation
     experiment: ExperimentPlan
     artifacts: list[Artifact]
+    decision_status: Literal["complete", "partial", "blocked"] = "complete"
+    evidence_quality: dict[str, object] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
     workflow_steps: list[WorkflowStepState] = Field(default_factory=list)
 
 
@@ -432,7 +436,7 @@ class AgentPlanResponse(BaseModel):
     session_id: str
     task: str
     provider: str
-    status: Literal["planned", "running", "completed"]
+    status: Literal["planned", "running", "completed", "completed_with_warnings", "partial"]
     rationale: str
     steps: list[AgentPlanStep]
     artifact: Artifact
@@ -440,11 +444,15 @@ class AgentPlanResponse(BaseModel):
 
 class AgentExecuteResponse(BaseModel):
     run_id: str
-    status: Literal["completed"]
+    status: Literal["completed", "completed_with_warnings", "partial"]
     artifact: Artifact
     papers: list[dict[str, object]]
     paper_count: int
     summary_metrics: dict[str, object] = Field(default_factory=dict)
+    run_status_summary: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    artifact_refs: list[ArtifactRef] = Field(default_factory=list)
+    workflow_steps: list[WorkflowStepState] = Field(default_factory=list)
     steps: list[AgentPlanStep]
 
 

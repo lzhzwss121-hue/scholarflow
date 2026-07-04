@@ -1011,6 +1011,7 @@ export function ProductHomeView({
       />
 
       <AgentRunPanel
+        activeProject={activeProject}
         agentBusy={agentBusy}
         agentPlan={agentPlan}
         agentTask={agentTask}
@@ -1451,11 +1452,19 @@ export function ProductPaperTableView({
           </table>
           {tableRows.length === 0 ? (
             <div className="product-table-empty">
-              <h2>{apiStatus === "offline" ? "API 未连接" : "本次没有可展示论文"}</h2>
+              <h2>
+                {apiStatus === "offline"
+                  ? "API 未连接"
+                  : retrievalWarnings.length
+                    ? "外部检索源 degraded retrieval"
+                    : "本次没有可展示论文"}
+              </h2>
               <p>
                 {apiStatus === "offline"
                   ? "请先启动 ScholarFlow 后端服务。当前不是“没有论文”，而是前端无法读取真实 paper table。"
-                  : highOnly
+                  : retrievalWarnings.length
+                    ? "arXiv/OpenAlex 限流、超时或降级时，系统会显示 partial/warning，不会用 demo 论文冒充真实结果。可以稍后重试或换更具体关键词。"
+                    : highOnly
                     ? "当前没有 High Priority 论文。可以关闭筛选，或重新检索更具体的方向。"
                     : "请先运行 Literature Search，系统不会用内置示例论文填充表格。"}
               </p>
@@ -2078,6 +2087,7 @@ function AgentRuntimePanel({
 }
 
 function AgentRunPanel({
+  activeProject,
   agentBusy,
   agentPlan,
   agentTask,
@@ -2086,6 +2096,7 @@ function AgentRunPanel({
   onCreateAgentPlan,
   onExecuteAgentRun,
 }: {
+  activeProject: ApiProject | null;
   agentBusy: boolean;
   agentPlan: ApiAgentPlanResponse | null;
   agentTask: string;
@@ -2094,8 +2105,21 @@ function AgentRunPanel({
   onCreateAgentPlan: () => void;
   onExecuteAgentRun: () => void;
 }) {
-  const canExecute = Boolean(agentPlan && agentPlan.status !== "completed" && !agentBusy && apiStatus === "online");
+  const isDemo = isDemoProject(activeProject);
+  const canPlan = !isDemo && !agentBusy && apiStatus === "online" && agentTask.trim().length > 0;
+  const canExecute = Boolean(
+    agentPlan &&
+      !["completed", "completed_with_warnings", "partial"].includes(agentPlan.status) &&
+      !agentBusy &&
+      apiStatus === "online" &&
+      !isDemo,
+  );
   const isDemoMode = Boolean(agentPlan?.steps.some((step) => step.tool === "search_mock_papers"));
+  const disabledReason = isDemo
+    ? "Demo 项目是只读 preview，不会执行真实 Agent 工具链。请创建真实项目。"
+    : apiStatus !== "online"
+      ? "API 未连接。"
+      : "";
 
   return (
     <section className="agent-run-panel" aria-label="agent plan mode">
@@ -2122,14 +2146,15 @@ function AgentRunPanel({
       <div className="agent-action-row">
         <button
           className="secondary-command"
-          disabled={agentBusy || apiStatus !== "online" || agentTask.trim().length === 0}
+          disabled={!canPlan}
+          title={disabledReason}
           type="button"
           onClick={onCreateAgentPlan}
         >
           <BrainCircuit size={17} />
           生成计划
         </button>
-        <button className="secondary-command" disabled={!canExecute} type="button" onClick={onExecuteAgentRun}>
+        <button className="secondary-command" disabled={!canExecute} title={disabledReason} type="button" onClick={onExecuteAgentRun}>
           <Play size={17} />
           确认执行
         </button>
@@ -2144,7 +2169,7 @@ function AgentRunPanel({
                 <StatusIcon status={toPlanStatus(step.status)} />
                 <div>
                   <strong>{step.title}</strong>
-                  <span>{step.tool}</span>
+                  <span>{step.tool}{formatAgentStepMetrics(step)}</span>
                 </div>
               </div>
             ))}
@@ -2153,6 +2178,27 @@ function AgentRunPanel({
       ) : null}
     </section>
   );
+}
+
+function formatAgentStepMetrics(step: ApiAgentPlanStep): string {
+  const metrics = step.metrics ?? {};
+  const fragments: string[] = [];
+  if (typeof metrics.review_status === "string") {
+    fragments.push(metrics.review_status);
+  }
+  if (typeof metrics.experiment_status === "string") {
+    fragments.push(`experiment ${metrics.experiment_status}`);
+  }
+  if (typeof metrics.warning_count === "number" && metrics.warning_count > 0) {
+    fragments.push(`${metrics.warning_count} warnings`);
+  }
+  if (typeof metrics.paper_count === "number") {
+    fragments.push(`${metrics.paper_count} papers`);
+  }
+  if (typeof metrics.gap_evidence_paper_count === "number") {
+    fragments.push(`${metrics.gap_evidence_paper_count} evidence papers`);
+  }
+  return fragments.length ? ` · ${fragments.join(" · ")}` : "";
 }
 
 function NewProjectView({
@@ -2433,7 +2479,7 @@ export function DirectionReviewView({
 
         <div className="direction-chip-row">
           <span>近三年</span>
-          <span>每轮 10 篇</span>
+          <span>{review ? `目标 ${expectedRoundCount} 篇，本轮实际 ${actualRoundCount} 篇` : "目标每轮 10 篇"}</span>
           <span>顶会/顶刊优先</span>
           <span>点击卡片查看细节</span>
         </div>
@@ -3217,6 +3263,11 @@ export function GapBoardView({
   onGoalChange: (goal: string) => void;
 }) {
   const gaps = decision?.gaps ?? [];
+  const decisionStatus = decision?.decision_status ?? "complete";
+  const evidenceQuality = decision?.evidence_quality ?? {};
+  const gapEvidenceCount = Number(evidenceQuality.gap_evidence_paper_count ?? 0);
+  const evidenceThreshold = Number(evidenceQuality.minimum_gap_evidence_threshold ?? 5);
+  const isConservative = Boolean(decision && decisionStatus !== "complete");
 
   return (
     <div className="view-stack">
@@ -3243,13 +3294,28 @@ export function GapBoardView({
         {isGenerating ? <OperationStatusNote apiStatus={apiStatus} message={apiMessage} /> : null}
         {decision ? (
           <div className="validation-summary">
-            <strong>Idea Validation</strong>
+            <strong>Idea Validation · {decisionStatus}</strong>
             <p>{decision.validation.idea}</p>
             <span className={`risk ${decision.validation.novelty_risk}`}>{decision.validation.novelty_risk}</span>
             <span>{decision.validation.feasibility}</span>
+            <span>
+              gap evidence {gapEvidenceCount}/{evidenceThreshold}
+            </span>
           </div>
         ) : null}
       </section>
+
+      {isConservative ? (
+        <section className="partial-review-banner">
+          <AlertTriangle size={18} />
+          <div>
+            <strong>Gap Board · {decisionStatus}</strong>
+            <p>
+              上游证据不足，Idea Validation 已降级为保守版本；当前不可把 gap 当作确定性科研结论。
+            </p>
+          </div>
+        </section>
+      ) : null}
 
       {!decision ? (
         <section className="empty-state">
@@ -3465,8 +3531,14 @@ function slugify(value: string) {
   return slug || "scholarflow";
 }
 
-function isDemoProject(project: Pick<ApiProject, "id"> | null | undefined) {
-  return project?.id === "local-bootstrap";
+function isDemoProject(project: Pick<ApiProject, "id" | "workflow" | "stage" | "is_demo"> | null | undefined) {
+  return Boolean(
+    project?.is_demo ||
+      project?.id === "local-bootstrap" ||
+      project?.workflow === "demo-preview" ||
+      project?.stage === "seed" ||
+      project?.stage === "demo",
+  );
 }
 
 function getDirectionArtifactRefs(review: ApiDirectionReviewResponse | null): ApiArtifactRef[] {

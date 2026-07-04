@@ -204,6 +204,101 @@ test("paper table uses structured relevance coverage and partial workflow status
   await expect(paperTableStep.getByText("complete")).toHaveCount(0);
 });
 
+test("degraded retrieval with no returned papers is not shown as a normal empty result", async ({ page }) => {
+  const project = {
+    id: "project_e2e_degraded_empty",
+    title: "检索降级空结果",
+    description: "degraded retrieval empty result regression",
+    keyword: "多模态大模型在视觉问答中的证据忠实性评估",
+    field: "Artificial Intelligence",
+    language: "zh-CN",
+    workflow: "survey-to-experiment",
+    stage: "api",
+    active_session_id: "session_e2e_degraded_empty",
+    created_at: "2026-07-02T00:00:00+00:00",
+    updated_at: "2026-07-02T00:00:00+00:00",
+  };
+  const artifact = {
+    id: "artifact_e2e_degraded_empty",
+    project_id: project.id,
+    title: "paper_table_degraded_empty.md",
+    kind: "markdown",
+    content_markdown: "# Paper Table\n\nNo papers returned because retrieval degraded.",
+    content_json: JSON.stringify({
+      query: project.keyword,
+      papers: [],
+      errors: ["openalex:mock: degraded status=503: Service Unavailable"],
+      relevance_coverage: {
+        candidate_count: 37,
+        returned_count: 0,
+        strong_match_count: 0,
+        medium_match_count: 0,
+        weak_match_count: 0,
+        off_topic_count: 37,
+        filtered_count: 37,
+      },
+    }),
+    diff: "+ degraded empty regression",
+    created_at: "2026-07-02T00:00:00+00:00",
+    updated_at: "2026-07-02T00:00:00+00:00",
+  };
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
+  });
+  await page.route("**/projects", async (route) => {
+    await route.fulfill({ json: [project] });
+  });
+  await page.route(`**/projects/${project.id}/papers`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/timeline`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/literature/search`, async (route) => {
+    await route.fulfill({
+      status: 201,
+      json: {
+        query: project.keyword,
+        expanded_queries: [project.keyword],
+        papers: [],
+        artifact,
+        errors: ["openalex:mock: degraded status=503: Service Unavailable"],
+        relevance_coverage: {
+          candidate_count: 37,
+          returned_count: 0,
+          strong_match_count: 0,
+          medium_match_count: 0,
+          weak_match_count: 0,
+          off_topic_count: 37,
+          filtered_count: 37,
+        },
+        workflow_steps: [
+          {
+            step_id: "paper-table",
+            status: "partial",
+            label: "Paper Table",
+            summary: "37 candidates / 0 returned / 37 off-topic filtered",
+            warnings: ["degraded retrieval: openalex 503"],
+            errors: [],
+            artifact_refs: [],
+            updated_at: artifact.updated_at,
+          },
+        ],
+      },
+    });
+  });
+
+  await page.goto("/#paper-table");
+  await page.getByRole("button", { name: /重新检索/ }).click();
+  await expect(page.getByText("外部检索源 degraded retrieval")).toBeVisible();
+  await expect(page.locator(".metric-card", { hasText: "Off-topic Filtered" }).getByText("37")).toBeVisible();
+  await expect(page.locator(".workflow-step", { hasText: "Paper Table" }).getByText("partial")).toBeVisible();
+});
+
 test("new project page has no inert action buttons and saves drafts locally", async ({ page }) => {
   await page.route("**/health", async (route) => {
     await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
@@ -354,6 +449,206 @@ test("demo project is explicit and does not pollute real project paper table", a
   await expect(page.getByText(/Demo 项目仅用于界面预览/).first()).toBeVisible();
   await expect(page.getByText(demoPaper.title, { exact: true })).toHaveCount(0);
   await expect(page.getByText("本次没有可展示论文")).toBeVisible();
+  await expect(page.getByRole("button", { name: /重新检索/ })).toBeDisabled();
+  await page.locator(".workflow-brand").click();
+  await expect(page.locator(".agent-run-panel").getByRole("button", { name: "生成计划", exact: true })).toBeDisabled();
+  await expect(page.locator(".agent-run-panel").getByRole("button", { name: "确认执行", exact: true })).toBeDisabled();
+});
+
+test("agent execute refreshes timeline artifacts and keeps partial blocked workflow state", async ({ page }) => {
+  const project = {
+    id: "project_e2e_agent_execute",
+    title: "Agent 执行闭环",
+    description: "agent execute refresh regression",
+    keyword: "VQA evidence faithfulness",
+    field: "Artificial Intelligence",
+    language: "zh-CN",
+    workflow: "survey-to-experiment",
+    stage: "agent-loop",
+    active_session_id: "session_e2e_agent_execute",
+    created_at: "2026-07-02T00:00:00+00:00",
+    updated_at: "2026-07-02T00:00:00+00:00",
+  };
+  const paper = {
+    id: "paper_e2e_agent_execute",
+    project_id: project.id,
+    title: "Evidence Faithfulness Benchmark for VQA",
+    authors: "A. Researcher",
+    abstract: "Dataset: POPE. Metric: accuracy. Baseline: LLaVA.",
+    year: "2026",
+    type: "Benchmark",
+    venue: "arXiv cs.CV",
+    source: "arxiv",
+    url: "https://arxiv.org/abs/2601.00006",
+    relation: "strong evidence faithfulness match",
+    priority: "High",
+    code: "unknown",
+    relevance_score: 1.6,
+    relevance_quality: "strong",
+    created_at: "2026-07-02T00:00:00+00:00",
+  };
+  const artifact = {
+    id: "artifact_e2e_agent_execute",
+    project_id: project.id,
+    title: "agent_run_e2e.md",
+    kind: "markdown",
+    content_markdown: "# Agent Run\n\npartial: experiment blocked",
+    content_json: JSON.stringify({
+      run_id: "run_e2e_agent_execute",
+      artifact_refs: [],
+    }),
+    diff: "+ agent execute regression",
+    created_at: "2026-07-02T00:00:00+00:00",
+    updated_at: "2026-07-02T00:00:00+00:00",
+  };
+  const planSteps = [
+    {
+      id: "literature",
+      title: "Literature Search",
+      detail: "Retrieve candidates",
+      tool: "literature_search",
+      status: "queued",
+      metrics: {},
+    },
+    {
+      id: "decision",
+      title: "Research Decision",
+      detail: "Generate gap board and experiment plan",
+      tool: "research_decision",
+      status: "queued",
+      metrics: {},
+    },
+    {
+      id: "save",
+      title: "Save Artifact",
+      detail: "Persist run result",
+      tool: "save_artifact",
+      status: "queued",
+      metrics: {},
+    },
+  ];
+  let executed = false;
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
+  });
+  await page.route("**/projects", async (route) => {
+    await route.fulfill({ json: [project] });
+  });
+  await page.route(`**/projects/${project.id}/papers`, async (route) => {
+    await route.fulfill({ json: executed ? [paper] : [] });
+  });
+  await page.route(`**/projects/${project.id}/timeline`, async (route) => {
+    await route.fulfill({
+      json: executed
+        ? [
+            {
+              id: "event_e2e_agent_execute",
+              session_id: project.active_session_id,
+              time_label: "Now",
+              tool: "agent.execute",
+              status: "done",
+              summary: "Agent Run partial: experiment blocked.",
+              created_at: artifact.updated_at,
+            },
+          ]
+        : [],
+    });
+  });
+  await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
+    await route.fulfill({ json: executed ? [artifactSummary(artifact)] : [] });
+  });
+  await page.route(`**/artifacts/${artifact.id}`, async (route) => {
+    await route.fulfill({ json: artifact });
+  });
+  await page.route("**/agent/plan", async (route) => {
+    await route.fulfill({
+      status: 201,
+      json: {
+        run_id: "run_e2e_agent_execute",
+        project_id: project.id,
+        session_id: project.active_session_id,
+        task: "Run the evidence faithfulness workflow",
+        provider: "local:heuristic-planner",
+        status: "planned",
+        rationale: "Run real tools first.",
+        steps: planSteps,
+        artifact,
+      },
+    });
+  });
+  await page.route("**/agent/runs/run_e2e_agent_execute/execute", async (route) => {
+    executed = true;
+    await route.fulfill({
+      status: 200,
+      json: {
+        run_id: "run_e2e_agent_execute",
+        status: "partial",
+        artifact,
+        papers: [paper],
+        paper_count: 1,
+        summary_metrics: { paper_count: 1, warning_count: 2 },
+        run_status_summary: "partial: 2 warning(s); latest artifact count=1.",
+        warnings: ["Direction Review partial: relevant_read_count=1.", "Experiment Plan blocked: missing reproducible anchor."],
+        artifact_refs: [
+          {
+            id: artifact.id,
+            title: artifact.title,
+            kind: artifact.kind,
+            created_at: artifact.created_at,
+          },
+        ],
+        workflow_steps: [
+          {
+            step_id: "gap-board",
+            status: "partial",
+            label: "Gap Board",
+            summary: "partial: gap evidence=1",
+            warnings: ["Gap evidence 只有 1 篇，低于 5 篇阈值。"],
+            errors: [],
+            artifact_refs: [],
+            updated_at: artifact.updated_at,
+          },
+          {
+            step_id: "experiment-planner",
+            status: "blocked",
+            label: "Experiment Plan",
+            summary: "缺少可复现实验 anchor。",
+            warnings: ["Experiment Plan blocked: missing reproducible anchor."],
+            errors: [],
+            artifact_refs: [
+              {
+                id: artifact.id,
+                title: artifact.title,
+                kind: artifact.kind,
+                created_at: artifact.created_at,
+              },
+            ],
+            updated_at: artifact.updated_at,
+          },
+        ],
+        steps: planSteps.map((step) => ({
+          ...step,
+          status: "done",
+          metrics: step.tool === "research_decision" ? { experiment_status: "blocked", warning_count: 1 } : {},
+        })),
+      },
+    });
+  });
+
+  await page.goto("/#dashboard");
+  const agentPanel = page.locator(".agent-run-panel");
+  await expect(agentPanel.getByRole("button", { name: "生成计划", exact: true })).toBeEnabled();
+  await agentPanel.getByRole("button", { name: "生成计划", exact: true }).click();
+  await expect(page.getByText("Run run_e2e_agent_execute")).toBeVisible();
+  await expect(agentPanel.getByRole("button", { name: "确认执行", exact: true })).toBeEnabled();
+  await agentPanel.getByRole("button", { name: "确认执行", exact: true }).click();
+
+  await expect(page.getByText("Agent Run partial: experiment blocked.")).toBeVisible();
+  await expect(page.locator(".workflow-artifact-list").getByText("agent_run_e2e.md").first()).toBeVisible();
+  await expect(page.locator(".workflow-step", { hasText: "Gap Board" }).locator(".workflow-status.partial")).toBeVisible();
+  await expect(page.locator(".workflow-step", { hasText: "Experiment Plan" }).locator(".workflow-status.blocked")).toBeVisible();
+  await expect(page.locator(".workflow-step", { hasText: "Experiment Plan" }).getByText("complete")).toHaveCount(0);
 });
 
 test("workflow shell exposes core steps without synthetic rows", async ({ page }) => {

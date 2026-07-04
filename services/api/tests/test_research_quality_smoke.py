@@ -914,6 +914,97 @@ class ResearchQualitySmokeTest(unittest.TestCase):
 
         self.assertEqual(papers, [])
 
+    def test_projects_list_orders_real_projects_before_demo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api.database import init_db
+                try:
+                    from scholarflow_api import main as main_module
+                except ModuleNotFoundError as error:
+                    if error.name == "fastapi":
+                        self.skipTest("FastAPI is not installed in the current Python environment.")
+                    raise
+                from scholarflow_api.schemas import ProjectCreate
+
+                init_db()
+                project = main_module.create_project(
+                    ProjectCreate(
+                        title="Real Project",
+                        keyword="vision language evidence faithfulness",
+                    ),
+                )
+                projects = main_module.list_projects()
+
+        self.assertEqual(projects[0].id, project.id)
+        self.assertFalse(projects[0].is_demo)
+        self.assertEqual(projects[-1].id, "local-bootstrap")
+        self.assertTrue(projects[-1].is_demo)
+
+    def test_agent_plan_blocks_demo_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api.database import init_db
+                try:
+                    from scholarflow_api import main as main_module
+                except ModuleNotFoundError as error:
+                    if error.name == "fastapi":
+                        self.skipTest("FastAPI is not installed in the current Python environment.")
+                    raise
+                from scholarflow_api.schemas import AgentPlanRequest
+
+                init_db()
+                with self.assertRaises(Exception) as context:
+                    main_module.create_agent_plan(
+                        AgentPlanRequest(
+                            project_id="local-bootstrap",
+                            task="Run real research workflow on demo",
+                            provider="local",
+                        ),
+                    )
+
+        self.assertIn("Demo project is read-only", str(context.exception))
+
+    def test_research_decisions_are_partial_when_gap_evidence_is_insufficient(self) -> None:
+        papers = [
+            {
+                "id": "paper_method",
+                "title": "Evidence Faithfulness Benchmark for VQA",
+                "abstract": "A VQA benchmark for evidence faithfulness.",
+                "type": "Benchmark",
+                "source": "arxiv",
+                "venue": "arXiv cs.CV",
+                "url": "https://arxiv.org/abs/2601.00003",
+                "priority": "High",
+                "relevance_quality": "strong",
+            },
+            {
+                "id": "paper_survey",
+                "title": "A Survey of Trustworthy Vision-Language Models",
+                "abstract": "A survey of VLM safety.",
+                "type": "Survey",
+                "source": "arxiv",
+                "venue": "arXiv cs.CV",
+                "url": "https://arxiv.org/abs/2601.00004",
+                "priority": "High",
+                "relevance_quality": "strong",
+            },
+        ]
+
+        bundle = generate_research_decisions(
+            project={"title": "Evidence Quality Project", "keyword": "VQA evidence faithfulness"},
+            papers=papers,
+            paper_cards=[],
+            goal="Find a gap",
+        )
+
+        self.assertEqual(bundle.decision_status, "partial")
+        self.assertEqual(bundle.evidence_quality["gap_evidence_paper_count"], 1)
+        self.assertIn("暂不输出确定性研究判断", bundle.validation.idea)
+        self.assertIn("Evidence Faithfulness Benchmark for VQA", bundle.gaps[0].evidence)
+        self.assertNotIn("A Survey of Trustworthy Vision-Language Models", bundle.gaps[0].evidence)
+
     def test_agent_run_reports_literature_step_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "scholarflow.sqlite3"
@@ -971,10 +1062,13 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                     result = main_module.execute_agent_run(plan.run_id, AgentExecuteRequest(confirmed=True))
 
         literature_step = next(step for step in result.steps if step.tool == "literature_search")
-        self.assertEqual(result.status, "completed")
+        self.assertIn(result.status, {"partial", "completed_with_warnings"})
         self.assertEqual(literature_step.status, "done")
         self.assertGreater(result.paper_count, 0)
         self.assertGreater(int(literature_step.metrics.get("paper_count") or 0), 0)
+        self.assertTrue(result.warnings)
+        self.assertTrue(result.run_status_summary)
+        self.assertTrue(any(step.step_id == "experiment-planner" for step in result.workflow_steps))
         self.assertTrue(result.artifact.id)
 
 

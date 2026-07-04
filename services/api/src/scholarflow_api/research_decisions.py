@@ -93,6 +93,9 @@ class ResearchDecisionBundle:
     gaps: list[GapDecision]
     validation: IdeaValidation
     experiment: ExperimentPlan
+    decision_status: str = "complete"
+    evidence_quality: dict[str, Any] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -100,6 +103,9 @@ class ResearchDecisionBundle:
             "gaps": [gap.to_dict() for gap in self.gaps],
             "validation": self.validation.to_dict(),
             "experiment": self.experiment.to_dict(),
+            "decision_status": self.decision_status,
+            "evidence_quality": self.evidence_quality,
+            "warnings": self.warnings,
         }
 
 
@@ -110,21 +116,30 @@ def generate_research_decisions(
     goal: str = "",
 ) -> ResearchDecisionBundle:
     evidence_papers = filter_evidence_papers(papers)
-    focus = infer_focus(project, evidence_papers, paper_cards, goal)
+    gap_evidence_papers = filter_gap_evidence_papers(evidence_papers, paper_cards)
+    evidence_quality = build_evidence_quality(papers, evidence_papers, gap_evidence_papers, paper_cards)
+    warnings = build_evidence_quality_warnings(evidence_quality)
+    decision_status = evidence_quality["decision_status"]
+    focus = infer_focus(project, gap_evidence_papers or evidence_papers, paper_cards, goal)
     top_papers = (
-        ", ".join(paper.get("title", "") for paper in evidence_papers[:3] if paper.get("title"))
-        or "当前没有 strong/medium 相关论文可作为 gap evidence"
+        ", ".join(paper.get("title", "") for paper in gap_evidence_papers[:3] if paper.get("title"))
+        or "当前没有 strong/medium 相关论文可作为 gap evidence（且非 survey-only）"
     )
     weakest = first_nonempty([card.get("weakest_assumption", "") for card in paper_cards])
-    anchor = select_experiment_anchor(evidence_papers, paper_cards)
-    unblock_suggestions = build_unblock_suggestions(evidence_papers, paper_cards) if anchor is None else []
+    anchor = select_experiment_anchor(gap_evidence_papers, paper_cards)
+    unblock_suggestions = build_unblock_suggestions(gap_evidence_papers, paper_cards) if anchor is None else []
+    evidence_prefix = (
+        "证据充分度不足，以下 gap 只能作为保守候选，不能作为已证实结论。"
+        if decision_status != "complete"
+        else "来自 strong/medium paper table / paper card 的线索。"
+    )
 
     gaps = [
         GapDecision(
             id="gap_evidence_mismatch",
             title="答案正确但证据链错误",
             kind="true_gap",
-            evidence=f"来自 strong/medium paper table / paper card 的线索：{top_papers}。{weakest or '多篇工作关注最终指标，但证据一致性仍缺少稳定诊断。'}",
+            evidence=f"{evidence_prefix} 论文线索：{top_papers}。{weakest or '多篇工作关注最终指标，但证据一致性仍缺少稳定诊断。'}",
             weakness="只看最终答案或平均分，会把真实视觉理解、语言先验和 benchmark shortcut 混在一起。",
             opportunity="构建 evidence-aware split，把 answer accuracy、evidence consistency、counterexample pass rate 分开评价。",
             novelty_risk="medium",
@@ -134,7 +149,11 @@ def generate_research_decisions(
             id="gap_counterexample_naturalness",
             title="反例不够自然，难以代表真实用户失败",
             kind="engineering_gap",
-            evidence="现有 hallucination / grounding 评测常依赖人工构造负样本或模板化冲突样本。",
+            evidence=(
+                "证据不足，暂不能断言该方向已有系统性缺口。"
+                if decision_status == "blocked"
+                else "现有 hallucination / grounding 评测常依赖人工构造负样本或模板化冲突样本。"
+            ),
             weakness="如果反例痕迹过强，模型失败可能来自数据风格而不是真实视觉推理缺陷。",
             opportunity="从真实图像和真实问题出发生成轻微属性冲突、遮挡和罕见物体组合，再人工复核。",
             novelty_risk="low",
@@ -144,7 +163,11 @@ def generate_research_decisions(
             id="gap_benchmark_overclaim",
             title="把 benchmark 分数提升误认为能力提升",
             kind="pseudo_gap",
-            evidence="如果一个 idea 只是在现有 benchmark 上换 prompt、换 backbone 或调指标名称，它很可能只是局部工程优化。",
+            evidence=(
+                "上游证据不足时，任何 novelty claim 都应先降级为假设，不应直接写成研究结论。"
+                if decision_status != "complete"
+                else "如果一个 idea 只是在现有 benchmark 上换 prompt、换 backbone 或调指标名称，它很可能只是局部工程优化。"
+            ),
             weakness="这类 gap 难以证明新科学问题，只能证明某个配置更适合某个测试集。",
             opportunity="除非能定义新的失败模式和反例协议，否则不要把它作为核心研究贡献。",
             novelty_risk="high",
@@ -152,7 +175,48 @@ def generate_research_decisions(
         ),
     ]
 
-    validation = IdeaValidation(
+    validation = build_idea_validation(focus, decision_status, warnings)
+
+    experiment = build_experiment_plan_from_anchor(anchor, focus, unblock_suggestions)
+
+    if experiment.status == "blocked" and decision_status == "complete":
+        decision_status = "partial"
+        evidence_quality["decision_status"] = decision_status
+        warnings.append("实验计划缺少可复现 anchor；Gap Board 只能作为 partial 决策参考。")
+
+    return ResearchDecisionBundle(
+        project_title=project.get("title") or "ScholarFlow Project",
+        gaps=gaps,
+        validation=validation,
+        experiment=experiment,
+        decision_status=decision_status,
+        evidence_quality=evidence_quality,
+        warnings=unique_preserve_order(warnings),
+    )
+
+
+def build_idea_validation(focus: str, decision_status: str, warnings: list[str]) -> IdeaValidation:
+    if decision_status != "complete":
+        return IdeaValidation(
+            idea=(
+                f"围绕 `{focus}` 暂不输出确定性研究判断：当前 strong/medium 且非 survey-only 的证据不足，"
+                "只能先做检索补强和证据审计。"
+            ),
+            why_not_incremental=(
+                "不可下结论：证据池不足时，无法区分真 gap、benchmark 偏差和单篇论文偶然观察。"
+            ),
+            difference_from_existing_work=(
+                "下一步不是提出新方法，而是先补足可引用证据、baseline、dataset、metric 和失败模式样本。"
+            ),
+            novelty_risk="high",
+            feasibility="one-week",
+            key_risks=warnings
+            or [
+                "strong/medium 论文数量不足，容易把弱相关论文误当成研究证据。",
+                "缺少非 survey 的方法或 benchmark paper，无法支撑可实验 gap。",
+            ],
+        )
+    return IdeaValidation(
         idea=(
             f"围绕 `{focus}` 建立 evidence-aware counterexample evaluation："
             "先定义最脆弱失败模式，再设计能攻击该假设的样本和指标。"
@@ -172,18 +236,58 @@ def generate_research_decisions(
         ],
     )
 
-    experiment = build_experiment_plan_from_anchor(anchor, focus, unblock_suggestions)
-
-    return ResearchDecisionBundle(
-        project_title=project.get("title") or "ScholarFlow Project",
-        gaps=gaps,
-        validation=validation,
-        experiment=experiment,
-    )
-
 
 def filter_evidence_papers(papers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [paper for paper in papers if is_relevant_evidence_paper(paper)]
+
+
+def filter_gap_evidence_papers(papers: list[dict[str, Any]], paper_cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    card_by_paper_id = {card.get("paper_id", ""): card for card in paper_cards if card.get("paper_id")}
+    return [paper for paper in papers if not is_survey_like(paper, card_by_paper_id.get(paper.get("id", ""), {}))]
+
+
+def build_evidence_quality(
+    papers: list[dict[str, Any]],
+    evidence_papers: list[dict[str, Any]],
+    gap_evidence_papers: list[dict[str, Any]],
+    paper_cards: list[dict[str, Any]],
+) -> dict[str, Any]:
+    strong_count = sum(1 for paper in papers if normalize_space(paper.get("relevance_quality", "")).lower() == "strong")
+    medium_count = sum(1 for paper in papers if normalize_space(paper.get("relevance_quality", "")).lower() == "medium")
+    survey_only_count = max(0, len(evidence_papers) - len(gap_evidence_papers))
+    linked_card_count = sum(1 for card in paper_cards if normalize_space(card.get("paper_id", "")))
+    if len(gap_evidence_papers) == 0:
+        decision_status = "blocked"
+    elif len(gap_evidence_papers) < 5 or linked_card_count == 0:
+        decision_status = "partial"
+    else:
+        decision_status = "complete"
+    return {
+        "decision_status": decision_status,
+        "total_paper_count": len(papers),
+        "strong_match_count": strong_count,
+        "medium_match_count": medium_count,
+        "evidence_paper_count": len(evidence_papers),
+        "gap_evidence_paper_count": len(gap_evidence_papers),
+        "survey_only_count": survey_only_count,
+        "linked_card_count": linked_card_count,
+        "minimum_gap_evidence_threshold": 5,
+    }
+
+
+def build_evidence_quality_warnings(evidence_quality: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    gap_count = int(evidence_quality.get("gap_evidence_paper_count") or 0)
+    linked_card_count = int(evidence_quality.get("linked_card_count") or 0)
+    if gap_count == 0:
+        warnings.append("Gap evidence 不足：没有 strong/medium 且非 survey-only 的论文，不能下确定性研究结论。")
+    elif gap_count < int(evidence_quality.get("minimum_gap_evidence_threshold") or 5):
+        warnings.append(f"Gap evidence 只有 {gap_count} 篇，低于 5 篇阈值；Gap Board 标记为 partial。")
+    if linked_card_count == 0:
+        warnings.append("缺少绑定真实论文的 Paper Card；idea validation 只能给保守建议。")
+    if int(evidence_quality.get("survey_only_count") or 0) > 0:
+        warnings.append("Survey/review 论文只用于背景，不作为主要 gap evidence。")
+    return warnings
 
 
 def is_relevant_evidence_paper(paper: dict[str, Any]) -> bool:

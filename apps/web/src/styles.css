@@ -2671,6 +2671,12 @@ button {
   background: #e6f5ee;
 }
 
+.run-status.completed_with_warnings,
+.run-status.partial {
+  color: #83570f;
+  background: #fff5db;
+}
+
 .agent-task-field {
   display: grid;
   gap: 8px;

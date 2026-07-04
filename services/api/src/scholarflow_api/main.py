@@ -127,6 +127,28 @@ def make_artifact_refs(artifacts: list[dict]) -> list[ArtifactRef]:
     return [ArtifactRef.model_validate(artifact_ref(artifact)) for artifact in artifacts]
 
 
+def is_demo_project_dict(project: dict) -> bool:
+    return (
+        project.get("id") == "local-bootstrap"
+        or str(project.get("workflow", "")).lower() == "demo-preview"
+        or str(project.get("stage", "")).lower() in {"seed", "demo"}
+    )
+
+
+def project_response_dict(project: dict) -> dict:
+    data = dict(project)
+    data["is_demo"] = is_demo_project_dict(data)
+    return data
+
+
+def ensure_real_project_for_agent(project: dict) -> None:
+    if is_demo_project_dict(project):
+        raise HTTPException(
+            status_code=400,
+            detail="Demo project is read-only preview. Create a real project before running Agent tools.",
+        )
+
+
 def workflow_step_state(
     step_id: str,
     status: str,
@@ -182,6 +204,191 @@ def memory_step_status(hit_count: int, warnings: list[str]) -> str:
 def experiment_step_status(status: str) -> str:
     return "blocked" if status == "blocked" else "complete"
 
+
+def agent_run_summary(plan: dict, outputs: dict[str, object] | None, paper_count: int, artifacts: list[dict] | None = None) -> dict[str, object]:
+    outputs = outputs or {}
+    artifacts = artifacts or []
+    warnings: list[str] = []
+
+    literature_output = outputs.get("literature_search")
+    if isinstance(literature_output, dict):
+        for error in literature_output.get("errors", []) or []:
+            warnings.append(f"degraded retrieval: {error}")
+        coverage = literature_output.get("relevance_coverage") if isinstance(literature_output.get("relevance_coverage"), dict) else {}
+        if coverage:
+            off_topic_count = int(coverage.get("off_topic_count") or 0)
+            weak_count = int(coverage.get("weak_match_count") or 0)
+            returned_count = int(coverage.get("returned_count") or paper_count)
+            if off_topic_count or weak_count:
+                warnings.append(f"Paper Table partial: filtered weak={weak_count}, off-topic={off_topic_count}.")
+            if returned_count < LOW_RECALL_THRESHOLD:
+                warnings.append(f"Paper Table partial: only {returned_count} returned papers.")
+
+    direction_output = outputs.get("direction_review")
+    if isinstance(direction_output, dict):
+        review_status = str(direction_output.get("review_status") or "")
+        if review_status and review_status != "complete":
+            warnings.append(
+                "Direction Review "
+                f"{review_status}: relevant_read_count={direction_output.get('relevant_read_count', 0)}."
+            )
+        for error in direction_output.get("errors", []) or []:
+            warnings.append(f"Direction Review warning: {error}")
+
+    memory_output = outputs.get("research_memory_query")
+    if isinstance(memory_output, dict):
+        for warning in memory_output.get("warnings", []) or []:
+            warnings.append(f"Paper Memory warning: {warning}")
+
+    decision_output = outputs.get("research_decision")
+    if isinstance(decision_output, dict):
+        decision_status = str(decision_output.get("decision_status") or "")
+        if decision_status and decision_status != "complete":
+            warnings.append(f"Gap Board {decision_status}: evidence quality is insufficient.")
+        if decision_output.get("experiment_status") == "blocked":
+            warnings.append("Experiment Plan blocked: missing reproducible anchor.")
+        for warning in decision_output.get("warnings", []) or []:
+            warnings.append(f"Research Decision warning: {warning}")
+
+    for step in plan.get("steps", []) or []:
+        metrics = step.get("metrics") if isinstance(step, dict) else {}
+        if isinstance(metrics, dict) and metrics.get("warning_count"):
+            tool = step.get("tool", "tool") if isinstance(step, dict) else "tool"
+            warnings.append(f"{tool} reported {metrics.get('warning_count')} warnings.")
+
+    warnings = unique_strings(warnings)
+    run_status = "completed_with_warnings" if warnings else "completed"
+    if any("blocked" in warning.lower() for warning in warnings):
+        run_status = "partial"
+
+    summary = (
+        "completed"
+        if run_status == "completed"
+        else f"{run_status}: {len(warnings)} warning(s); latest artifact count={len(artifacts)}."
+    )
+    return {
+        "status": run_status,
+        "summary": summary,
+        "warnings": warnings,
+        "artifact_refs": make_artifact_refs(artifacts),
+    }
+
+
+def agent_workflow_steps(outputs: dict[str, object] | None, artifacts: list[dict] | None, updated_at: str) -> list[WorkflowStepState]:
+    outputs = outputs or {}
+    artifacts = artifacts or []
+    steps: list[WorkflowStepState] = []
+
+    literature_output = outputs.get("literature_search")
+    if isinstance(literature_output, dict):
+        papers = literature_output.get("papers") if isinstance(literature_output.get("papers"), list) else []
+        errors = [str(error) for error in literature_output.get("errors", []) or []]
+        coverage = literature_output.get("relevance_coverage") if isinstance(literature_output.get("relevance_coverage"), dict) else {}
+        artifact = literature_output.get("artifact") if isinstance(literature_output.get("artifact"), dict) else None
+        steps.append(
+            workflow_step_state(
+                step_id="paper-table",
+                status=literature_step_status(len(papers), errors, coverage),
+                label="Paper Table",
+                summary=(
+                    f"{coverage.get('candidate_count', len(papers))} candidates / "
+                    f"{coverage.get('returned_count', len(papers))} returned / "
+                    f"{coverage.get('off_topic_count', 0)} off-topic filtered"
+                ),
+                warnings=[f"degraded retrieval: {error}" for error in errors],
+                updated_at=updated_at,
+                artifacts=[artifact] if artifact else [],
+            )
+        )
+
+    direction_output = outputs.get("direction_review")
+    if isinstance(direction_output, dict):
+        review_status = str(direction_output.get("review_status") or "partial")
+        round_read_count = int(direction_output.get("paper_count") or direction_output.get("round_read_count") or 0)
+        direction_artifacts = [item for item in direction_output.get("artifacts", []) or [] if isinstance(item, dict)]
+        steps.append(
+            workflow_step_state(
+                step_id="direction-review",
+                status=direction_step_status(review_status, round_read_count),
+                label="Direction Review",
+                summary=(
+                    f"{review_status}: {direction_output.get('relevant_read_count', round_read_count)} "
+                    f"strong/medium readings; off-topic={direction_output.get('off_topic_count', 0)}"
+                ),
+                warnings=[str(error) for error in direction_output.get("errors", []) or []],
+                updated_at=updated_at,
+                artifacts=direction_artifacts[:3],
+            )
+        )
+
+    memory_output = outputs.get("research_memory_query")
+    if isinstance(memory_output, dict):
+        warnings = [str(warning) for warning in memory_output.get("warnings", []) or []]
+        artifact = memory_output.get("artifact") if isinstance(memory_output.get("artifact"), dict) else None
+        hit_count = int(memory_output.get("hit_count") or memory_output.get("memory_hit_count") or 0)
+        steps.append(
+            workflow_step_state(
+                step_id="paper-memory",
+                status=memory_step_status(hit_count, warnings),
+                label="Paper Memory",
+                summary=f"命中 {hit_count} 篇论文记忆。",
+                warnings=warnings,
+                updated_at=updated_at,
+                artifacts=[artifact] if artifact else [],
+            )
+        )
+
+    decision_output = outputs.get("research_decision")
+    if isinstance(decision_output, dict):
+        decision_status = str(decision_output.get("decision_status") or "partial")
+        warnings = [str(warning) for warning in decision_output.get("warnings", []) or []]
+        decision_artifacts = [item for item in decision_output.get("artifacts", []) or [] if isinstance(item, dict)]
+        steps.append(
+            workflow_step_state(
+                step_id="gap-board",
+                status=decision_status if decision_status in {"complete", "partial", "blocked"} else "partial",
+                label="Gap Board",
+                summary=(
+                    f"{decision_status}: gap evidence="
+                    f"{decision_output.get('evidence_quality', {}).get('gap_evidence_paper_count', 0) if isinstance(decision_output.get('evidence_quality'), dict) else 0}"
+                ),
+                warnings=warnings,
+                updated_at=updated_at,
+                artifacts=decision_artifacts[:2],
+            )
+        )
+        experiment_status = str(decision_output.get("experiment_status") or "blocked")
+        steps.append(
+            workflow_step_state(
+                step_id="experiment-planner",
+                status=experiment_step_status(experiment_status),
+                label="Experiment Plan",
+                summary=(
+                    "缺少可复现实验 anchor。"
+                    if experiment_status == "blocked"
+                    else f"实验 anchor：{decision_output.get('anchor_paper_title') or 'N/A'}。"
+                ),
+                warnings=warnings if experiment_status == "blocked" else [],
+                updated_at=updated_at,
+                artifacts=decision_artifacts[2:],
+            )
+        )
+
+    return steps
+
+
+def unique_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        normalized = value.strip()
+        key = normalized.lower()
+        if not normalized or key in seen:
+            continue
+        seen.add(key)
+        result.append(normalized)
+    return result
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -210,12 +417,12 @@ def list_projects() -> list[Project]:
         rows = connection.execute(
             """
             SELECT * FROM projects
-            ORDER BY CASE WHEN id = 'local-bootstrap' THEN 0 ELSE 1 END,
+            ORDER BY CASE WHEN id = 'local-bootstrap' OR workflow = 'demo-preview' OR stage IN ('seed', 'demo') THEN 1 ELSE 0 END,
                      updated_at DESC,
                      created_at DESC
             """
         ).fetchall()
-    return [Project.model_validate(dict(row)) for row in rows]
+    return [Project.model_validate(project_response_dict(dict(row))) for row in rows]
 
 
 @app.post("/projects", response_model=Project, status_code=201)
@@ -283,7 +490,7 @@ def create_project(payload: ProjectCreate) -> Project:
             "SELECT * FROM projects WHERE id = ?",
             (project_id,),
         ).fetchone()
-    return Project.model_validate(dict(row))
+    return Project.model_validate(project_response_dict(dict(row)))
 
 
 @app.get("/projects/{project_id}", response_model=Project)
@@ -296,7 +503,7 @@ def get_project(project_id: str) -> Project:
     project = row_to_dict(row)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    return Project.model_validate(project)
+    return Project.model_validate(project_response_dict(project))
 
 
 @app.get("/projects/{project_id}/papers", response_model=list[Paper])
@@ -763,7 +970,7 @@ def create_project_research_decisions(project_id: str, payload: ResearchDecision
             session_id,
             "gap.generate",
             "done",
-            f"已生成 {len(bundle.gaps)} 个 gap，并区分 true / engineering / pseudo gap。",
+            f"已生成 {len(bundle.gaps)} 个 gap；decision_status={bundle.decision_status}。",
             now,
         )
         insert_tool_event(
@@ -771,7 +978,7 @@ def create_project_research_decisions(project_id: str, payload: ResearchDecision
             session_id,
             "novelty.validate",
             "done",
-            f"已生成 novelty risk={bundle.validation.novelty_risk} 的 idea validation report。",
+            f"已生成 novelty risk={bundle.validation.novelty_risk} 的 idea validation report；证据质量={bundle.decision_status}。",
             now,
         )
         insert_tool_event(
@@ -792,13 +999,19 @@ def create_project_research_decisions(project_id: str, payload: ResearchDecision
         validation=bundle.validation.to_dict(),
         experiment=bundle.experiment.to_dict(),
         artifacts=[Artifact.model_validate(artifact) for artifact in artifacts],
+        decision_status=bundle.decision_status,  # type: ignore[arg-type]
+        evidence_quality=bundle.evidence_quality,
+        warnings=bundle.warnings,
         workflow_steps=[
             workflow_step_state(
                 step_id="gap-board",
-                status="complete" if bundle.gaps else "partial",
+                status=bundle.decision_status if bundle.gaps else "partial",
                 label="Gap Board",
-                summary=f"生成 {len(bundle.gaps)} 个 gap；novelty risk={bundle.validation.novelty_risk}。",
-                warnings=bundle.validation.key_risks,
+                summary=(
+                    f"{bundle.decision_status}：生成 {len(bundle.gaps)} 个 gap；"
+                    f"gap evidence={bundle.evidence_quality.get('gap_evidence_paper_count', 0)}。"
+                ),
+                warnings=bundle.warnings or bundle.validation.key_risks,
                 updated_at=now,
                 artifacts=artifacts[:2],
             ),
@@ -1013,6 +1226,7 @@ def create_agent_plan(payload: AgentPlanRequest) -> AgentPlanResponse:
     run_id = new_id("run")
     with get_connection() as connection:
         project = fetch_project_dict(connection, payload.project_id)
+        ensure_real_project_for_agent(project)
         session_id = ensure_active_session(connection, project, now)
         provider = get_model_provider(payload.provider)
         draft = provider.create_plan(payload.task, project)
@@ -1111,19 +1325,25 @@ def execute_agent_run(run_id: str, payload: AgentExecuteRequest) -> AgentExecute
 
         run_dict = dict(run)
         project = fetch_project_dict(connection, run_dict["project_id"])
+        ensure_real_project_for_agent(project)
         plan = json.loads(run_dict["plan_json"])
 
         if run_dict["status"] == "completed" and run_dict["result_artifact_id"]:
             artifact = fetch_artifact_dict(connection, run_dict["result_artifact_id"])
             papers = plan.get("papers", [])
             paper_count = infer_agent_paper_count(plan, papers)
+            run_summary = agent_run_summary(plan, {}, paper_count, [artifact])
             return AgentExecuteResponse(
                 run_id=run_id,
-                status="completed",
+                status=run_summary["status"],  # type: ignore[arg-type]
                 artifact=Artifact.model_validate(artifact),
                 papers=papers,
                 paper_count=paper_count,
                 summary_metrics=collect_agent_summary_metrics(plan, paper_count),
+                run_status_summary=str(run_summary["summary"]),
+                warnings=[str(warning) for warning in run_summary["warnings"]],
+                artifact_refs=run_summary["artifact_refs"],  # type: ignore[arg-type]
+                workflow_steps=[],
                 steps=plan["steps"],
             )
 
@@ -1194,6 +1414,8 @@ def execute_agent_run(run_id: str, payload: AgentExecuteRequest) -> AgentExecute
 
         result_artifact = fetch_artifact_dict(connection, context.artifact_id)
         completed_at = utc_now()
+        run_summary = agent_run_summary(plan, context.outputs, len(context.papers), context.artifacts)
+        workflow_steps = agent_workflow_steps(context.outputs, context.artifacts, completed_at)
         connection.execute(
             """
             UPDATE agent_runs
@@ -1215,11 +1437,15 @@ def execute_agent_run(run_id: str, payload: AgentExecuteRequest) -> AgentExecute
 
     return AgentExecuteResponse(
         run_id=run_id,
-        status="completed",
+        status=run_summary["status"],  # type: ignore[arg-type]
         artifact=Artifact.model_validate(result_artifact),
         papers=context.papers,
         paper_count=len(context.papers),
         summary_metrics=collect_agent_summary_metrics(plan, len(context.papers)),
+        run_status_summary=str(run_summary["summary"]),
+        warnings=[str(warning) for warning in run_summary["warnings"]],
+        artifact_refs=run_summary["artifact_refs"],  # type: ignore[arg-type]
+        workflow_steps=workflow_steps,
         steps=plan["steps"],
     )
 
@@ -1291,11 +1517,17 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
         return ToolResult(
             tool="literature_search",
             status="done",
-            summary=f"已检索真实论文候选 {len(result.papers)} 篇；当前项目 paper table 共 {len(papers)} 篇。",
+            summary=(
+                f"已检索真实论文候选 {len(result.papers)} 篇；"
+                f"{result.relevance_coverage.get('candidate_count', len(result.papers))} candidates / "
+                f"{result.relevance_coverage.get('returned_count', len(papers))} returned / "
+                f"{result.relevance_coverage.get('off_topic_count', 0)} off-topic filtered。"
+            ),
             summary_metrics={
                 "paper_count": len(papers),
                 "artifact_count": 1,
                 "warning_count": len(result.errors),
+                "relevance_coverage": result.relevance_coverage,
             },
             data={
                 "papers": papers,
@@ -1303,6 +1535,7 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
                 "artifact": artifact,
                 "paper_count": len(papers),
                 "errors": result.errors,
+                "relevance_coverage": result.relevance_coverage,
             },
         )
 
@@ -1536,17 +1769,26 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
         return ToolResult(
             tool="research_decision",
             status="done",
-            summary=f"已生成 {len(bundle.gaps)} 个 gap、idea validation 和 experiment plan。",
+            summary=(
+                f"{bundle.decision_status}：已生成 {len(bundle.gaps)} 个 gap、"
+                f"idea validation 和 experiment plan。"
+            ),
             summary_metrics={
                 "gap_count": len(bundle.gaps),
                 "artifact_count": len(artifacts),
                 "experiment_status": bundle.experiment.status,
+                "decision_status": bundle.decision_status,
+                "gap_evidence_paper_count": bundle.evidence_quality.get("gap_evidence_paper_count", 0),
+                "warning_count": len(bundle.warnings),
             },
             data={
                 "artifacts": artifacts,
                 "artifact_id": artifacts[-1]["id"],
                 "gap_count": len(bundle.gaps),
                 "experiment_status": bundle.experiment.status,
+                "decision_status": bundle.decision_status,
+                "evidence_quality": bundle.evidence_quality,
+                "warnings": bundle.warnings,
                 "anchor_paper_title": bundle.experiment.anchor_paper_title,
                 "experiment_claim": bundle.experiment.claim,
             },
