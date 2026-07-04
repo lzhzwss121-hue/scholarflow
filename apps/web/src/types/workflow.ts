@@ -35,6 +35,8 @@ export type WorkflowNotice = {
   message: string;
 };
 
+export type RelevanceCoverage = Record<string, number>;
+
 export type WorkflowBusyStates = {
   agent: boolean;
   artifactSaving: boolean;
@@ -63,6 +65,7 @@ export type WorkflowViewModel = {
   directionRound: number;
   latestPaperCard: ApiPaperCard | null;
   lastSavedArtifact: ApiArtifact | null;
+  literatureCoverage: RelevanceCoverage;
   literatureErrors: string[];
   literatureQuery: string;
   memoryQuestion: string;

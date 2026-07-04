@@ -21,6 +21,7 @@ import type { PaperRow, PlanStep, PlanStatus, TimelineEvent, ViewId } from "../m
 
 export type HydratedWorkflowState = {
   directionReview: ApiDirectionReviewResponse | null;
+  literatureCoverage: Record<string, number>;
   memoryResult: ApiResearchMemoryQueryResponse | null;
   paperCard: ApiPaperCard | null;
   researchDecision: ApiResearchDecisionResponse | null;
@@ -29,6 +30,7 @@ export type HydratedWorkflowState = {
 export function hydrateWorkflowStateFromArtifacts(items: ApiArtifact[]): HydratedWorkflowState {
   return {
     directionReview: hydrateDirectionReview(items),
+    literatureCoverage: hydrateLiteratureCoverage(items),
     memoryResult: hydrateResearchMemory(items),
     paperCard: hydratePaperCard(items),
     researchDecision: hydrateResearchDecision(items),
@@ -62,6 +64,7 @@ function selectHydrationArtifactIds(summaries: ApiArtifactSummary[]): string[] {
   const selected = new Set<string>();
   const groups = [
     ["direction_review"],
+    ["paper_table", "literature_search"],
     ["research_memory_answer"],
     ["gap_board", "idea_validation", "experiment_plan"],
     ["paper_card"],
@@ -76,6 +79,26 @@ function selectHydrationArtifactIds(summaries: ApiArtifactSummary[]): string[] {
     }
   }
   return [...selected];
+}
+
+function hydrateLiteratureCoverage(items: ApiArtifact[]): Record<string, number> {
+  const artifact = findArtifactPayload(
+    items,
+    (title) => title.includes("paper_table") || title.includes("literature_search"),
+    (payload) => isRecord(payload.relevance_coverage),
+  );
+  if (!artifact || !isRecord(artifact.payload.relevance_coverage)) {
+    return {};
+  }
+  return normalizeCoverageRecord(artifact.payload.relevance_coverage);
+}
+
+function normalizeCoverageRecord(payload: Record<string, unknown>): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(payload)
+      .filter(([, value]) => typeof value === "number")
+      .map(([key, value]) => [key, Number(value)]),
+  );
 }
 
 export function upsertArtifactDetail(items: ApiArtifact[], artifact: ApiArtifact): ApiArtifact[] {

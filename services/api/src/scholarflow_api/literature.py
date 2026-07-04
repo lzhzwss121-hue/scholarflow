@@ -34,14 +34,62 @@ REQUEST_CACHE: dict[str, tuple[float, str]] = {}
 SSL_CONTEXT: ssl.SSLContext | None = None
 SOURCE_FAILURE_THRESHOLD = 1
 RELEVANCE_QUALITIES = {"strong", "medium", "weak", "off_topic"}
+SUPPORT_ONLY_TERMS = {
+    "assessment",
+    "benchmark",
+    "evaluating",
+    "evaluation",
+    "evidence",
+    "metric",
+}
+
+DOMAIN_MISMATCH_PATTERNS: dict[str, list[str]] = {
+    "education": [
+        "classroom",
+        "student",
+        "teacher",
+        "school",
+        "pedagogy",
+        "curriculum",
+        "assessment and classroom learning",
+    ],
+    "clinical_meta": [
+        "prisma",
+        "systematic review",
+        "meta-analysis",
+        "clinical trial",
+        "patients",
+        "tuberculosis",
+        "treatment outcomes",
+    ],
+    "medical_segmentation": [
+        "brats",
+        "brain tumor",
+        "glioma",
+        "mri",
+        "medical image segmentation",
+        "segmentation challenge",
+    ],
+}
+
+DOMAIN_QUERY_ALLOWLIST: dict[str, list[str]] = {
+    "education": ["education", "classroom", "school", "student", "teacher", "教育", "课堂", "教学"],
+    "clinical_meta": ["clinical", "medical", "patient", "healthcare", "prisma", "systematic review", "医学", "临床"],
+    "medical_segmentation": ["medical", "segmentation", "brats", "mri", "brain tumor", "医学", "分割", "肿瘤"],
+}
 
 
 @dataclass
 class QueryIntent:
+    query_text: str
     terms: set[str]
     core_terms: set[str]
     groups: dict[str, set[str]]
     core_groups: set[str]
+    object_groups: set[str]
+    problem_groups: set[str]
+    support_groups: set[str]
+    direction_specific_terms: set[str]
 
 
 @dataclass
@@ -691,12 +739,19 @@ def score_candidate(candidate: PaperCandidate, query_terms: set[str] | QueryInte
     matched_groups = [
         group_name
         for group_name, group_terms in intent.groups.items()
-        if score_term_overlap(haystack, group_terms, weight=0.1, max_score=0.1).matched_terms
+        if group_matches_intent(group_name, group_terms, haystack)
     ]
+    matched_object_groups = [group for group in matched_groups if group in intent.object_groups]
+    matched_problem_groups = [group for group in matched_groups if group in intent.problem_groups]
+    matched_support_groups = [group for group in matched_groups if group in intent.support_groups]
     core_group_count = len([group for group in matched_groups if group in intent.core_groups])
     group_coverage = len(matched_groups) / max(len(intent.groups), 1)
+    specific_overlap = score_term_overlap(haystack, intent.direction_specific_terms, weight=0.22, max_score=1.2)
+    title_specific_overlap = score_term_overlap(title_text, intent.direction_specific_terms, weight=0.35, max_score=1.1)
     matched_terms = unique_preserve_order(
         [
+            *title_specific_overlap.matched_terms,
+            *specific_overlap.matched_terms,
             *title_core_overlap.matched_terms,
             *core_overlap.matched_terms,
             *title_overlap.matched_terms,
@@ -719,19 +774,53 @@ def score_candidate(candidate: PaperCandidate, query_terms: set[str] | QueryInte
         + source_prior
     )
 
-    has_core_match = bool(core_overlap.matched_terms) or not intent.core_terms
-    if not has_core_match:
+    domain_mismatch = detect_domain_mismatch(candidate, intent)
+    required_intent_match = satisfies_required_intent(intent, matched_object_groups, matched_problem_groups, core_group_count)
+    support_only_match = bool(matched_support_groups) and not matched_object_groups and not matched_problem_groups
+    has_specific_match = bool(specific_overlap.matched_terms or title_specific_overlap.matched_terms)
+    if domain_mismatch:
         quality = "off_topic"
-        score = min(score, 0.25)
-    elif group_coverage >= 0.5 or (core_group_count >= 2 and title_core_overlap.matched_terms) or score >= 1.8:
-        quality = "strong"
-    elif group_coverage >= 0.22 or core_group_count >= 1 or score >= 0.85:
-        quality = "medium"
-    else:
+        score = min(score, 0.2)
+    elif support_only_match:
+        quality = "off_topic"
+        score = min(score, 0.3)
+    elif not required_intent_match:
+        quality = "weak" if core_group_count else "off_topic"
+        score = min(score, 0.55 if core_group_count else 0.25)
+    elif not has_specific_match:
         quality = "weak"
+        score = min(score, 0.7)
+    elif is_strong_relevance(
+        intent=intent,
+        core_group_count=core_group_count,
+        matched_object_groups=matched_object_groups,
+        matched_problem_groups=matched_problem_groups,
+        title_specific_terms=title_specific_overlap.matched_terms,
+        title_core_terms=title_core_overlap.matched_terms,
+        score=score,
+    ):
+        quality = "strong"
+    else:
+        quality = "medium"
 
-    review_required = quality == "weak"
     if quality == "off_topic":
+        review_required = False
+    elif quality == "weak":
+        review_required = True
+    else:
+        review_required = False
+
+    if domain_mismatch:
+        reason = (
+            f"离题过滤：候选论文领域与 query 意图不一致；matched={', '.join(matched_terms[:6]) or 'support-only'}；"
+            f"来源 {candidate.source}，年份 {candidate.year or 'unknown'}。"
+        )
+    elif support_only_match:
+        reason = (
+            f"离题过滤：仅命中 support terms（{', '.join(matched_terms[:6]) or 'assessment/evaluation/evidence'}），"
+            "未命中核心研究对象或核心问题。"
+        )
+    elif quality == "off_topic":
         reason = (
             f"离题过滤：未命中研究方向核心意图；来源 {candidate.source}，年份 {candidate.year or 'unknown'}。"
         )
@@ -762,6 +851,56 @@ def priority_from_score(score: float, quality: str = "medium") -> str:
     return "Watch"
 
 
+def group_matches_intent(group_name: str, group_terms: set[str], haystack: str) -> bool:
+    if group_name == "evidence_faithfulness":
+        specific_terms = group_terms - {"evidence"}
+        return bool(score_term_overlap(haystack, specific_terms, weight=0.1, max_score=0.1).matched_terms)
+    return bool(score_term_overlap(haystack, group_terms, weight=0.1, max_score=0.1).matched_terms)
+
+
+def satisfies_required_intent(
+    intent: QueryIntent,
+    matched_object_groups: list[str],
+    matched_problem_groups: list[str],
+    core_group_count: int,
+) -> bool:
+    if intent.object_groups and intent.problem_groups:
+        return bool(matched_object_groups) and bool(matched_problem_groups)
+    if intent.object_groups:
+        return bool(matched_object_groups)
+    if intent.problem_groups:
+        return bool(matched_problem_groups)
+    return core_group_count > 0
+
+
+def is_strong_relevance(
+    intent: QueryIntent,
+    core_group_count: int,
+    matched_object_groups: list[str],
+    matched_problem_groups: list[str],
+    title_specific_terms: list[str],
+    title_core_terms: list[str],
+    score: float,
+) -> bool:
+    if intent.object_groups and intent.problem_groups:
+        return bool(matched_object_groups) and bool(matched_problem_groups) and (
+            core_group_count >= 3 or bool(title_specific_terms) or (bool(title_core_terms) and score >= 1.4)
+        )
+    return core_group_count >= 2 or (core_group_count >= 1 and bool(title_specific_terms or title_core_terms) and score >= 1.1)
+
+
+def detect_domain_mismatch(candidate: PaperCandidate, intent: QueryIntent) -> bool:
+    text = f"{candidate.title} {candidate.abstract} {candidate.venue} {candidate.type}".lower()
+    query = intent.query_text
+    for domain, patterns in DOMAIN_MISMATCH_PATTERNS.items():
+        if not any(pattern in text for pattern in patterns):
+            continue
+        if any(allowed in query for allowed in DOMAIN_QUERY_ALLOWLIST.get(domain, [])):
+            continue
+        return True
+    return False
+
+
 def significant_terms(query: str) -> set[str]:
     return build_query_intent(query).terms
 
@@ -771,64 +910,103 @@ def build_query_intent(query: str) -> QueryIntent:
     terms = set(extract_terms(lower, limit=32))
     groups: dict[str, set[str]] = {}
     core_groups: set[str] = set()
+    object_groups: set[str] = set()
+    problem_groups: set[str] = set()
+    support_groups: set[str] = set()
+    direction_specific_terms: set[str] = set()
 
-    def add_group(name: str, triggers: list[str], aliases: list[str], core: bool = True) -> None:
+    def add_group(
+        name: str,
+        triggers: list[str],
+        aliases: list[str],
+        core: bool = True,
+        role: str = "core",
+        specific_aliases: list[str] | None = None,
+    ) -> None:
+        nonlocal direction_specific_terms
         if any(trigger in lower for trigger in triggers):
             normalized_aliases = {normalize_intent_term(alias) for alias in aliases if normalize_intent_term(alias)}
             groups[name] = normalized_aliases
             terms.update(normalized_aliases)
             if core:
                 core_groups.add(name)
+            if role == "object":
+                object_groups.add(name)
+            elif role == "problem":
+                problem_groups.add(name)
+            else:
+                support_groups.add(name)
+            if core:
+                specific_source = specific_aliases if specific_aliases is not None else aliases
+                direction_specific_terms.update(
+                    normalize_intent_term(alias)
+                    for alias in specific_source
+                    if normalize_intent_term(alias) and normalize_intent_term(alias) not in SUPPORT_ONLY_TERMS
+                )
 
     add_group(
         "multimodal_vlm",
         ["多模态", "vision-language", "vision language", "vlm", "mllm", "multimodal", "multi modal"],
         ["multimodal", "multi modal", "vision language", "vision language model", "vlm", "mllm", "large vision language model"],
+        role="object",
     )
     add_group(
         "visual_question_answering",
         ["视觉问答", "visual question", "vqa"],
         ["visual question answering", "visual question", "vqa", "vqa v2", "ok vqa"],
+        role="object",
     )
     add_group(
         "evidence_faithfulness",
         ["证据", "忠实", "faithful", "faithfulness", "evidence", "grounding", "grounded"],
         ["evidence", "faithfulness", "faithful", "evidence faithfulness", "grounding", "grounded evidence", "visual grounding"],
+        role="problem",
+        specific_aliases=["faithfulness", "faithful", "evidence faithfulness", "grounding", "grounded evidence", "visual grounding"],
     )
     add_group(
         "hallucination",
         ["幻觉", "hallucination", "hallucinated"],
         ["hallucination", "object hallucination", "visual hallucination", "hallucination benchmark"],
+        role="problem",
     )
     add_group(
         "image_restoration",
         ["图像修复", "image restoration", "超分辨率", "super resolution", "super-resolution", "sisr"],
         ["image restoration", "blind image restoration", "super resolution", "super-resolution", "single image super resolution", "sisr"],
+        role="object",
     )
     add_group(
         "research_agent",
         ["智能体", "agent", "workflow", "工具调用", "科研"],
         ["agent", "research agent", "workflow", "tool augmented agent", "scientific discovery workflow"],
+        role="object",
     )
     add_group(
         "evaluation",
         ["评估", "评价", "benchmark", "evaluation", "eval", "metric", "测评"],
         ["evaluation", "benchmark", "metric", "assessment", "evaluating"],
         core=False,
+        role="support",
     )
     add_group(
         "large_language_model",
         ["大模型", "large language model", "llm", "foundation model"],
         ["large language model", "llm", "foundation model"],
         core=False,
+        role="support",
     )
 
     core_terms = set().union(*(groups[name] for name in core_groups)) if core_groups else set(terms)
     return QueryIntent(
+        query_text=lower,
         terms={term for term in terms if term},
         core_terms={term for term in core_terms if term},
         groups=groups or {"query": terms},
         core_groups=core_groups or {"query"},
+        object_groups=object_groups,
+        problem_groups=problem_groups,
+        support_groups=support_groups,
+        direction_specific_terms=direction_specific_terms or (core_terms - SUPPORT_ONLY_TERMS),
     )
 
 

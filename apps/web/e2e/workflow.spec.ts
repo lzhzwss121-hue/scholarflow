@@ -78,6 +78,132 @@ test("empty user project paper table does not show mock or demo papers", async (
   await expect(page.getByText(/Synthetic Example/)).toHaveCount(0);
 });
 
+test("paper table uses structured relevance coverage and partial workflow status", async ({ page }) => {
+  const project = {
+    id: "project_e2e_relevance_coverage",
+    title: "相关性覆盖回归",
+    description: "structured relevance coverage regression",
+    keyword: "多模态大模型在视觉问答中的证据忠实性评估",
+    field: "Artificial Intelligence",
+    language: "zh-CN",
+    workflow: "survey-to-experiment",
+    stage: "api",
+    active_session_id: "session_e2e_relevance_coverage",
+    created_at: "2026-07-02T00:00:00+00:00",
+    updated_at: "2026-07-02T00:00:00+00:00",
+  };
+  const paper = {
+    id: "paper_e2e_relevance_coverage",
+    project_id: project.id,
+    title: "Evidence Faithfulness Benchmark for Visual Question Answering",
+    authors: "A. Researcher",
+    abstract: "This benchmark evaluates VQA evidence faithfulness and visual grounding.",
+    year: "2026",
+    type: "Benchmark",
+    venue: "arXiv cs.CV",
+    source: "arxiv",
+    url: "https://arxiv.org/abs/2601.00005",
+    relation: "相关性 strong：命中 visual question answering 与 evidence faithfulness。",
+    priority: "High",
+    code: "unknown",
+    relevance_score: 1.6,
+    relevance_quality: "strong",
+    matched_terms: ["visual question answering", "faithfulness", "visual grounding"],
+    created_at: "2026-07-02T00:00:00+00:00",
+  };
+  const artifact = {
+    id: "artifact_e2e_relevance_coverage",
+    project_id: project.id,
+    title: "paper_table_relevance_coverage.md",
+    kind: "markdown",
+    content_markdown: "# Paper Table\n\nEvidence Faithfulness Benchmark for Visual Question Answering",
+    content_json: JSON.stringify({
+      query: project.keyword,
+      papers: [paper],
+      errors: ["openalex_cooldown:mock: mocked retrieval degradation"],
+      relevance_coverage: {
+        candidate_count: 50,
+        returned_count: 1,
+        strong_match_count: 1,
+        medium_match_count: 0,
+        weak_match_count: 12,
+        off_topic_count: 37,
+        filtered_count: 49,
+      },
+    }),
+    diff: "+ relevance coverage regression",
+    created_at: "2026-07-02T00:00:00+00:00",
+    updated_at: "2026-07-02T00:00:00+00:00",
+  };
+  let papers: typeof paper[] = [];
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
+  });
+  await page.route("**/projects", async (route) => {
+    await route.fulfill({ json: [project] });
+  });
+  await page.route(`**/projects/${project.id}/papers`, async (route) => {
+    await route.fulfill({ json: papers });
+  });
+  await page.route(`**/projects/${project.id}/timeline`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/literature/search`, async (route) => {
+    papers = [paper];
+    await route.fulfill({
+      status: 201,
+      json: {
+        query: project.keyword,
+        expanded_queries: [project.keyword],
+        papers,
+        artifact,
+        errors: ["openalex_cooldown:mock: mocked retrieval degradation"],
+        relevance_coverage: {
+          candidate_count: 50,
+          returned_count: 1,
+          strong_match_count: 1,
+          medium_match_count: 0,
+          weak_match_count: 12,
+          off_topic_count: 37,
+          filtered_count: 49,
+        },
+        workflow_steps: [
+          {
+            step_id: "paper-table",
+            status: "partial",
+            label: "Paper Table",
+            summary: "50 candidates / 1 returned / 1 strong / 0 medium / 37 off-topic filtered",
+            warnings: ["openalex_cooldown:mock: mocked retrieval degradation"],
+            errors: [],
+            artifact_refs: [
+              {
+                id: artifact.id,
+                title: artifact.title,
+                kind: artifact.kind,
+                created_at: artifact.created_at,
+              },
+            ],
+            updated_at: artifact.updated_at,
+          },
+        ],
+      },
+    });
+  });
+
+  await page.goto("/#paper-table");
+  await page.getByRole("button", { name: /重新检索/ }).click();
+  await expect(page.getByText(paper.title, { exact: true })).toBeVisible();
+  await expect(page.locator(".metric-card", { hasText: "Off-topic Filtered" }).getByText("37")).toBeVisible();
+  await expect(page.locator(".metric-card", { hasText: "Weak Filtered" }).getByText("12")).toBeVisible();
+  const paperTableStep = page.locator(".workflow-step", { hasText: "Paper Table" });
+  await expect(paperTableStep.getByText("partial")).toBeVisible();
+  await expect(paperTableStep.getByText("complete")).toHaveCount(0);
+});
+
 test("new project page has no inert action buttons and saves drafts locally", async ({ page }) => {
   await page.route("**/health", async (route) => {
     await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });

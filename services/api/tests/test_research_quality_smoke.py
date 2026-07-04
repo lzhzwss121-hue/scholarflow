@@ -75,10 +75,10 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                 priority="Medium",
             ),
             literature.PaperCandidate(
-                title="A Study on Junior High School Mathematics Classroom Evaluation",
+                title="Assessment and Classroom Learning",
                 year="2025",
                 authors="B. Researcher",
-                abstract="This paper studies classroom evaluation in middle school mathematics.",
+                abstract="This paper studies evidence-based classroom assessment and student learning evaluation.",
                 type="article",
                 venue="Education Journal",
                 source="openalex",
@@ -87,26 +87,38 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                 priority="Medium",
             ),
             literature.PaperCandidate(
-                title="Cultural and Creative IP Design for Regional Tourism",
+                title="PRISMA-guided Meta-analysis of Clinical Assessment Evidence",
                 year="2024",
                 authors="C. Researcher",
-                abstract="This paper analyzes cultural IP and creative product design.",
+                abstract="A systematic review and meta-analysis of clinical assessment evidence.",
                 type="article",
-                venue="Design Studies",
+                venue="Medical Evidence Review",
                 source="openalex",
                 url="https://openalex.org/W3",
                 relation="",
                 priority="Medium",
             ),
             literature.PaperCandidate(
-                title="Clinical Evaluation of Tuberculosis Treatment Outcomes",
+                title="BRATS Medical Image Segmentation Benchmark Evaluation",
                 year="2025",
                 authors="D. Researcher",
-                abstract="This work evaluates treatment outcomes for tuberculosis patients.",
+                abstract="This benchmark evaluates MRI brain tumor segmentation models on BRATS.",
                 type="article",
                 venue="Medical Journal",
                 source="openalex",
                 url="https://openalex.org/W4",
+                relation="",
+                priority="Medium",
+            ),
+            literature.PaperCandidate(
+                title="Clinical Evaluation of Tuberculosis Treatment Outcomes",
+                year="2025",
+                authors="E. Researcher",
+                abstract="This work evaluates treatment outcomes for tuberculosis patients.",
+                type="article",
+                venue="Medical Journal",
+                source="openalex",
+                url="https://openalex.org/W5",
                 relation="",
                 priority="Medium",
             ),
@@ -119,11 +131,36 @@ class ResearchQualitySmokeTest(unittest.TestCase):
 
         returned_titles = {paper.title for paper in ranked.papers}
         self.assertIn("Evaluating Object Hallucination in Large Vision-Language Models", returned_titles)
-        self.assertNotIn("A Study on Junior High School Mathematics Classroom Evaluation", returned_titles)
-        self.assertNotIn("Cultural and Creative IP Design for Regional Tourism", returned_titles)
+        self.assertNotIn("Assessment and Classroom Learning", returned_titles)
+        self.assertNotIn("PRISMA-guided Meta-analysis of Clinical Assessment Evidence", returned_titles)
+        self.assertNotIn("BRATS Medical Image Segmentation Benchmark Evaluation", returned_titles)
         self.assertNotIn("Clinical Evaluation of Tuberculosis Treatment Outcomes", returned_titles)
-        self.assertEqual(ranked.coverage["off_topic_count"], 3)
+        self.assertEqual(ranked.coverage["off_topic_count"], 4)
+        self.assertEqual(ranked.coverage["filtered_count"], 4)
         self.assertTrue(all(paper.priority != "High" for paper in candidates[1:]))
+        self.assertTrue(all(paper.relevance_quality not in {"strong", "medium"} for paper in candidates[1:]))
+
+    def test_support_only_assessment_evidence_terms_do_not_reach_medium(self) -> None:
+        candidate = literature.PaperCandidate(
+            title="Evidence Assessment Benchmark for Classroom Learning",
+            year="2026",
+            authors="A. Teacher",
+            abstract="This evaluation benchmark studies evidence assessment in classroom learning.",
+            type="article",
+            venue="Education Assessment",
+            source="openalex",
+            url="https://openalex.org/W_support_only",
+            relation="",
+            priority="Medium",
+        )
+
+        relevance = literature.score_candidate(
+            candidate,
+            literature.build_query_intent("多模态大模型在视觉问答中的证据忠实性评估"),
+        )
+
+        self.assertIn(relevance.quality, {"weak", "off_topic"})
+        self.assertNotIn(relevance.quality, {"strong", "medium"})
 
     def test_request_text_uses_in_memory_cache(self) -> None:
         literature.REQUEST_CACHE.clear()

@@ -53,6 +53,7 @@ import type {
   WorkflowStepStatus,
   WorkflowStepView,
   WorkflowViewModel,
+  RelevanceCoverage,
 } from "../types/workflow";
 
 const ACTIVE_PROJECT_STORAGE_KEY = "scholarflow.activeProjectId";
@@ -114,6 +115,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
   const [literatureQuery, setLiteratureQuery] = useState("");
   const [literatureBusy, setLiteratureBusy] = useState(false);
   const [literatureErrors, setLiteratureErrors] = useState<string[]>([]);
+  const [literatureCoverage, setLiteratureCoverage] = useState<RelevanceCoverage>({});
   const [directionInput, setDirectionInput] = useState("");
   const [directionRound, setDirectionRound] = useState(1);
   const [directionBusy, setDirectionBusy] = useState(false);
@@ -230,6 +232,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
         paperRows,
         literatureBusy,
         literatureErrors,
+        literatureCoverage,
         directionBusy,
         directionReview,
         paperCardBusy,
@@ -248,6 +251,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       directionBusy,
       directionReview,
       latestPaperCard,
+      literatureCoverage,
       literatureBusy,
       literatureErrors,
       memoryBusy,
@@ -351,6 +355,9 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     setLastSavedArtifact(selectArtifactForView(apiArtifacts, activeView));
     setHydrationWarnings(collectArtifactHydrationWarnings(apiArtifacts));
     const restored = hydrateWorkflowStateFromArtifacts(apiArtifacts);
+    if (Object.keys(restored.literatureCoverage).length) {
+      setLiteratureCoverage(restored.literatureCoverage);
+    }
     if (restored.directionReview) {
       setDirectionReview(restored.directionReview);
     }
@@ -373,6 +380,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     setLatestPaperCard(null);
     setHydrationWarnings([]);
     setBackendWorkflowSteps([]);
+    setLiteratureCoverage({});
   }
 
   function resetRuntimeResources() {
@@ -629,6 +637,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     const guard = beginRequest("literature");
     setLiteratureBusy(true);
     setLiteratureErrors([]);
+    setLiteratureCoverage({});
     setPaperRows([]);
     const stopProgress = startProgressMessages([
       "Literature Search: 正在扩展关键词并查询 arXiv / OpenAlex...",
@@ -651,6 +660,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       setPaperRows(result.papers.filter((paper) => !isSeedLikePaper(paper)).map(toPaperRow));
       setLastSavedArtifact(result.artifact);
       setLiteratureErrors(result.errors);
+      setLiteratureCoverage(result.relevance_coverage ?? {});
       applyBackendWorkflowSteps(result.workflow_steps);
       setApiMessage(
         result.relevance_coverage
@@ -662,6 +672,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       if (!isAbortError(error) && guard.isCurrent()) {
         setPaperRows([]);
         setLiteratureErrors(["文献检索请求失败。请检查网络、OpenAlex/arXiv 可用性或 API 日志。"]);
+        setLiteratureCoverage({});
         setApiMessage(formatApiFailure(error, "文献检索失败，请检查网络、OpenAlex/arXiv 可用性或 API 日志。"));
       }
     } finally {
@@ -961,6 +972,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     latestPaperCard,
     lastSavedArtifact,
     literatureErrors,
+    literatureCoverage,
     literatureQuery,
     memoryQuestion,
     memoryResult,
@@ -1090,6 +1102,7 @@ function buildWorkflowSteps(input: {
   paperRows: PaperRow[];
   literatureBusy: boolean;
   literatureErrors: string[];
+  literatureCoverage: RelevanceCoverage;
   directionBusy: boolean;
   directionReview: ApiDirectionReviewResponse | null;
   paperCardBusy: boolean;
@@ -1101,6 +1114,11 @@ function buildWorkflowSteps(input: {
 }): WorkflowStepView[] {
   const hasProject = Boolean(input.activeProject && !isDemoProject(input.activeProject.id));
   const hasPapers = input.paperRows.length > 0;
+  const returnedCount = input.literatureCoverage.returned_count ?? input.paperRows.length;
+  const hasCoverageWarnings =
+    (input.literatureCoverage.off_topic_count ?? 0) > 0 ||
+    (input.literatureCoverage.weak_match_count ?? 0) > 0 ||
+    (hasPapers && returnedCount < 5);
   const directionStatus = input.directionReview?.review_status ?? null;
   const experimentStatus = input.researchDecision?.experiment?.status;
   const updatedAt = input.activeProject?.updated_at ?? "";
@@ -1119,12 +1137,12 @@ function buildWorkflowSteps(input: {
       id: "paper-table",
       label: "Paper Table",
       summary: hasPapers
-        ? `${input.paperRows.length} strong/medium papers`
+        ? `${input.literatureCoverage.candidate_count ?? input.paperRows.length} candidates / ${returnedCount} returned / ${input.literatureCoverage.strong_match_count ?? 0} strong / ${input.literatureCoverage.medium_match_count ?? 0} medium`
         : "运行 Literature Search",
       status: resolveStepStatus({
         blocked: !hasProject || input.apiStatus === "offline",
         running: input.literatureBusy,
-        partial: input.literatureErrors.length > 0 && hasPapers,
+        partial: hasPapers && (input.literatureErrors.length > 0 || hasCoverageWarnings),
         complete: hasPapers,
       }),
       warnings: input.literatureErrors,

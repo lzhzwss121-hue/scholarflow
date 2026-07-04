@@ -81,6 +81,7 @@ export function App() {
             directionInput={viewModel.directionInput}
             directionReview={viewModel.directionReview}
             directionRound={viewModel.directionRound}
+            literatureCoverage={viewModel.literatureCoverage}
             literatureBusy={viewModel.busy.literature}
             literatureErrors={viewModel.literatureErrors}
             literatureQuery={viewModel.literatureQuery}

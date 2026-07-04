@@ -55,7 +55,7 @@ from scholarflow_api.direction_review import (
     render_direction_review_markdown,
     retrieve_direction_candidate_pool,
 )
-from scholarflow_api.literature import render_paper_table_json, render_paper_table_markdown, search_literature
+from scholarflow_api.literature import LOW_RECALL_THRESHOLD, render_paper_table_json, render_paper_table_markdown, search_literature
 from scholarflow_api.paper_card import (
     generate_deep_paper_card,
     paper_slug,
@@ -150,9 +150,14 @@ def workflow_step_state(
     )
 
 
-def literature_step_status(paper_count: int, errors: list[str]) -> str:
+def literature_step_status(paper_count: int, errors: list[str], relevance_coverage: dict[str, int] | None = None) -> str:
+    coverage = relevance_coverage or {}
     if paper_count <= 0:
         return "error" if errors else "blocked"
+    if coverage.get("off_topic_count", 0) > 0 or coverage.get("weak_match_count", 0) > 0:
+        return "partial"
+    if coverage.get("returned_count", paper_count) < LOW_RECALL_THRESHOLD:
+        return "partial"
     if any(error.startswith("low_recall:") for error in errors):
         return "partial"
     if errors:
@@ -387,11 +392,13 @@ def search_project_literature(project_id: str, payload: LiteratureSearchRequest)
         workflow_steps=[
             workflow_step_state(
                 step_id="paper-table",
-                status=literature_step_status(len(rows), result.errors),
+                status=literature_step_status(len(rows), result.errors, result.relevance_coverage),
                 label="Paper Table",
                 summary=(
                     f"{result.relevance_coverage.get('candidate_count', len(rows))} candidates / "
+                    f"{result.relevance_coverage.get('returned_count', len(rows))} returned / "
                     f"{result.relevance_coverage.get('strong_match_count', 0)} strong matches / "
+                    f"{result.relevance_coverage.get('medium_match_count', 0)} medium matches / "
                     f"{result.relevance_coverage.get('off_topic_count', 0)} off-topic filtered"
                 ),
                 warnings=result.errors,

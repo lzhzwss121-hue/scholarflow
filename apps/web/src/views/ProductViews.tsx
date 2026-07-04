@@ -686,6 +686,7 @@ interface ActiveViewProps {
   directionInput: string;
   directionReview: ApiDirectionReviewResponse | null;
   directionRound: number;
+  literatureCoverage: Record<string, number>;
   literatureBusy: boolean;
   literatureErrors: string[];
   literatureQuery: string;
@@ -741,6 +742,7 @@ export function ActiveView({
   directionInput,
   directionReview,
   directionRound,
+  literatureCoverage,
   literatureBusy,
   literatureErrors,
   literatureQuery,
@@ -806,10 +808,11 @@ export function ActiveView({
           {offlineNotice}
           <ProductPaperTableView
             activeProject={activeProject}
-          apiMessage={apiMessage}
-          artifactCount={artifactCount}
-          artifactSummaries={artifactSummaries}
-          apiStatus={apiStatus}
+            apiMessage={apiMessage}
+            artifactCount={artifactCount}
+            artifactSummaries={artifactSummaries}
+            apiStatus={apiStatus}
+            relevanceCoverage={literatureCoverage}
             errors={literatureErrors}
             isSearching={literatureBusy}
             onQueryChange={onLiteratureQueryChange}
@@ -1238,6 +1241,7 @@ export function ProductPaperTableView({
   apiStatus,
   errors,
   isSearching,
+  relevanceCoverage: structuredRelevanceCoverage,
   onLoadArtifact,
   onQueryChange,
   onSearch,
@@ -1253,6 +1257,7 @@ export function ProductPaperTableView({
   apiStatus: ApiStatus;
   errors: string[];
   isSearching: boolean;
+  relevanceCoverage: Record<string, number>;
   onLoadArtifact: (artifactId: string) => void;
   onQueryChange: (query: string) => void;
   onSearch: () => void;
@@ -1263,12 +1268,14 @@ export function ProductPaperTableView({
 }) {
   const [highOnly, setHighOnly] = useState(false);
   const displayPapers = highOnly ? papers.filter((paper) => paper.priority === "High") : papers;
-  const relevanceCoverage = derivePaperTableCoverage(papers, errors);
+  const relevanceCoverage = derivePaperTableCoverage(papers, structuredRelevanceCoverage);
   const strongCount = relevanceCoverage.strong_match_count;
   const mediumCount = relevanceCoverage.medium_match_count;
+  const weakCount = relevanceCoverage.weak_match_count;
   const offTopicCount = relevanceCoverage.off_topic_count;
   const retrievalWarnings = errors.filter(isRetrievalWarning);
   const backendErrors = errors.filter((error) => !isRetrievalWarning(error));
+  const isPartialPaperTable = offTopicCount > 0 || weakCount > 0 || retrievalWarnings.length > 0;
   const isDemo = isDemoProject(activeProject);
   const tableRows = displayPapers.map((paper) => ({
     title: paper.title,
@@ -1365,8 +1372,10 @@ export function ProductPaperTableView({
         </div>
 
         <div className="table-metrics">
-          <MetricCard icon={FileText} label="候选 / 返回" value={`${relevanceCoverage.candidate_count}/${papers.length}`} />
+          <MetricCard icon={FileText} label="Candidates" value={String(relevanceCoverage.candidate_count)} />
+          <MetricCard icon={FileText} label="Returned" value={String(relevanceCoverage.returned_count)} />
           <MetricCard icon={Target} label="Strong / Medium" value={`${strongCount}/${mediumCount}`} />
+          <MetricCard icon={AlertTriangle} label="Weak Filtered" value={String(weakCount)} amber={weakCount > 0} />
           <MetricCard icon={ShieldCheck} label="Off-topic Filtered" value={String(offTopicCount)} amber={offTopicCount > 0} />
           <MetricCard icon={AlertTriangle} label="Backend Error" value={String(backendErrors.length)} amber={backendErrors.length > 0} />
         </div>
@@ -1458,11 +1467,13 @@ export function ProductPaperTableView({
           <span>
             {errors.length
               ? retrievalWarnings.length
-                ? `检索源降级 warning：${warningPreview(retrievalWarnings, 2)}`
+                ? `Paper Table 为 partial：检索源降级或过滤到离题结果。${warningPreview(retrievalWarnings, 2)}`
                 : `后端错误：${warningPreview(backendErrors, 2)}`
               : isDemo
                 ? "当前选择的是 Demo 项目。Paper Table 不展示 seed/demo 论文，也不会把示例数据当作真实结果。"
-              : "当前没有检索警告。表格只展示本项目真实论文记录，不使用内置示例数据。"}
+                : isPartialPaperTable
+                  ? `Paper Table 为 partial：已过滤 ${weakCount} 篇弱匹配和 ${offTopicCount} 篇离题论文。`
+                  : "当前没有检索警告。表格只展示本项目真实论文记录，不使用内置示例数据。"}
           </span>
         </div>
       </section>
@@ -1472,37 +1483,19 @@ export function ProductPaperTableView({
   );
 }
 
-function derivePaperTableCoverage(papers: PaperRow[], errors: string[]): Record<string, number> {
-  const parsed = parseRelevanceCoverage(errors);
+function derivePaperTableCoverage(papers: PaperRow[], coverage: Record<string, number>): Record<string, number> {
   const strongFromRows = papers.filter((paper) => paper.relevanceQuality === "strong").length;
   const mediumFromRows = papers.filter((paper) => paper.relevanceQuality === "medium" || !paper.relevanceQuality).length;
+  const weakCount = coverage.weak_match_count ?? 0;
+  const offTopicCount = coverage.off_topic_count ?? 0;
   return {
-    candidate_count: parsed.candidate_count ?? papers.length,
-    returned_count: papers.length,
-    strong_match_count: parsed.strong_match_count ?? strongFromRows,
-    medium_match_count: parsed.medium_match_count ?? mediumFromRows,
-    weak_match_count: parsed.weak_match_count ?? 0,
-    off_topic_count: parsed.off_topic_count ?? 0,
-    filtered_count: parsed.filtered_count ?? (parsed.weak_match_count ?? 0) + (parsed.off_topic_count ?? 0),
-  };
-}
-
-function parseRelevanceCoverage(errors: string[]): Partial<Record<string, number>> {
-  const coverageWarning = errors.find((error) => error.startsWith("relevance_coverage:"));
-  if (!coverageWarning) {
-    return {};
-  }
-  const numbers = coverageWarning.match(/\d+/g)?.map((value) => Number(value)) ?? [];
-  if (numbers.length < 5) {
-    return {};
-  }
-  return {
-    candidate_count: numbers[0],
-    strong_match_count: numbers[1],
-    medium_match_count: numbers[2],
-    weak_match_count: numbers[3],
-    off_topic_count: numbers[4],
-    filtered_count: numbers[3] + numbers[4],
+    candidate_count: coverage.candidate_count ?? papers.length,
+    returned_count: coverage.returned_count ?? papers.length,
+    strong_match_count: coverage.strong_match_count ?? strongFromRows,
+    medium_match_count: coverage.medium_match_count ?? mediumFromRows,
+    weak_match_count: weakCount,
+    off_topic_count: offTopicCount,
+    filtered_count: coverage.filtered_count ?? weakCount + offTopicCount,
   };
 }
 
