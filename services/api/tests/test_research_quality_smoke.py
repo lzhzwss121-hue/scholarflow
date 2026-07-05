@@ -140,6 +140,142 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertTrue(all(paper.priority != "High" for paper in candidates[1:]))
         self.assertTrue(all(paper.relevance_quality not in {"strong", "medium"} for paper in candidates[1:]))
 
+    def test_chinese_multimodal_vqa_query_recalls_bilingual_related_papers(self) -> None:
+        calls: list[tuple[str, bool]] = []
+        positive_candidates = [
+            literature.PaperCandidate(
+                title="POPE: Polling-based Object Probing Evaluation for Object Hallucination",
+                year="2025",
+                authors="A. Researcher",
+                abstract=(
+                    "A hallucination benchmark for large vision-language models using VQA-style prompts "
+                    "to evaluate object hallucination and visual grounding."
+                ),
+                type="Benchmark",
+                venue="arXiv cs.CV",
+                source="arxiv",
+                url="https://arxiv.org/abs/positive1",
+                relation="",
+                priority="Medium",
+            ),
+            literature.PaperCandidate(
+                title="Faithful Visual Question Answering Requires Grounded Evidence",
+                year="2025",
+                authors="B. Researcher",
+                abstract=(
+                    "This work studies evidence faithfulness and visual grounding for visual question "
+                    "answering in large vision-language models."
+                ),
+                type="Method",
+                venue="arXiv cs.CV",
+                source="arxiv",
+                url="https://arxiv.org/abs/positive2",
+                relation="",
+                priority="Medium",
+            ),
+            literature.PaperCandidate(
+                title="Evaluating Object Hallucination in Large Vision-Language Models",
+                year="2025",
+                authors="C. Researcher",
+                abstract=(
+                    "The paper evaluates object hallucination in LVLMs with visual question answering "
+                    "and grounded visual evidence."
+                ),
+                type="Benchmark",
+                venue="arXiv cs.CV",
+                source="arxiv",
+                url="https://arxiv.org/abs/positive3",
+                relation="",
+                priority="Medium",
+            ),
+        ]
+        off_topic_candidates = [
+            literature.PaperCandidate(
+                title="Assessment and Classroom Learning",
+                year="2025",
+                authors="D. Researcher",
+                abstract="Evidence-based classroom assessment and student learning evaluation.",
+                type="article",
+                venue="Education Journal",
+                source="arxiv",
+                url="https://arxiv.org/abs/offtopic1",
+                relation="",
+                priority="Medium",
+            ),
+            literature.PaperCandidate(
+                title="PRISMA-guided Meta-analysis of Clinical Assessment Evidence",
+                year="2024",
+                authors="E. Researcher",
+                abstract="A systematic review and meta-analysis of clinical assessment evidence.",
+                type="article",
+                venue="Medical Evidence Review",
+                source="arxiv",
+                url="https://arxiv.org/abs/offtopic2",
+                relation="",
+                priority="Medium",
+            ),
+            literature.PaperCandidate(
+                title="BRATS Medical Image Segmentation Benchmark Evaluation",
+                year="2025",
+                authors="F. Researcher",
+                abstract="This benchmark evaluates MRI brain tumor segmentation models on BRATS.",
+                type="article",
+                venue="Medical Journal",
+                source="arxiv",
+                url="https://arxiv.org/abs/offtopic3",
+                relation="",
+                priority="Medium",
+            ),
+        ]
+
+        def fake_arxiv(query: str, max_results: int, relaxed: bool = False) -> list[literature.PaperCandidate]:
+            calls.append((query, relaxed))
+            lower = query.lower()
+            if any(signal in lower for signal in ["object hallucination", "pope", "visual question answering", "visual grounding"]):
+                return [*positive_candidates, *off_topic_candidates]
+            return off_topic_candidates
+
+        with patch.object(literature, "get_cached_retrieval", return_value=None), patch.object(
+            literature,
+            "save_cached_retrieval",
+            return_value=None,
+        ), patch.object(literature, "search_arxiv", side_effect=fake_arxiv):
+            result = literature.search_literature(
+                "多模态大模型在视觉问答中的证据忠实性评估",
+                max_results=8,
+                sources=["arxiv"],
+            )
+
+        returned_titles = [paper.title for paper in result.papers]
+        self.assertGreaterEqual(len(result.papers), 3)
+        self.assertGreaterEqual(
+            sum(1 for paper in result.papers if paper.relevance_quality in {"strong", "medium"}),
+            3,
+        )
+        self.assertTrue(
+            all(
+                any(
+                    signal in paper.title.lower()
+                    for signal in ["hallucination", "vision-language", "vlm", "lvlm", "pope", "grounding", "visual question"]
+                )
+                for paper in result.papers[:3]
+            ),
+        )
+        self.assertNotIn("Assessment and Classroom Learning", returned_titles)
+        self.assertNotIn("PRISMA-guided Meta-analysis of Clinical Assessment Evidence", returned_titles)
+        self.assertNotIn("BRATS Medical Image Segmentation Benchmark Evaluation", returned_titles)
+        self.assertGreaterEqual(result.relevance_coverage.get("off_topic_count", 0), 3)
+        self.assertTrue(any("object hallucination" in query.lower() or "visual question answering" in query.lower() for query, _ in calls))
+
+    def test_chinese_multimodal_vqa_relaxed_queries_are_not_support_only(self) -> None:
+        expanded = literature.expand_queries("多模态大模型在视觉问答中的证据忠实性评估")
+        relaxed = literature.build_relaxed_queries("多模态大模型在视觉问答中的证据忠实性评估", expanded)
+
+        self.assertTrue(relaxed)
+        self.assertFalse(any(literature.is_support_only_query(query) for query in relaxed))
+        pure_support = {"assessment", "benchmark", "evaluating", "evaluation", "assessment benchmark evaluating"}
+        self.assertTrue(pure_support.isdisjoint({query.lower() for query in relaxed}))
+
     def test_support_only_assessment_evidence_terms_do_not_reach_medium(self) -> None:
         candidate = literature.PaperCandidate(
             title="Evidence Assessment Benchmark for Classroom Learning",

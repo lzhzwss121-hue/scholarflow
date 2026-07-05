@@ -7,7 +7,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 from scholarflow_api.baseline_map import BaselineMap, render_baseline_map_markdown
-from scholarflow_api.literature import PaperCandidate, format_relevance_coverage, search_literature
+from scholarflow_api.literature import (
+    PaperCandidate,
+    expand_queries,
+    format_relevance_coverage,
+    search_literature,
+    significant_terms as literature_significant_terms,
+)
 from scholarflow_api.paper_card import DeepPaperCard, generate_deep_paper_card
 from scholarflow_api.research_sight import ResearchSight, build_research_sight
 
@@ -128,7 +134,12 @@ def build_direction_scope(direction: str, round_index: int) -> DirectionScope:
     current_year = datetime.now(timezone.utc).year
     start_year = current_year - 2
     subtopics = infer_subtopics(normalized)
-    queries = [normalized, *[f"{normalized} {subtopic}" for subtopic in subtopics[:5]]]
+    bilingual_queries = expand_queries(normalized)
+    queries = [
+        normalized,
+        *bilingual_queries[1:8],
+        *[f"{normalized} {subtopic}" for subtopic in subtopics[:5]],
+    ]
     return DirectionScope(
         direction=normalized,
         round=round_index,
@@ -569,7 +580,13 @@ def infer_subtopics(direction: str) -> list[str]:
     lower = direction.lower()
     subtopics: list[str] = []
     if "vlm" in lower or "vision" in lower or "multimodal" in lower or "多模态" in lower:
-        subtopics.extend(["vision-language model", "multimodal evaluation", "visual grounding"])
+        subtopics.extend(["vision-language model", "large vision-language model", "multimodal evaluation", "visual grounding"])
+    if "视觉问答" in lower or "visual question" in lower or "vqa" in lower:
+        subtopics.extend(["visual question answering", "VQA faithfulness", "grounded evidence VQA"])
+    if "证据" in lower or "忠实" in lower or "faithfulness" in lower or "grounding" in lower:
+        subtopics.extend(["evidence faithfulness", "visual grounding", "grounded evidence"])
+        if "多模态" in lower or "视觉问答" in lower or "vlm" in lower or "vision" in lower:
+            subtopics.extend(["object hallucination", "POPE object hallucination", "LVLM hallucination benchmark"])
     if "hallucination" in lower or "幻觉" in lower:
         subtopics.extend(["hallucination benchmark", "object hallucination", "evidence faithfulness"])
     if "agent" in lower or "workflow" in lower or "科研" in lower:
@@ -606,6 +623,9 @@ def parse_year(value: str) -> int | None:
 
 
 def significant_terms(query: str) -> set[str]:
+    expanded_terms = literature_significant_terms(query)
+    if expanded_terms:
+        return expanded_terms
     stop_words = {
         "the",
         "and",

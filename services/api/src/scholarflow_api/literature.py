@@ -356,6 +356,7 @@ def expand_queries(query: str) -> list[str]:
     normalized = normalize_space(query)
     expansions = [normalized]
     lower = normalized.lower()
+    expansions.extend(build_bilingual_intent_queries(normalized))
 
     if "vlm" in lower or "vision language" in lower or "multimodal" in lower or "多模态" in lower:
         expansions.extend(
@@ -390,14 +391,23 @@ def expand_queries(query: str) -> list[str]:
 
 def build_relaxed_queries(query: str, already_used: list[str]) -> list[str]:
     normalized = normalize_space(query)
-    terms = sorted(term for term in significant_terms(normalized) if term)
     relaxed: list[str] = []
-    if len(terms) >= 2:
-        relaxed.append(" ".join(terms[:3]))
-        relaxed.extend(terms[:3])
+    relaxed.extend(build_bilingual_intent_queries(normalized))
     if contains_cjk(normalized):
         relaxed.extend(chinese_relaxation_queries(normalized))
-    return [item for item in unique_preserve_order(relaxed) if item and item not in set(already_used)]
+
+    intent = build_query_intent(normalized)
+    core_terms = sorted(term for term in intent.direction_specific_terms if not is_support_only_query(term))
+    if not relaxed and len(core_terms) >= 2:
+        relaxed.append(" ".join(core_terms[:3]))
+    relaxed.extend(term for term in core_terms[:6] if is_safe_standalone_relaxed_query(term))
+
+    used = {item.lower() for item in already_used}
+    return [
+        item
+        for item in unique_preserve_order(relaxed)
+        if item and item.lower() not in used and not is_support_only_query(item)
+    ]
 
 
 def chinese_relaxation_queries(query: str) -> list[str]:
@@ -408,10 +418,87 @@ def chinese_relaxation_queries(query: str) -> list[str]:
     if "幻觉" in lower:
         queries.extend(["hallucination benchmark", "object hallucination", "visual grounding"])
     if "多模态" in lower:
-        queries.extend(["vision language model", "multimodal evaluation"])
+        queries.extend(["vision language model", "large vision language model", "LVLM hallucination"])
+    if "视觉问答" in lower:
+        queries.extend(["visual question answering", "VQA visual grounding"])
     if "证据" in lower or "忠实" in lower:
-        queries.extend(["evidence faithfulness", "grounded evidence"])
+        queries.extend(["evidence faithfulness", "grounded evidence", "visual grounding faithfulness"])
+    if ("多模态" in lower or "视觉问答" in lower) and ("证据" in lower or "忠实" in lower or "评估" in lower):
+        queries.extend(
+            [
+                "POPE object hallucination",
+                "object hallucination large vision language model",
+                "faithful visual question answering grounded evidence",
+            ],
+        )
     return queries
+
+
+def build_bilingual_intent_queries(query: str) -> list[str]:
+    intent = build_query_intent(query)
+    variants: list[str] = []
+    has_vlm = "multimodal_vlm" in intent.object_groups
+    has_vqa = "visual_question_answering" in intent.object_groups
+    has_evidence = "evidence_faithfulness" in intent.problem_groups
+    has_hallucination = "hallucination" in intent.problem_groups
+
+    if has_vlm and has_vqa and (has_evidence or has_hallucination):
+        variants.extend(
+            [
+                "object hallucination large vision language model",
+                "POPE object hallucination",
+                "LVLM hallucination benchmark",
+                "vision language model hallucination benchmark",
+                "visual question answering hallucination",
+                "faithful visual question answering grounded evidence",
+                "visual grounding VQA faithfulness",
+                "evidence grounding visual question answering",
+                "large vision language model visual grounding",
+            ],
+        )
+    elif has_vlm and (has_evidence or has_hallucination):
+        variants.extend(
+            [
+                "large vision language model hallucination",
+                "object hallucination vision language model",
+                "vision language model visual grounding",
+                "evidence faithfulness vision language model",
+            ],
+        )
+    elif has_vqa and has_evidence:
+        variants.extend(
+            [
+                "faithful visual question answering grounded evidence",
+                "visual grounding VQA faithfulness",
+                "evidence grounding visual question answering",
+            ],
+        )
+    elif has_hallucination:
+        variants.extend(["object hallucination", "hallucination benchmark", "POPE object hallucination"])
+
+    if "image_restoration" in intent.object_groups:
+        variants.extend(["image restoration benchmark", "blind image restoration", "single image super resolution"])
+    if "research_agent" in intent.object_groups:
+        variants.extend(["research agent workflow", "scientific discovery workflow", "tool augmented agent"])
+
+    return [variant for variant in unique_preserve_order(variants) if not is_support_only_query(variant)]
+
+
+def is_support_only_query(query: str) -> bool:
+    terms = {normalize_intent_term(term) for term in extract_terms(query, limit=16, include_domain_phrases=False)}
+    if not terms:
+        return False
+    support_terms = SUPPORT_ONLY_TERMS | {"eval", "evaluate", "evaluates"}
+    return all(term in support_terms for term in terms)
+
+
+def is_safe_standalone_relaxed_query(query: str) -> bool:
+    normalized = normalize_intent_term(query)
+    if is_support_only_query(normalized):
+        return False
+    if " " in normalized:
+        return True
+    return normalized in {"hallucination", "faithfulness", "grounding", "pope", "vqa", "vlm", "lvlm", "mllm", "sisr"}
 
 
 def search_arxiv(query: str, max_results: int, relaxed: bool = False) -> list[PaperCandidate]:
@@ -922,9 +1009,10 @@ def build_query_intent(query: str) -> QueryIntent:
         core: bool = True,
         role: str = "core",
         specific_aliases: list[str] | None = None,
+        force: bool = False,
     ) -> None:
         nonlocal direction_specific_terms
-        if any(trigger in lower for trigger in triggers):
+        if force or any(trigger in lower for trigger in triggers):
             normalized_aliases = {normalize_intent_term(alias) for alias in aliases if normalize_intent_term(alias)}
             groups[name] = normalized_aliases
             terms.update(normalized_aliases)
@@ -959,14 +1047,40 @@ def build_query_intent(query: str) -> QueryIntent:
     add_group(
         "evidence_faithfulness",
         ["证据", "忠实", "faithful", "faithfulness", "evidence", "grounding", "grounded"],
-        ["evidence", "faithfulness", "faithful", "evidence faithfulness", "grounding", "grounded evidence", "visual grounding"],
+        [
+            "evidence",
+            "faithfulness",
+            "faithful",
+            "evidence faithfulness",
+            "evidence grounding",
+            "grounding",
+            "grounded evidence",
+            "visual grounding",
+        ],
         role="problem",
-        specific_aliases=["faithfulness", "faithful", "evidence faithfulness", "grounding", "grounded evidence", "visual grounding"],
+        specific_aliases=[
+            "faithfulness",
+            "faithful",
+            "evidence faithfulness",
+            "evidence grounding",
+            "grounding",
+            "grounded evidence",
+            "visual grounding",
+        ],
     )
     add_group(
         "hallucination",
         ["幻觉", "hallucination", "hallucinated"],
-        ["hallucination", "object hallucination", "visual hallucination", "hallucination benchmark"],
+        [
+            "hallucination",
+            "object hallucination",
+            "visual hallucination",
+            "hallucination benchmark",
+            "pope",
+            "pope benchmark",
+            "lvlm hallucination",
+            "large vision language model hallucination",
+        ],
         role="problem",
     )
     add_group(
@@ -995,6 +1109,27 @@ def build_query_intent(query: str) -> QueryIntent:
         core=False,
         role="support",
     )
+    if (
+        "hallucination" not in groups
+        and "evidence_faithfulness" in groups
+        and ("multimodal_vlm" in groups or "visual_question_answering" in groups)
+    ):
+        add_group(
+            "hallucination",
+            [],
+            [
+                "hallucination",
+                "object hallucination",
+                "visual hallucination",
+                "hallucination benchmark",
+                "pope",
+                "pope benchmark",
+                "lvlm hallucination",
+                "large vision language model hallucination",
+            ],
+            role="problem",
+            force=True,
+        )
 
     core_terms = set().union(*(groups[name] for name in core_groups)) if core_groups else set(terms)
     return QueryIntent(
