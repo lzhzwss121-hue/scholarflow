@@ -70,6 +70,7 @@ export function App() {
             activeProject={viewModel.activeProject}
             agentBusy={viewModel.busy.agent}
             agentPlan={viewModel.agentPlan}
+            agentRunStatus={viewModel.agentRunStatus}
             agentTask={viewModel.agentTask}
             apiMessage={viewModel.apiMessage}
             apiStatus={viewModel.apiStatus}
@@ -91,6 +92,7 @@ export function App() {
             memoryTopK={viewModel.memoryTopK}
             projectDraft={viewModel.projectDraft}
             onAgentTaskChange={actions.onAgentTaskChange}
+            onCancelAgentRun={actions.onCancelAgentRun}
             onCreateProject={actions.onCreateProject}
             onCreateAgentPlan={actions.onCreateAgentPlan}
             onCreateDirectionReview={actions.onCreateDirectionReview}

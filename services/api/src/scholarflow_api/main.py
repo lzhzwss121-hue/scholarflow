@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 import hashlib
 import json
 import re
+import threading
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -78,6 +79,7 @@ from scholarflow_api.research_memory import (
 from scholarflow_api.schemas import (
     AgentExecuteRequest,
     AgentExecuteResponse,
+    AgentRunStatusResponse,
     AgentPlanRequest,
     AgentPlanResponse,
     Artifact,
@@ -388,6 +390,355 @@ def unique_strings(values: list[str]) -> list[str]:
         seen.add(key)
         result.append(normalized)
     return result
+
+
+TERMINAL_AGENT_RUN_STATUSES = {"completed", "completed_with_warnings", "partial", "failed", "cancelled"}
+
+
+def serialize_artifact_refs(artifacts: list[dict]) -> list[dict[str, str]]:
+    return [artifact_ref(artifact) for artifact in artifacts if isinstance(artifact, dict)]
+
+
+def serialize_workflow_steps(steps: list[WorkflowStepState]) -> list[dict]:
+    return [step.model_dump() for step in steps]
+
+
+def current_agent_tool(plan: dict) -> str:
+    for step in plan.get("steps", []) or []:
+        if isinstance(step, dict) and step.get("status") == "running":
+            return str(step.get("tool") or step.get("title") or "")
+    for step in plan.get("steps", []) or []:
+        if isinstance(step, dict) and step.get("status") == "queued":
+            return str(step.get("tool") or step.get("title") or "")
+    return ""
+
+
+def persist_agent_run_progress(
+    connection,
+    run_id: str,
+    plan: dict,
+    status: str,
+    *,
+    outputs: dict[str, object] | None = None,
+    papers: list[dict] | None = None,
+    artifacts: list[dict] | None = None,
+    result_artifact_id: str | None = None,
+    warnings: list[str] | None = None,
+    run_status_summary: str | None = None,
+) -> None:
+    papers = papers or []
+    artifacts = artifacts or []
+    outputs = outputs or {}
+    updated_at = utc_now()
+    run_summary = agent_run_summary(plan, outputs, len(papers), artifacts)
+    workflow_steps = agent_workflow_steps(outputs, artifacts, updated_at)
+    merged_warnings = unique_strings([*(warnings or []), *[str(item) for item in run_summary["warnings"]]])
+    current_tool = current_agent_tool(plan)
+    if run_status_summary is not None:
+        summary_text = run_status_summary
+    elif status == "running":
+        summary_text = f"running: {current_tool or 'agent loop'}."
+    elif status == "failed":
+        summary_text = "failed: Agent Run stopped with an error."
+    elif status == "cancelled":
+        summary_text = "cancelled: Agent Run stopped by user request."
+    else:
+        summary_text = str(run_summary["summary"])
+    plan["summary_metrics"] = collect_agent_summary_metrics(plan, len(papers))
+    plan["warnings"] = merged_warnings
+    plan["artifact_refs"] = serialize_artifact_refs(artifacts)
+    plan["workflow_steps"] = serialize_workflow_steps(workflow_steps)
+    plan["run_status_summary"] = summary_text
+    plan["paper_count"] = len(papers)
+    plan["current_tool"] = current_tool
+    plan["updated_at"] = updated_at
+    if outputs:
+        plan["tool_outputs"] = output_summary(outputs)
+    if papers:
+        plan["papers"] = papers
+
+    connection.execute(
+        """
+        UPDATE agent_runs
+        SET status = ?, plan_json = ?, result_artifact_id = COALESCE(?, result_artifact_id), updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            status,
+            json.dumps(plan, ensure_ascii=False, indent=2),
+            result_artifact_id,
+            updated_at,
+            run_id,
+        ),
+    )
+    connection.commit()
+
+
+def fetch_agent_run_dict(connection, run_id: str) -> dict:
+    run = connection.execute(
+        "SELECT * FROM agent_runs WHERE id = ?",
+        (run_id,),
+    ).fetchone()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    return dict(run)
+
+
+def parse_agent_plan(value: str) -> dict:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        parsed = {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def agent_status_response_from_run(connection, run_dict: dict) -> AgentRunStatusResponse:
+    plan = parse_agent_plan(run_dict.get("plan_json", "{}"))
+    steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
+    artifact = None
+    result_artifact_id = run_dict.get("result_artifact_id")
+    if result_artifact_id:
+        artifact_dict = fetch_artifact_dict(connection, str(result_artifact_id))
+        artifact = Artifact.model_validate(artifact_dict)
+
+    artifact_refs_payload = plan.get("artifact_refs") if isinstance(plan.get("artifact_refs"), list) else []
+    workflow_steps_payload = plan.get("workflow_steps") if isinstance(plan.get("workflow_steps"), list) else []
+    papers_payload = plan.get("papers") if isinstance(plan.get("papers"), list) else []
+    return AgentRunStatusResponse(
+        run_id=str(run_dict["id"]),
+        status=str(run_dict["status"]),  # type: ignore[arg-type]
+        steps=[step for step in steps if isinstance(step, dict)],
+        summary_metrics=plan.get("summary_metrics") if isinstance(plan.get("summary_metrics"), dict) else {},
+        warnings=[str(warning) for warning in plan.get("warnings", []) or []],
+        artifact_refs=[ArtifactRef.model_validate(ref) for ref in artifact_refs_payload if isinstance(ref, dict)],
+        workflow_steps=[
+            WorkflowStepState.model_validate(step)
+            for step in workflow_steps_payload
+            if isinstance(step, dict)
+        ],
+        run_status_summary=str(plan.get("run_status_summary") or ""),
+        current_tool=str(plan.get("current_tool") or current_agent_tool(plan)),
+        papers=[paper for paper in papers_payload if isinstance(paper, dict)],
+        paper_count=int(plan.get("paper_count") or infer_agent_paper_count(plan, plan.get("papers", []) if isinstance(plan.get("papers"), list) else [])),
+        artifact=artifact,
+        updated_at=str(run_dict.get("updated_at") or ""),
+    )
+
+
+def execute_response_from_status(status: AgentRunStatusResponse) -> AgentExecuteResponse:
+    return AgentExecuteResponse(
+        run_id=status.run_id,
+        status=status.status,
+        artifact=status.artifact,
+        papers=status.papers,
+        paper_count=status.paper_count,
+        summary_metrics=status.summary_metrics,
+        run_status_summary=status.run_status_summary,
+        warnings=status.warnings,
+        artifact_refs=status.artifact_refs,
+        workflow_steps=status.workflow_steps,
+        steps=status.steps,
+        updated_at=status.updated_at,
+    )
+
+
+def is_agent_cancellation_requested(connection, run_id: str) -> bool:
+    row = connection.execute(
+        "SELECT cancellation_requested FROM agent_runs WHERE id = ?",
+        (run_id,),
+    ).fetchone()
+    return bool(row and int(row["cancellation_requested"] or 0))
+
+
+def mark_queued_agent_steps_cancelled(plan: dict) -> None:
+    for step in plan.get("steps", []) or []:
+        if isinstance(step, dict) and step.get("status") in {"queued", "running"}:
+            step["status"] = "cancelled"
+
+
+def run_agent_loop_background(run_id: str) -> None:
+    try:
+        run_agent_loop(run_id)
+    except Exception as error:  # noqa: BLE001 - last-resort guard so background failures persist.
+        try:
+            with get_connection() as connection:
+                run_dict = fetch_agent_run_dict(connection, run_id)
+                plan = parse_agent_plan(run_dict["plan_json"])
+                for step in plan.get("steps", []) or []:
+                    if isinstance(step, dict) and step.get("status") == "running":
+                        step["status"] = "failed"
+                        break
+                persist_agent_run_progress(
+                    connection,
+                    run_id,
+                    plan,
+                    "failed",
+                    warnings=[f"Agent Run failed: {error}"],
+                    run_status_summary=f"failed: {error}",
+                )
+                insert_tool_event(
+                    connection,
+                    run_dict["session_id"],
+                    "agent.execute",
+                    "failed",
+                    str(error)[:500],
+                    utc_now(),
+                )
+                connection.commit()
+        except Exception:
+            return
+
+
+def run_agent_loop(run_id: str) -> None:
+    with get_connection() as connection:
+        run_dict = fetch_agent_run_dict(connection, run_id)
+        project = fetch_project_dict(connection, run_dict["project_id"])
+        ensure_real_project_for_agent(project)
+        plan = parse_agent_plan(run_dict["plan_json"])
+        context = ToolContext(run_id=run_id, project=project, task=run_dict["task"], plan=plan)
+        registry = build_agent_tool_registry(connection)
+
+        for step in plan.get("steps", []) or []:
+            if not isinstance(step, dict):
+                continue
+            tool_name = str(step.get("tool", ""))
+            if tool_name == "create_plan":
+                step["status"] = "done"
+                persist_agent_run_progress(connection, run_id, plan, "running")
+                continue
+            if is_agent_cancellation_requested(connection, run_id):
+                cancelled_at = utc_now()
+                mark_queued_agent_steps_cancelled(plan)
+                persist_agent_run_progress(
+                    connection,
+                    run_id,
+                    plan,
+                    "cancelled",
+                    outputs=context.outputs,
+                    papers=context.papers,
+                    artifacts=context.artifacts,
+                    warnings=["Agent Run cancelled by user request."],
+                    run_status_summary="cancelled: stopped before the next tool step.",
+                )
+                insert_tool_event(
+                    connection,
+                    run_dict["session_id"],
+                    "agent.cancel",
+                    "cancelled",
+                    "用户已取消 Agent Run，后续 tool step 已停止。",
+                    cancelled_at,
+                )
+                connection.commit()
+                return
+            if not registry.has(tool_name):
+                fail_agent_run_step(
+                    connection,
+                    run_dict,
+                    run_id,
+                    plan,
+                    step,
+                    tool_name,
+                    f"Agent tool is not registered: {tool_name}",
+                )
+                return
+
+            mark_plan_step_by_id(plan, str(step["id"]), "running")
+            insert_tool_event(
+                connection,
+                run_dict["session_id"],
+                tool_name,
+                "running",
+                f"正在执行 {tool_name}。",
+                utc_now(),
+            )
+            persist_agent_run_progress(
+                connection,
+                run_id,
+                plan,
+                "running",
+                outputs=context.outputs,
+                papers=context.papers,
+                artifacts=context.artifacts,
+            )
+            try:
+                result = registry.run(tool_name, context)
+                context.outputs[result.tool] = result.data
+                step_metrics = result.summary_metrics or infer_tool_summary_metrics(result.data)
+                context.summary_metrics[result.tool] = step_metrics
+                if result.data.get("papers"):
+                    context.papers = result.data["papers"]
+                    plan["papers"] = context.papers
+                if result.data.get("artifact"):
+                    context.artifacts.append(result.data["artifact"])
+                if result.data.get("artifacts"):
+                    context.artifacts.extend(result.data["artifacts"])
+                if result.data.get("artifact_id"):
+                    context.artifact_id = result.data["artifact_id"]
+                mark_plan_step_by_id(plan, str(step["id"]), "done", step_metrics)
+                insert_tool_event(
+                    connection,
+                    run_dict["session_id"],
+                    tool_name,
+                    "done",
+                    result.summary,
+                    utc_now(),
+                )
+                persist_agent_run_progress(
+                    connection,
+                    run_id,
+                    plan,
+                    "running",
+                    outputs=context.outputs,
+                    papers=context.papers,
+                    artifacts=context.artifacts,
+                )
+            except Exception as error:  # noqa: BLE001 - persist failed step for polling clients.
+                fail_agent_run_step(connection, run_dict, run_id, plan, step, tool_name, error)
+                return
+
+        if context.artifact_id is None and context.artifacts:
+            context.artifact_id = context.artifacts[-1].get("id")
+        if context.artifact_id is None:
+            persist_agent_run_progress(
+                connection,
+                run_id,
+                plan,
+                "failed",
+                outputs=context.outputs,
+                papers=context.papers,
+                artifacts=context.artifacts,
+                warnings=["Agent run completed without a result artifact."],
+                run_status_summary="failed: completed without a result artifact.",
+            )
+            return
+
+        completed_at = utc_now()
+        run_summary = agent_run_summary(plan, context.outputs, len(context.papers), context.artifacts)
+        final_status = str(run_summary["status"])
+        persist_agent_run_progress(
+            connection,
+            run_id,
+            plan,
+            final_status,
+            outputs=context.outputs,
+            papers=context.papers,
+            artifacts=context.artifacts,
+            result_artifact_id=context.artifact_id,
+            run_status_summary=str(run_summary["summary"]),
+        )
+        insert_tool_event(
+            connection,
+            run_dict["session_id"],
+            "agent.execute",
+            final_status if final_status != "completed_with_warnings" else "partial",
+            str(run_summary["summary"]),
+            completed_at,
+        )
+        connection.execute(
+            "UPDATE projects SET stage = ?, updated_at = ? WHERE id = ?",
+            ("agent-loop", completed_at, run_dict["project_id"]),
+        )
+        connection.commit()
 
 app.add_middleware(
     CORSMiddleware,
@@ -1253,9 +1604,9 @@ def create_agent_plan(payload: AgentPlanRequest) -> AgentPlanResponse:
             """
             INSERT INTO agent_runs (
                 id, project_id, session_id, task, provider, mode, status,
-                plan_json, plan_artifact_id, result_artifact_id, created_at, updated_at
+                plan_json, plan_artifact_id, result_artifact_id, cancellation_requested, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -1268,6 +1619,7 @@ def create_agent_plan(payload: AgentPlanRequest) -> AgentPlanResponse:
                 json.dumps(plan, ensure_ascii=False, indent=2),
                 plan_artifact["id"],
                 None,
+                0,
                 now,
                 now,
             ),
@@ -1309,6 +1661,60 @@ def create_agent_plan(payload: AgentPlanRequest) -> AgentPlanResponse:
     )
 
 
+@app.get("/agent/runs/{run_id}", response_model=AgentRunStatusResponse)
+def get_agent_run_status(run_id: str) -> AgentRunStatusResponse:
+    with get_connection() as connection:
+        run_dict = fetch_agent_run_dict(connection, run_id)
+        return agent_status_response_from_run(connection, run_dict)
+
+
+@app.post("/agent/runs/{run_id}/cancel", response_model=AgentRunStatusResponse)
+def cancel_agent_run(run_id: str) -> AgentRunStatusResponse:
+    cancelled_at = utc_now()
+    with get_connection() as connection:
+        run_dict = fetch_agent_run_dict(connection, run_id)
+        plan = parse_agent_plan(run_dict["plan_json"])
+        status = str(run_dict["status"])
+        if status in TERMINAL_AGENT_RUN_STATUSES:
+            return agent_status_response_from_run(connection, run_dict)
+        if status == "planned":
+            mark_queued_agent_steps_cancelled(plan)
+            persist_agent_run_progress(
+                connection,
+                run_id,
+                plan,
+                "cancelled",
+                warnings=["Agent Run cancelled before execution."],
+                run_status_summary="cancelled: stopped before execution.",
+            )
+        else:
+            connection.execute(
+                "UPDATE agent_runs SET cancellation_requested = ?, updated_at = ? WHERE id = ?",
+                (1, cancelled_at, run_id),
+            )
+            plan["warnings"] = unique_strings([*(plan.get("warnings", []) or []), "Cancellation requested; current tool will finish before stopping."])
+            plan["run_status_summary"] = "running: cancellation requested; waiting for current tool to finish."
+            plan["updated_at"] = cancelled_at
+            connection.execute(
+                "UPDATE agent_runs SET plan_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(plan, ensure_ascii=False, indent=2), cancelled_at, run_id),
+            )
+        insert_tool_event(
+            connection,
+            run_dict["session_id"],
+            "agent.cancel",
+            "running" if status == "running" else "cancelled",
+            (
+                "已请求取消 Agent Run；当前 tool 结束后会停止后续步骤。"
+                if status == "running"
+                else "已取消尚未开始执行的 Agent Run。"
+            ),
+            cancelled_at,
+        )
+        connection.commit()
+        return agent_status_response_from_run(connection, fetch_agent_run_dict(connection, run_id))
+
+
 @app.post("/agent/runs/{run_id}/execute", response_model=AgentExecuteResponse)
 def execute_agent_run(run_id: str, payload: AgentExecuteRequest) -> AgentExecuteResponse:
     if not payload.confirmed:
@@ -1316,138 +1722,32 @@ def execute_agent_run(run_id: str, payload: AgentExecuteRequest) -> AgentExecute
 
     now = utc_now()
     with get_connection() as connection:
-        run = connection.execute(
-            "SELECT * FROM agent_runs WHERE id = ?",
-            (run_id,),
-        ).fetchone()
-        if run is None:
-            raise HTTPException(status_code=404, detail="Agent run not found")
-
-        run_dict = dict(run)
+        run_dict = fetch_agent_run_dict(connection, run_id)
         project = fetch_project_dict(connection, run_dict["project_id"])
         ensure_real_project_for_agent(project)
-        plan = json.loads(run_dict["plan_json"])
+        if str(run_dict["status"]) in {"running", *TERMINAL_AGENT_RUN_STATUSES}:
+            return execute_response_from_status(agent_status_response_from_run(connection, run_dict))
 
-        if run_dict["status"] == "completed" and run_dict["result_artifact_id"]:
-            artifact = fetch_artifact_dict(connection, run_dict["result_artifact_id"])
-            papers = plan.get("papers", [])
-            paper_count = infer_agent_paper_count(plan, papers)
-            run_summary = agent_run_summary(plan, {}, paper_count, [artifact])
-            return AgentExecuteResponse(
-                run_id=run_id,
-                status=run_summary["status"],  # type: ignore[arg-type]
-                artifact=Artifact.model_validate(artifact),
-                papers=papers,
-                paper_count=paper_count,
-                summary_metrics=collect_agent_summary_metrics(plan, paper_count),
-                run_status_summary=str(run_summary["summary"]),
-                warnings=[str(warning) for warning in run_summary["warnings"]],
-                artifact_refs=run_summary["artifact_refs"],  # type: ignore[arg-type]
-                workflow_steps=[],
-                steps=plan["steps"],
-            )
+        plan = parse_agent_plan(run_dict["plan_json"])
 
         connection.execute(
-            "UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ?",
-            ("running", now, run_id),
+            "UPDATE agent_runs SET status = ?, cancellation_requested = ?, updated_at = ? WHERE id = ?",
+            ("running", 0, now, run_id),
         )
-
-        context = ToolContext(run_id=run_id, project=project, task=run_dict["task"], plan=plan)
-        registry = build_agent_tool_registry(connection)
-        for step in plan["steps"]:
-            tool_name = step.get("tool", "")
-            if tool_name == "create_plan":
-                step["status"] = "done"
-                continue
-            if not registry.has(tool_name):
-                fail_agent_run_step(
-                    connection,
-                    run_dict,
-                    run_id,
-                    plan,
-                    step,
-                    tool_name,
-                    f"Agent tool is not registered: {tool_name}",
-                )
-                raise HTTPException(status_code=400, detail=f"Agent tool is not registered: {tool_name}")
-
-            mark_plan_step_by_id(plan, step["id"], "running")
-            insert_tool_event(
-                connection,
-                run_dict["session_id"],
-                tool_name,
-                "running",
-                f"正在执行 {tool_name}。",
-                utc_now(),
-            )
-            try:
-                result = registry.run(tool_name, context)
-                context.outputs[result.tool] = result.data
-                step_metrics = result.summary_metrics or infer_tool_summary_metrics(result.data)
-                context.summary_metrics[result.tool] = step_metrics
-                if result.data.get("papers"):
-                    context.papers = result.data["papers"]
-                    plan["papers"] = context.papers
-                if result.data.get("artifact"):
-                    context.artifacts.append(result.data["artifact"])
-                if result.data.get("artifacts"):
-                    context.artifacts.extend(result.data["artifacts"])
-                if result.data.get("artifact_id"):
-                    context.artifact_id = result.data["artifact_id"]
-                mark_plan_step_by_id(plan, step["id"], "done", step_metrics)
-                insert_tool_event(
-                    connection,
-                    run_dict["session_id"],
-                    tool_name,
-                    "done",
-                    result.summary,
-                    utc_now(),
-                )
-            except Exception as error:
-                fail_agent_run_step(connection, run_dict, run_id, plan, step, tool_name, error)
-                raise
-
-        if context.artifact_id is None and context.artifacts:
-            context.artifact_id = context.artifacts[-1].get("id")
-        if context.artifact_id is None:
-            raise HTTPException(status_code=500, detail="Agent run completed without a result artifact")
-
-        result_artifact = fetch_artifact_dict(connection, context.artifact_id)
-        completed_at = utc_now()
-        run_summary = agent_run_summary(plan, context.outputs, len(context.papers), context.artifacts)
-        workflow_steps = agent_workflow_steps(context.outputs, context.artifacts, completed_at)
-        connection.execute(
-            """
-            UPDATE agent_runs
-            SET status = ?, plan_json = ?, result_artifact_id = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                "completed",
-                json.dumps(plan, ensure_ascii=False, indent=2),
-                context.artifact_id,
-                completed_at,
-                run_id,
-            ),
+        insert_tool_event(
+            connection,
+            run_dict["session_id"],
+            "agent.execute",
+            "running",
+            "Agent Run 已启动；前端将通过轮询刷新 tool timeline、artifact 和 workflow steps。",
+            now,
         )
-        connection.execute(
-            "UPDATE projects SET stage = ?, updated_at = ? WHERE id = ?",
-            ("agent-loop", completed_at, run_dict["project_id"]),
-        )
+        persist_agent_run_progress(connection, run_id, plan, "running")
+        run_dict = fetch_agent_run_dict(connection, run_id)
 
-    return AgentExecuteResponse(
-        run_id=run_id,
-        status=run_summary["status"],  # type: ignore[arg-type]
-        artifact=Artifact.model_validate(result_artifact),
-        papers=context.papers,
-        paper_count=len(context.papers),
-        summary_metrics=collect_agent_summary_metrics(plan, len(context.papers)),
-        run_status_summary=str(run_summary["summary"]),
-        warnings=[str(warning) for warning in run_summary["warnings"]],
-        artifact_refs=run_summary["artifact_refs"],  # type: ignore[arg-type]
-        workflow_steps=workflow_steps,
-        steps=plan["steps"],
-    )
+    threading.Thread(target=run_agent_loop_background, args=(run_id,), daemon=True).start()
+    with get_connection() as connection:
+        return execute_response_from_status(agent_status_response_from_run(connection, fetch_agent_run_dict(connection, run_id)))
 
 
 @app.get("/projects/{project_id}/sessions", response_model=list[Session])

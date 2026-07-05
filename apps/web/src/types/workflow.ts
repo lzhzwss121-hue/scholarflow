@@ -1,5 +1,6 @@
 import type {
   ApiAgentPlanResponse,
+  ApiAgentRunStatusResponse,
   ApiArtifact,
   ApiArtifactSummary,
   ApiDirectionReviewResponse,
@@ -51,6 +52,7 @@ export type WorkflowViewModel = {
   activeArtifact: ArtifactContent;
   activeProject: ApiProject | null;
   agentPlan: ApiAgentPlanResponse | null;
+  agentRunStatus: ApiAgentRunStatusResponse | null;
   agentTask: string;
   apiMessage: string;
   apiStatus: ApiStatus;
@@ -89,6 +91,7 @@ export type WorkflowActions = {
   onArtifactChange: (artifact: ArtifactContent) => void;
   onArtifactTabChange: (tab: ArtifactTab) => void;
   onCreateAgentPlan: () => void;
+  onCancelAgentRun: () => void;
   onCreateDirectionReview: () => void;
   onCreateProject: () => void;
   onCreateResearchDecision: () => void;

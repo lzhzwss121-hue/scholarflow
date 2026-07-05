@@ -3,6 +3,7 @@ import type {
   ApiAgentExecuteResponse,
   ApiAgentPlanRequest,
   ApiAgentPlanResponse,
+  ApiAgentRunStatusResponse,
   ApiArtifact,
   ApiArtifactCreate,
   ApiArtifactSummary,
@@ -321,5 +322,16 @@ export function executeAgentRun(runId: string, payload: ApiAgentExecuteRequest =
     ...options,
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export function getAgentRunStatus(runId: string, options?: RequestInit) {
+  return request<ApiAgentRunStatusResponse>(`/agent/runs/${runId}`, options);
+}
+
+export function cancelAgentRun(runId: string, options?: RequestInit) {
+  return request<ApiAgentRunStatusResponse>(`/agent/runs/${runId}/cancel`, {
+    ...options,
+    method: "POST",
   });
 }

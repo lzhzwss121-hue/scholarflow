@@ -686,7 +686,7 @@ export function toPlanStatus(status: ApiAgentPlanStep["status"]): PlanStatus {
   if (status === "running") {
     return "active";
   }
-  if (status === "failed") {
+  if (status === "failed" || status === "cancelled") {
     return "blocked";
   }
   return "queued";

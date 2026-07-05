@@ -173,6 +173,7 @@ def init_db() -> None:
                 plan_json TEXT NOT NULL DEFAULT '{}',
                 plan_artifact_id TEXT,
                 result_artifact_id TEXT,
+                cancellation_requested INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
@@ -218,6 +219,7 @@ def init_db() -> None:
         ensure_paper_card_columns(connection)
         ensure_paper_memory_columns(connection)
         ensure_direction_memory_columns(connection)
+        ensure_agent_run_columns(connection)
         seed_demo_project(connection)
 
 
@@ -278,6 +280,19 @@ def ensure_direction_memory_columns(connection: sqlite3.Connection) -> None:
     for name, definition in columns.items():
         if name not in existing_columns:
             connection.execute(f"ALTER TABLE direction_memories ADD COLUMN {name} {definition}")
+
+
+def ensure_agent_run_columns(connection: sqlite3.Connection) -> None:
+    existing_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(agent_runs)").fetchall()
+    }
+    columns = {
+        "cancellation_requested": "INTEGER NOT NULL DEFAULT 0",
+    }
+    for name, definition in columns.items():
+        if name not in existing_columns:
+            connection.execute(f"ALTER TABLE agent_runs ADD COLUMN {name} {definition}")
 
 
 def seed_demo_project(connection: sqlite3.Connection) -> None:

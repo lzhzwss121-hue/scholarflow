@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ApiAgentPlanResponse,
+  ApiAgentRunStatusResponse,
   ApiArtifact,
   ApiArtifactSummary,
   ApiDirectionReviewResponse,
@@ -12,12 +13,14 @@ import type {
   ApiWorkflowStepState,
 } from "@scholarflow/schemas";
 import {
+  cancelAgentRun,
   createAgentPlan,
   createDirectionReview,
   createProject,
   createProjectPaperCard,
   createResearchDecisions,
   executeAgentRun,
+  getAgentRunStatus,
   getArtifact,
   getHealth,
   getProjectTimeline,
@@ -112,6 +115,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
   );
   const [agentPlan, setAgentPlan] = useState<ApiAgentPlanResponse | null>(null);
   const [agentBusy, setAgentBusy] = useState(false);
+  const [agentRunStatus, setAgentRunStatus] = useState<ApiAgentRunStatusResponse | null>(null);
   const [agentRunWarnings, setAgentRunWarnings] = useState<string[]>([]);
   const [literatureQuery, setLiteratureQuery] = useState("");
   const [literatureBusy, setLiteratureBusy] = useState(false);
@@ -150,6 +154,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     memory: { id: 0, controller: null },
     decision: { id: 0, controller: null },
   });
+  const agentPollingRef = useRef<number | null>(null);
 
   useEffect(() => {
     activeProjectIdRef.current = activeProject?.id ?? null;
@@ -159,6 +164,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     const guard = beginRequest("workspace");
     loadWorkspace(guard);
     return () => {
+      stopAgentPolling();
       guard.finish();
     };
   }, []);
@@ -579,6 +585,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
         return;
       }
       setAgentPlan(plan);
+      setAgentRunStatus(null);
       setAgentRunWarnings([]);
       setLastSavedArtifact(plan.artifact);
       setApiMessage(`Research Plan 已生成，run: ${plan.run_id}`);
@@ -605,39 +612,61 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
 
     const guard = beginRequest("agent");
     setAgentBusy(true);
-    const stopProgress = startProgressMessages([
-      "Agent Run: 正在执行文献检索工具...",
-      "Agent Run: 正在生成方向精读与 Paper Memory...",
-      "Agent Run: 正在生成 Gap Board、Experiment Plan 并保存 artifact...",
-    ]);
+    stopAgentPolling();
     try {
       const result = await executeAgentRun(agentPlan.run_id, { confirmed: true }, { signal: guard.signal });
       if (!guard.isCurrent() || activeProjectIdRef.current !== agentPlan.project_id) {
         return;
       }
-      setAgentPlan({
-        ...agentPlan,
+      applyAgentRunSnapshot(agentPlan.project_id, {
+        run_id: result.run_id,
         status: result.status,
         steps: result.steps,
+        summary_metrics: result.summary_metrics,
+        warnings: result.warnings ?? [],
+        artifact_refs: result.artifact_refs ?? [],
+        workflow_steps: result.workflow_steps ?? [],
+        run_status_summary: result.run_status_summary,
+        current_tool: result.steps.find((step) => step.status === "running")?.tool ?? "",
+        paper_count: result.paper_count,
         artifact: result.artifact,
+        updated_at: result.updated_at ?? new Date().toISOString(),
       });
-      setAgentRunWarnings(result.warnings ?? []);
-      setLastSavedArtifact(result.artifact);
-      applyBackendWorkflowSteps(result.workflow_steps);
-      setApiMessage(
-        result.run_status_summary
-          ? `Agent Run ${result.run_status_summary} artifact: ${result.artifact.id}`
-          : `Agent Run 已完成，artifact: ${result.artifact.id}`,
-      );
-      await loadProjectResources(agentPlan.project_id, guard);
+      await refreshAgentProjectResources(agentPlan.project_id);
+      if (isTerminalAgentRunStatus(result.status)) {
+        setAgentBusy(false);
+      } else {
+        startAgentRunPolling(agentPlan.run_id, agentPlan.project_id);
+      }
     } catch (error) {
       if (!isAbortError(error) && guard.isCurrent()) {
         setApiMessage(formatApiFailure(error, "执行 Agent Run 失败，请查看 API 日志。"));
+        setAgentBusy(false);
       }
     } finally {
-      stopProgress();
-      setAgentBusy(false);
       guard.finish();
+    }
+  }
+
+  async function handleCancelAgentRun() {
+    const runId = agentRunStatus?.run_id ?? agentPlan?.run_id;
+    const projectId = agentPlan?.project_id ?? activeProject?.id;
+    if (!runId || !projectId) {
+      return;
+    }
+    try {
+      const status = await cancelAgentRun(runId);
+      applyAgentRunSnapshot(projectId, status);
+      setApiMessage(status.run_status_summary || "已请求取消 Agent Run。");
+      await refreshAgentProjectResources(projectId);
+      if (isTerminalAgentRunStatus(status.status)) {
+        stopAgentPolling();
+        setAgentBusy(false);
+      }
+    } catch (error) {
+      if (!isAbortError(error)) {
+        setApiMessage(formatApiFailure(error, "取消 Agent Run 失败，请查看 API 日志。"));
+      }
     }
   }
 
@@ -927,6 +956,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
   }
 
   function cancelLongRequests() {
+    stopAgentPolling();
     (["resources", "literature", "direction", "paper-card", "memory", "decision", "agent"] as RequestScope[]).forEach(
       (scope) => {
         requestStateRef.current[scope].controller?.abort("project-switch");
@@ -959,6 +989,95 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     });
   }
 
+  function applyAgentRunSnapshot(projectId: string, status: ApiAgentRunStatusResponse) {
+    if (activeProjectIdRef.current !== projectId) {
+      return;
+    }
+    setAgentRunStatus(status);
+    setAgentRunWarnings(status.warnings ?? []);
+    applyBackendWorkflowSteps(status.workflow_steps);
+    if (status.artifact) {
+      setLastSavedArtifact(status.artifact);
+      setProjectArtifacts((items) => upsertArtifactDetail(items, status.artifact as ApiArtifact));
+      setProjectArtifactSummaries((items) => upsertArtifactSummary(items, artifactSummaryFromDetail(status.artifact as ApiArtifact)));
+    }
+    setAgentPlan((current) => {
+      if (!current || current.run_id !== status.run_id) {
+        return current;
+      }
+      return {
+        ...current,
+        status: status.status,
+        steps: status.steps,
+        artifact: status.artifact ?? current.artifact,
+      };
+    });
+    const statusMessage = status.run_status_summary || `Agent Run ${status.status}`;
+    setApiMessage(status.current_tool && status.status === "running" ? `${statusMessage} 当前工具：${status.current_tool}` : statusMessage);
+  }
+
+  async function refreshAgentProjectResources(projectId: string) {
+    if (activeProjectIdRef.current !== projectId) {
+      return;
+    }
+    try {
+      const [apiPapers, apiTimeline, artifactSummaries] = await Promise.all([
+        listProjectPapers(projectId),
+        getProjectTimeline(projectId),
+        listProjectArtifactSummaries(projectId),
+      ]);
+      if (activeProjectIdRef.current !== projectId) {
+        return;
+      }
+      const apiArtifacts = await loadHydrationArtifacts(artifactSummaries);
+      applyProjectResources(projectId, apiPapers, apiTimeline, artifactSummaries, apiArtifacts);
+    } catch (error) {
+      if (!isAbortError(error)) {
+        setApiMessage(formatApiFailure(error, "刷新 Agent Run 进度失败，请查看 API 日志。"));
+      }
+    }
+  }
+
+  function startAgentRunPolling(runId: string, projectId: string) {
+    stopAgentPolling();
+    let inFlight = false;
+    const poll = async () => {
+      if (inFlight || activeProjectIdRef.current !== projectId) {
+        return;
+      }
+      inFlight = true;
+      try {
+        const status = await getAgentRunStatus(runId);
+        if (activeProjectIdRef.current !== projectId) {
+          return;
+        }
+        applyAgentRunSnapshot(projectId, status);
+        await refreshAgentProjectResources(projectId);
+        if (isTerminalAgentRunStatus(status.status)) {
+          stopAgentPolling();
+          setAgentBusy(false);
+        }
+      } catch (error) {
+        if (!isAbortError(error)) {
+          setApiMessage(formatApiFailure(error, "轮询 Agent Run 状态失败，请查看 API 日志。"));
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+    void poll();
+    agentPollingRef.current = window.setInterval(() => {
+      void poll();
+    }, 1500);
+  }
+
+  function stopAgentPolling() {
+    if (agentPollingRef.current !== null) {
+      window.clearInterval(agentPollingRef.current);
+      agentPollingRef.current = null;
+    }
+  }
+
   function blockDemoProjectAction() {
     setApiMessage("Demo 项目仅用于界面预览，不会运行或保存真实 workflow。请创建真实项目后再操作。");
   }
@@ -967,6 +1086,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     activeArtifact,
     activeProject,
     agentPlan,
+    agentRunStatus,
     agentTask,
     apiMessage,
     apiStatus,
@@ -1020,6 +1140,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     onDirectionInputChange: setDirectionInput,
     onDirectionRoundChange: setDirectionRound,
     onExecuteAgentRun: handleExecuteAgentRun,
+    onCancelAgentRun: handleCancelAgentRun,
     onGeneratePaperCard: handleGeneratePaperCard,
     onLiteratureQueryChange: setLiteratureQuery,
     onLoadArtifact: handleLoadArtifact,
@@ -1325,6 +1446,10 @@ function mergeWorkflowStatus(localStatus: WorkflowStepStatus, backendStatus: Wor
     error: 6,
   };
   return severity[localStatus] > severity[backendStatus] ? localStatus : backendStatus;
+}
+
+function isTerminalAgentRunStatus(status: string): boolean {
+  return ["completed", "completed_with_warnings", "partial", "failed", "cancelled"].includes(status);
 }
 
 function isViewId(value: string): value is ViewId {

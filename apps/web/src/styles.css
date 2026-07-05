@@ -2716,6 +2716,38 @@ button {
   line-height: 1.6;
 }
 
+.agent-run-progress {
+  margin-bottom: 12px;
+  border: 1px solid #d8e3ec;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(247, 250, 252, 0.9);
+  display: grid;
+  gap: 5px;
+}
+
+.agent-run-progress strong,
+.agent-run-progress span {
+  display: block;
+}
+
+.agent-run-progress strong {
+  color: #203246;
+  font-size: 13px;
+}
+
+.agent-run-progress span,
+.agent-run-progress li {
+  color: #526170;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.agent-run-progress ul {
+  margin: 2px 0 0;
+  padding-left: 18px;
+}
+
 .agent-plan-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

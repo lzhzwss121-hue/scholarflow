@@ -420,12 +420,21 @@ export interface ApiAgentExecuteRequest {
   confirmed?: boolean;
 }
 
+export type ApiAgentRunStatus =
+  | "planned"
+  | "running"
+  | "completed"
+  | "completed_with_warnings"
+  | "partial"
+  | "failed"
+  | "cancelled";
+
 export interface ApiAgentPlanStep {
   id: string;
   title: string;
   detail: string;
   tool: string;
-  status: "done" | "running" | "queued" | "failed";
+  status: "done" | "running" | "queued" | "partial" | "blocked" | "failed" | "cancelled";
   metrics?: Record<string, unknown>;
 }
 
@@ -435,7 +444,7 @@ export interface ApiAgentPlanResponse {
   session_id: string;
   task: string;
   provider: string;
-  status: "planned" | "running" | "completed" | "completed_with_warnings" | "partial";
+  status: ApiAgentRunStatus;
   rationale: string;
   steps: ApiAgentPlanStep[];
   artifact: ApiArtifact;
@@ -443,8 +452,8 @@ export interface ApiAgentPlanResponse {
 
 export interface ApiAgentExecuteResponse {
   run_id: string;
-  status: "completed" | "completed_with_warnings" | "partial";
-  artifact: ApiArtifact;
+  status: ApiAgentRunStatus;
+  artifact?: ApiArtifact | null;
   papers: Array<Record<string, unknown>>;
   paper_count: number;
   summary_metrics: Record<string, unknown>;
@@ -453,6 +462,23 @@ export interface ApiAgentExecuteResponse {
   artifact_refs?: ApiArtifactRef[];
   workflow_steps?: ApiWorkflowStepState[];
   steps: ApiAgentPlanStep[];
+  updated_at?: string;
+}
+
+export interface ApiAgentRunStatusResponse {
+  run_id: string;
+  status: ApiAgentRunStatus;
+  steps: ApiAgentPlanStep[];
+  summary_metrics: Record<string, unknown>;
+  warnings: string[];
+  artifact_refs: ApiArtifactRef[];
+  workflow_steps: ApiWorkflowStepState[];
+  run_status_summary?: string;
+  current_tool?: string;
+  papers?: Array<Record<string, unknown>>;
+  paper_count: number;
+  artifact?: ApiArtifact | null;
+  updated_at: string;
 }
 
 export interface ApiSession {
@@ -469,7 +495,7 @@ export interface ApiToolEvent {
   session_id: string;
   time_label: string;
   tool: string;
-  status: "done" | "running" | "queued";
+  status: "done" | "running" | "queued" | "failed" | "cancelled";
   summary: string;
   created_at: string;
 }

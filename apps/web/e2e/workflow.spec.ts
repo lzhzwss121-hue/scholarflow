@@ -527,7 +527,8 @@ test("agent execute refreshes timeline artifacts and keeps partial blocked workf
       metrics: {},
     },
   ];
-  let executed = false;
+  let runState: "planned" | "running" | "partial" = "planned";
+  let statusPolls = 0;
 
   await page.route("**/health", async (route) => {
     await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
@@ -536,19 +537,19 @@ test("agent execute refreshes timeline artifacts and keeps partial blocked workf
     await route.fulfill({ json: [project] });
   });
   await page.route(`**/projects/${project.id}/papers`, async (route) => {
-    await route.fulfill({ json: executed ? [paper] : [] });
+    await route.fulfill({ json: runState === "partial" ? [paper] : [] });
   });
   await page.route(`**/projects/${project.id}/timeline`, async (route) => {
     await route.fulfill({
-      json: executed
+      json: runState !== "planned"
         ? [
             {
               id: "event_e2e_agent_execute",
               session_id: project.active_session_id,
               time_label: "Now",
-              tool: "agent.execute",
-              status: "done",
-              summary: "Agent Run partial: experiment blocked.",
+              tool: runState === "running" ? "literature_search" : "agent.execute",
+              status: runState === "running" ? "running" : "done",
+              summary: runState === "running" ? "正在执行 literature_search。" : "Agent Run partial: experiment blocked.",
               created_at: artifact.updated_at,
             },
           ]
@@ -556,7 +557,7 @@ test("agent execute refreshes timeline artifacts and keeps partial blocked workf
     });
   });
   await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
-    await route.fulfill({ json: executed ? [artifactSummary(artifact)] : [] });
+    await route.fulfill({ json: runState === "partial" ? [artifactSummary(artifact)] : [] });
   });
   await page.route(`**/artifacts/${artifact.id}`, async (route) => {
     await route.fulfill({ json: artifact });
@@ -578,59 +579,94 @@ test("agent execute refreshes timeline artifacts and keeps partial blocked workf
     });
   });
   await page.route("**/agent/runs/run_e2e_agent_execute/execute", async (route) => {
-    executed = true;
+    runState = "running";
     await route.fulfill({
       status: 200,
       json: {
         run_id: "run_e2e_agent_execute",
-        status: "partial",
-        artifact,
-        papers: [paper],
-        paper_count: 1,
-        summary_metrics: { paper_count: 1, warning_count: 2 },
-        run_status_summary: "partial: 2 warning(s); latest artifact count=1.",
-        warnings: ["Direction Review partial: relevant_read_count=1.", "Experiment Plan blocked: missing reproducible anchor."],
-        artifact_refs: [
-          {
-            id: artifact.id,
-            title: artifact.title,
-            kind: artifact.kind,
-            created_at: artifact.created_at,
-          },
-        ],
-        workflow_steps: [
-          {
-            step_id: "gap-board",
-            status: "partial",
-            label: "Gap Board",
-            summary: "partial: gap evidence=1",
-            warnings: ["Gap evidence 只有 1 篇，低于 5 篇阈值。"],
-            errors: [],
-            artifact_refs: [],
-            updated_at: artifact.updated_at,
-          },
-          {
-            step_id: "experiment-planner",
-            status: "blocked",
-            label: "Experiment Plan",
-            summary: "缺少可复现实验 anchor。",
-            warnings: ["Experiment Plan blocked: missing reproducible anchor."],
-            errors: [],
-            artifact_refs: [
+        status: "running",
+        artifact: null,
+        papers: [],
+        paper_count: 0,
+        summary_metrics: {},
+        run_status_summary: "running: literature_search.",
+        warnings: [],
+        artifact_refs: [],
+        workflow_steps: [],
+        current_tool: "literature_search",
+        updated_at: artifact.updated_at,
+        steps: planSteps.map((step, index) => ({
+          ...step,
+          status: index === 0 ? "running" : "queued",
+        })),
+      },
+    });
+  });
+  await page.route("**/agent/runs/run_e2e_agent_execute", async (route) => {
+    statusPolls += 1;
+    if (statusPolls >= 2) {
+      runState = "partial";
+    }
+    const isFinal = runState === "partial";
+    await route.fulfill({
+      status: 200,
+      json: {
+        run_id: "run_e2e_agent_execute",
+        status: isFinal ? "partial" : "running",
+        artifact: isFinal ? artifact : null,
+        paper_count: isFinal ? 1 : 0,
+        summary_metrics: isFinal ? { paper_count: 1, warning_count: 2 } : {},
+        run_status_summary: isFinal ? "partial: 2 warning(s); latest artifact count=1." : "running: literature_search.",
+        current_tool: isFinal ? "" : "literature_search",
+        warnings: isFinal
+          ? ["Direction Review partial: relevant_read_count=1.", "Experiment Plan blocked: missing reproducible anchor."]
+          : [],
+        artifact_refs: isFinal
+          ? [
               {
                 id: artifact.id,
                 title: artifact.title,
                 kind: artifact.kind,
                 created_at: artifact.created_at,
               },
-            ],
-            updated_at: artifact.updated_at,
-          },
-        ],
-        steps: planSteps.map((step) => ({
+            ]
+          : [],
+        workflow_steps: isFinal
+          ? [
+              {
+                step_id: "gap-board",
+                status: "partial",
+                label: "Gap Board",
+                summary: "partial: gap evidence=1",
+                warnings: ["Gap evidence 只有 1 篇，低于 5 篇阈值。"],
+                errors: [],
+                artifact_refs: [],
+                updated_at: artifact.updated_at,
+              },
+              {
+                step_id: "experiment-planner",
+                status: "blocked",
+                label: "Experiment Plan",
+                summary: "缺少可复现实验 anchor。",
+                warnings: ["Experiment Plan blocked: missing reproducible anchor."],
+                errors: [],
+                artifact_refs: [
+                  {
+                    id: artifact.id,
+                    title: artifact.title,
+                    kind: artifact.kind,
+                    created_at: artifact.created_at,
+                  },
+                ],
+                updated_at: artifact.updated_at,
+              },
+            ]
+          : [],
+        updated_at: artifact.updated_at,
+        steps: planSteps.map((step, index) => ({
           ...step,
-          status: "done",
-          metrics: step.tool === "research_decision" ? { experiment_status: "blocked", warning_count: 1 } : {},
+          status: isFinal ? "done" : index === 0 ? "running" : "queued",
+          metrics: isFinal && step.tool === "research_decision" ? { experiment_status: "blocked", warning_count: 1 } : {},
         })),
       },
     });
@@ -644,11 +680,280 @@ test("agent execute refreshes timeline artifacts and keeps partial blocked workf
   await expect(agentPanel.getByRole("button", { name: "确认执行", exact: true })).toBeEnabled();
   await agentPanel.getByRole("button", { name: "确认执行", exact: true }).click();
 
+  await expect(agentPanel.getByText("running: literature_search.")).toBeVisible();
+  await expect(agentPanel.getByText(/当前工具：literature_search/)).toBeVisible();
   await expect(page.getByText("Agent Run partial: experiment blocked.")).toBeVisible();
   await expect(page.locator(".workflow-artifact-list").getByText("agent_run_e2e.md").first()).toBeVisible();
   await expect(page.locator(".workflow-step", { hasText: "Gap Board" }).locator(".workflow-status.partial")).toBeVisible();
   await expect(page.locator(".workflow-step", { hasText: "Experiment Plan" }).locator(".workflow-status.blocked")).toBeVisible();
   await expect(page.locator(".workflow-step", { hasText: "Experiment Plan" }).getByText("complete")).toHaveCount(0);
+});
+
+test("agent execute displays completed_with_warnings distinctly", async ({ page }) => {
+  const project = {
+    id: "project_e2e_agent_warnings",
+    title: "Agent Warnings",
+    description: "warning status regression",
+    keyword: "VQA evidence faithfulness",
+    field: "Artificial Intelligence",
+    language: "zh-CN",
+    workflow: "survey-to-experiment",
+    stage: "agent-loop",
+    active_session_id: "session_e2e_agent_warnings",
+    created_at: "2026-07-02T00:00:00+00:00",
+    updated_at: "2026-07-02T00:00:00+00:00",
+  };
+  const artifact = {
+    id: "artifact_e2e_agent_warnings",
+    project_id: project.id,
+    title: "agent_run_warnings.md",
+    kind: "markdown",
+    content_markdown: "# Agent Run\n\ncompleted_with_warnings",
+    content_json: JSON.stringify({ run_id: "run_e2e_agent_warnings" }),
+    diff: "+ warning regression",
+    created_at: project.created_at,
+    updated_at: project.updated_at,
+  };
+  const steps = [
+    {
+      id: "literature",
+      title: "Literature Search",
+      detail: "Retrieve candidates",
+      tool: "literature_search",
+      status: "queued",
+      metrics: {},
+    },
+  ];
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
+  });
+  await page.route("**/projects", async (route) => {
+    await route.fulfill({ json: [project] });
+  });
+  await page.route(`**/projects/${project.id}/papers`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/timeline`, async (route) => {
+    await route.fulfill({
+      json: [
+        {
+          id: "event_e2e_agent_warnings",
+          session_id: project.active_session_id,
+          time_label: "Now",
+          tool: "agent.execute",
+          status: "partial",
+          summary: "completed_with_warnings: degraded retrieval.",
+          created_at: project.updated_at,
+        },
+      ],
+    });
+  });
+  await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
+    await route.fulfill({ json: [artifactSummary(artifact)] });
+  });
+  await page.route(`**/artifacts/${artifact.id}`, async (route) => {
+    await route.fulfill({ json: artifact });
+  });
+  await page.route("**/agent/plan", async (route) => {
+    await route.fulfill({
+      status: 201,
+      json: {
+        run_id: "run_e2e_agent_warnings",
+        project_id: project.id,
+        session_id: project.active_session_id,
+        task: "Run workflow",
+        provider: "local",
+        status: "planned",
+        rationale: "Run real tools.",
+        steps,
+        artifact,
+      },
+    });
+  });
+  await page.route("**/agent/runs/run_e2e_agent_warnings/execute", async (route) => {
+    await route.fulfill({
+      json: {
+        run_id: "run_e2e_agent_warnings",
+        status: "completed_with_warnings",
+        artifact,
+        papers: [],
+        paper_count: 0,
+        summary_metrics: { warning_count: 1 },
+        run_status_summary: "completed_with_warnings: 1 warning(s); latest artifact count=1.",
+        warnings: ["degraded retrieval: OpenAlex timeout"],
+        artifact_refs: [{ id: artifact.id, title: artifact.title, kind: artifact.kind, created_at: artifact.created_at }],
+        workflow_steps: [],
+        updated_at: project.updated_at,
+        steps: steps.map((step) => ({ ...step, status: "done", metrics: { warning_count: 1 } })),
+      },
+    });
+  });
+
+  await page.goto("/#dashboard");
+  const agentPanel = page.locator(".agent-run-panel");
+  await agentPanel.getByRole("button", { name: "生成计划", exact: true }).click();
+  await agentPanel.getByRole("button", { name: "确认执行", exact: true }).click();
+  await expect(agentPanel.locator(".run-status.completed_with_warnings")).toBeVisible();
+  await expect(agentPanel.getByText("degraded retrieval: OpenAlex timeout")).toBeVisible();
+  await expect(agentPanel.locator(".run-status.complete")).toHaveCount(0);
+});
+
+test("agent execute can be cancelled from the run panel", async ({ page }) => {
+  const project = {
+    id: "project_e2e_agent_cancel",
+    title: "Agent Cancel",
+    description: "cancel regression",
+    keyword: "VQA evidence faithfulness",
+    field: "Artificial Intelligence",
+    language: "zh-CN",
+    workflow: "survey-to-experiment",
+    stage: "agent-loop",
+    active_session_id: "session_e2e_agent_cancel",
+    created_at: "2026-07-02T00:00:00+00:00",
+    updated_at: "2026-07-02T00:00:00+00:00",
+  };
+  const artifact = {
+    id: "artifact_e2e_agent_cancel_plan",
+    project_id: project.id,
+    title: "agent_plan_cancel.md",
+    kind: "markdown",
+    content_markdown: "# Plan",
+    content_json: "{}",
+    diff: "+ cancel regression",
+    created_at: project.created_at,
+    updated_at: project.updated_at,
+  };
+  const steps = [
+    {
+      id: "literature",
+      title: "Literature Search",
+      detail: "Retrieve candidates",
+      tool: "literature_search",
+      status: "queued",
+      metrics: {},
+    },
+    {
+      id: "decision",
+      title: "Research Decision",
+      detail: "Generate decision",
+      tool: "research_decision",
+      status: "queued",
+      metrics: {},
+    },
+  ];
+  let cancelled = false;
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
+  });
+  await page.route("**/projects", async (route) => {
+    await route.fulfill({ json: [project] });
+  });
+  await page.route(`**/projects/${project.id}/papers`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/timeline`, async (route) => {
+    await route.fulfill({
+      json: cancelled
+        ? [
+            {
+              id: "event_e2e_agent_cancel",
+              session_id: project.active_session_id,
+              time_label: "Now",
+              tool: "agent.cancel",
+              status: "cancelled",
+              summary: "已请求取消 Agent Run。",
+              created_at: project.updated_at,
+            },
+          ]
+        : [],
+    });
+  });
+  await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route("**/agent/plan", async (route) => {
+    await route.fulfill({
+      status: 201,
+      json: {
+        run_id: "run_e2e_agent_cancel",
+        project_id: project.id,
+        session_id: project.active_session_id,
+        task: "Run workflow",
+        provider: "local",
+        status: "planned",
+        rationale: "Run real tools.",
+        steps,
+        artifact,
+      },
+    });
+  });
+  await page.route("**/agent/runs/run_e2e_agent_cancel/execute", async (route) => {
+    await route.fulfill({
+      json: {
+        run_id: "run_e2e_agent_cancel",
+        status: "running",
+        artifact: null,
+        papers: [],
+        paper_count: 0,
+        summary_metrics: {},
+        run_status_summary: "running: literature_search.",
+        warnings: [],
+        artifact_refs: [],
+        workflow_steps: [],
+        current_tool: "literature_search",
+        updated_at: project.updated_at,
+        steps: steps.map((step, index) => ({ ...step, status: index === 0 ? "running" : "queued" })),
+      },
+    });
+  });
+  await page.route("**/agent/runs/run_e2e_agent_cancel/cancel", async (route) => {
+    cancelled = true;
+    await route.fulfill({
+      json: {
+        run_id: "run_e2e_agent_cancel",
+        status: "cancelled",
+        artifact: null,
+        paper_count: 0,
+        summary_metrics: {},
+        run_status_summary: "cancelled: stopped before the next tool step.",
+        current_tool: "",
+        warnings: ["Agent Run cancelled by user request."],
+        artifact_refs: [],
+        workflow_steps: [],
+        updated_at: project.updated_at,
+        steps: steps.map((step) => ({ ...step, status: "cancelled" })),
+      },
+    });
+  });
+  await page.route("**/agent/runs/run_e2e_agent_cancel", async (route) => {
+    await route.fulfill({
+      json: {
+        run_id: "run_e2e_agent_cancel",
+        status: cancelled ? "cancelled" : "running",
+        artifact: null,
+        paper_count: 0,
+        summary_metrics: {},
+        run_status_summary: cancelled ? "cancelled: stopped before the next tool step." : "running: literature_search.",
+        current_tool: cancelled ? "" : "literature_search",
+        warnings: cancelled ? ["Agent Run cancelled by user request."] : [],
+        artifact_refs: [],
+        workflow_steps: [],
+        updated_at: project.updated_at,
+        steps: steps.map((step, index) => ({ ...step, status: cancelled ? "cancelled" : index === 0 ? "running" : "queued" })),
+      },
+    });
+  });
+
+  await page.goto("/#dashboard");
+  const agentPanel = page.locator(".agent-run-panel");
+  await agentPanel.getByRole("button", { name: "生成计划", exact: true }).click();
+  await agentPanel.getByRole("button", { name: "确认执行", exact: true }).click();
+  await expect(agentPanel.getByRole("button", { name: "取消运行", exact: true })).toBeEnabled();
+  await agentPanel.getByRole("button", { name: "取消运行", exact: true }).click();
+  await expect(agentPanel.locator(".run-status.cancelled")).toBeVisible();
+  await expect(agentPanel.getByText("Agent Run cancelled by user request.")).toBeVisible();
 });
 
 test("workflow shell exposes core steps without synthetic rows", async ({ page }) => {

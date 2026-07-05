@@ -26,7 +26,7 @@ export interface PlanStep {
 export interface TimelineEvent {
   time: string;
   tool: string;
-  status: "done" | "running" | "queued";
+  status: "done" | "running" | "queued" | "partial" | "blocked" | "failed" | "cancelled";
   summary: string;
 }
 

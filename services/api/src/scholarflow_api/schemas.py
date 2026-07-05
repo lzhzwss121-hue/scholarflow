@@ -406,12 +406,23 @@ class AgentExecuteRequest(BaseModel):
     confirmed: bool = True
 
 
+AgentRunStatusLiteral = Literal[
+    "planned",
+    "running",
+    "completed",
+    "completed_with_warnings",
+    "partial",
+    "failed",
+    "cancelled",
+]
+
+
 class AgentPlanStep(BaseModel):
     id: str
     title: str
     detail: str
     tool: str
-    status: Literal["done", "running", "queued", "failed"]
+    status: Literal["done", "running", "queued", "partial", "blocked", "failed", "cancelled"]
     metrics: dict[str, object] = Field(default_factory=dict)
 
 
@@ -422,7 +433,7 @@ class AgentRun(BaseModel):
     task: str
     provider: str
     mode: str
-    status: Literal["planned", "running", "completed"]
+    status: AgentRunStatusLiteral
     plan_json: str
     plan_artifact_id: str | None
     result_artifact_id: str | None
@@ -436,7 +447,7 @@ class AgentPlanResponse(BaseModel):
     session_id: str
     task: str
     provider: str
-    status: Literal["planned", "running", "completed", "completed_with_warnings", "partial"]
+    status: AgentRunStatusLiteral
     rationale: str
     steps: list[AgentPlanStep]
     artifact: Artifact
@@ -444,16 +455,33 @@ class AgentPlanResponse(BaseModel):
 
 class AgentExecuteResponse(BaseModel):
     run_id: str
-    status: Literal["completed", "completed_with_warnings", "partial"]
-    artifact: Artifact
-    papers: list[dict[str, object]]
-    paper_count: int
+    status: AgentRunStatusLiteral
+    artifact: Artifact | None = None
+    papers: list[dict[str, object]] = Field(default_factory=list)
+    paper_count: int = 0
     summary_metrics: dict[str, object] = Field(default_factory=dict)
     run_status_summary: str = ""
     warnings: list[str] = Field(default_factory=list)
     artifact_refs: list[ArtifactRef] = Field(default_factory=list)
     workflow_steps: list[WorkflowStepState] = Field(default_factory=list)
     steps: list[AgentPlanStep]
+    updated_at: str = ""
+
+
+class AgentRunStatusResponse(BaseModel):
+    run_id: str
+    status: AgentRunStatusLiteral
+    steps: list[AgentPlanStep]
+    summary_metrics: dict[str, object] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    artifact_refs: list[ArtifactRef] = Field(default_factory=list)
+    workflow_steps: list[WorkflowStepState] = Field(default_factory=list)
+    run_status_summary: str = ""
+    current_tool: str = ""
+    papers: list[dict[str, object]] = Field(default_factory=list)
+    paper_count: int = 0
+    artifact: Artifact | None = None
+    updated_at: str
 
 
 class Session(BaseModel):
@@ -470,6 +498,6 @@ class ToolEvent(BaseModel):
     session_id: str
     time_label: str
     tool: str
-    status: Literal["done", "running", "queued"]
+    status: Literal["done", "running", "queued", "failed", "cancelled"]
     summary: str
     created_at: str

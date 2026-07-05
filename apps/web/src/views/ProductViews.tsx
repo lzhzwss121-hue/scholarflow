@@ -37,6 +37,7 @@ import {
   SCHOLARFLOW_VERSION,
   type ApiAgentPlanResponse,
   type ApiAgentPlanStep,
+  type ApiAgentRunStatusResponse,
   type ApiArtifact,
   type ApiArtifactRef,
   type ApiArtifactSummary,
@@ -675,6 +676,7 @@ interface ActiveViewProps {
   activeProject: ApiProject | null;
   agentBusy: boolean;
   agentPlan: ApiAgentPlanResponse | null;
+  agentRunStatus: ApiAgentRunStatusResponse | null;
   agentTask: string;
   apiMessage: string;
   apiStatus: ApiStatus;
@@ -698,6 +700,7 @@ interface ActiveViewProps {
   projectDraft: ProjectDraft;
   onAgentTaskChange: (task: string) => void;
   onCreateAgentPlan: () => void;
+  onCancelAgentRun: () => void;
   onCreateDirectionReview: () => void;
   onCreateProject: () => void;
   onCreateResearchDecision: () => void;
@@ -731,6 +734,7 @@ export function ActiveView({
   activeProject,
   agentBusy,
   agentPlan,
+  agentRunStatus,
   agentTask,
   apiMessage,
   apiStatus,
@@ -753,6 +757,7 @@ export function ActiveView({
   memoryTopK,
   projectDraft,
   onAgentTaskChange,
+  onCancelAgentRun,
   onCreateAgentPlan,
   onCreateDirectionReview,
   onCreateProject,
@@ -925,10 +930,12 @@ export function ActiveView({
           activeProject={activeProject}
           agentBusy={agentBusy}
           agentPlan={agentPlan}
+          agentRunStatus={agentRunStatus}
           agentTask={agentTask}
           apiStatus={apiStatus}
           artifactCount={artifactCount}
           onAgentTaskChange={onAgentTaskChange}
+          onCancelAgentRun={onCancelAgentRun}
           onCreateAgentPlan={onCreateAgentPlan}
           onExecuteAgentRun={onExecuteAgentRun}
           onSelectView={onSelectView}
@@ -943,10 +950,12 @@ export function ProductHomeView({
   activeProject,
   agentBusy,
   agentPlan,
+  agentRunStatus,
   agentTask,
   apiStatus,
   artifactCount,
   onAgentTaskChange,
+  onCancelAgentRun,
   onCreateAgentPlan,
   onExecuteAgentRun,
   onSelectView,
@@ -956,10 +965,12 @@ export function ProductHomeView({
   activeProject: ApiProject | null;
   agentBusy: boolean;
   agentPlan: ApiAgentPlanResponse | null;
+  agentRunStatus: ApiAgentRunStatusResponse | null;
   agentTask: string;
   apiStatus: ApiStatus;
   artifactCount: number;
   onAgentTaskChange: (task: string) => void;
+  onCancelAgentRun: () => void;
   onCreateAgentPlan: () => void;
   onExecuteAgentRun: () => void;
   onSelectView: (view: ViewId) => void;
@@ -1014,9 +1025,11 @@ export function ProductHomeView({
         activeProject={activeProject}
         agentBusy={agentBusy}
         agentPlan={agentPlan}
+        agentRunStatus={agentRunStatus}
         agentTask={agentTask}
         apiStatus={apiStatus}
         onAgentTaskChange={onAgentTaskChange}
+        onCancelAgentRun={onCancelAgentRun}
         onCreateAgentPlan={onCreateAgentPlan}
         onExecuteAgentRun={onExecuteAgentRun}
       />
@@ -2090,30 +2103,37 @@ function AgentRunPanel({
   activeProject,
   agentBusy,
   agentPlan,
+  agentRunStatus,
   agentTask,
   apiStatus,
   onAgentTaskChange,
+  onCancelAgentRun,
   onCreateAgentPlan,
   onExecuteAgentRun,
 }: {
   activeProject: ApiProject | null;
   agentBusy: boolean;
   agentPlan: ApiAgentPlanResponse | null;
+  agentRunStatus: ApiAgentRunStatusResponse | null;
   agentTask: string;
   apiStatus: ApiStatus;
   onAgentTaskChange: (task: string) => void;
+  onCancelAgentRun: () => void;
   onCreateAgentPlan: () => void;
   onExecuteAgentRun: () => void;
 }) {
   const isDemo = isDemoProject(activeProject);
+  const visibleRunStatus = agentRunStatus?.status ?? agentPlan?.status ?? "idle";
+  const isRunning = visibleRunStatus === "running";
   const canPlan = !isDemo && !agentBusy && apiStatus === "online" && agentTask.trim().length > 0;
   const canExecute = Boolean(
     agentPlan &&
-      !["completed", "completed_with_warnings", "partial"].includes(agentPlan.status) &&
+      !["running", "completed", "completed_with_warnings", "partial", "failed", "cancelled"].includes(visibleRunStatus) &&
       !agentBusy &&
       apiStatus === "online" &&
       !isDemo,
   );
+  const canCancel = Boolean(agentPlan && isRunning && apiStatus === "online" && !isDemo);
   const isDemoMode = Boolean(agentPlan?.steps.some((step) => step.tool === "search_mock_papers"));
   const disabledReason = isDemo
     ? "Demo 项目是只读 preview，不会执行真实 Agent 工具链。请创建真实项目。"
@@ -2134,7 +2154,7 @@ function AgentRunPanel({
               {isDemoMode ? "Demo Mode" : "Real Tools"}
             </span>
           ) : null}
-          <span className={`run-status ${agentPlan?.status ?? "idle"}`}>{agentPlan?.status ?? "idle"}</span>
+          <span className={`run-status ${visibleRunStatus}`}>{visibleRunStatus}</span>
         </div>
       </div>
 
@@ -2156,13 +2176,34 @@ function AgentRunPanel({
         </button>
         <button className="secondary-command" disabled={!canExecute} title={disabledReason} type="button" onClick={onExecuteAgentRun}>
           <Play size={17} />
-          确认执行
+          {isRunning ? "执行中" : "确认执行"}
+        </button>
+        <button className="secondary-command" disabled={!canCancel} title={canCancel ? "当前 tool 完成后停止后续步骤。" : disabledReason || "只有 running 状态可以取消。"} type="button" onClick={onCancelAgentRun}>
+          <X size={17} />
+          取消运行
         </button>
       </div>
 
       {agentPlan ? (
         <div className="agent-plan-box">
           <p>{agentPlan.rationale}</p>
+          {agentRunStatus ? (
+            <div className="agent-run-progress" aria-label="agent run progress">
+              <strong>{agentRunStatus.run_status_summary || `Agent Run ${agentRunStatus.status}`}</strong>
+              <span>
+                {agentRunStatus.status === "running"
+                  ? `Timeline、artifacts 和 workflow steps 正在刷新${agentRunStatus.current_tool ? `；当前工具：${agentRunStatus.current_tool}` : ""}`
+                  : `最终状态：${agentRunStatus.status}`}
+              </span>
+              {agentRunStatus.warnings.length ? (
+                <ul>
+                  {agentRunStatus.warnings.slice(0, 3).map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
           <div className="agent-plan-list">
             {agentPlan.steps.map((step) => (
               <div className="agent-plan-row" key={step.id}>

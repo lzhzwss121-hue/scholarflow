@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -1196,16 +1197,59 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                         ),
                     )
                     result = main_module.execute_agent_run(plan.run_id, AgentExecuteRequest(confirmed=True))
+                    self.assertEqual(result.status, "running")
+                    status = result
+                    for _ in range(80):
+                        polled = main_module.get_agent_run_status(plan.run_id)
+                        if polled.status in {"completed", "completed_with_warnings", "partial", "failed", "cancelled"}:
+                            status = polled
+                            break
+                        time.sleep(0.05)
 
-        literature_step = next(step for step in result.steps if step.tool == "literature_search")
-        self.assertIn(result.status, {"partial", "completed_with_warnings"})
+        literature_step = next(step for step in status.steps if step.tool == "literature_search")
+        self.assertIn(status.status, {"partial", "completed_with_warnings"})
         self.assertEqual(literature_step.status, "done")
-        self.assertGreater(result.paper_count, 0)
+        self.assertGreater(status.paper_count, 0)
         self.assertGreater(int(literature_step.metrics.get("paper_count") or 0), 0)
-        self.assertTrue(result.warnings)
-        self.assertTrue(result.run_status_summary)
-        self.assertTrue(any(step.step_id == "experiment-planner" for step in result.workflow_steps))
-        self.assertTrue(result.artifact.id)
+        self.assertTrue(status.warnings)
+        self.assertTrue(status.run_status_summary)
+        self.assertTrue(any(step.step_id == "experiment-planner" for step in status.workflow_steps))
+        self.assertIsNotNone(status.artifact)
+
+    def test_agent_run_cancel_marks_planned_run_cancelled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api.database import init_db
+                try:
+                    from scholarflow_api import main as main_module
+                except ModuleNotFoundError as error:
+                    if error.name == "fastapi":
+                        self.skipTest("FastAPI is not installed in the current Python environment.")
+                    raise
+                from scholarflow_api.schemas import AgentPlanRequest, ProjectCreate
+
+                init_db()
+                project = main_module.create_project(
+                    ProjectCreate(
+                        title="Agent Cancel Smoke",
+                        keyword="trustworthy VLM cancellation",
+                    ),
+                )
+                plan = main_module.create_agent_plan(
+                    AgentPlanRequest(
+                        project_id=project.id,
+                        task="Run then cancel a trustworthy VLM workflow",
+                        provider="local",
+                    ),
+                )
+                status = main_module.cancel_agent_run(plan.run_id)
+                timeline = main_module.get_project_timeline(project.id)
+
+        self.assertEqual(status.status, "cancelled")
+        self.assertTrue(any(step.status == "cancelled" for step in status.steps))
+        self.assertFalse(any(step.status == "running" for step in status.steps))
+        self.assertTrue(any(event.tool == "agent.cancel" for event in timeline))
 
 
 if __name__ == "__main__":
