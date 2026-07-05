@@ -256,6 +256,7 @@ def build_evidence_quality(
     medium_count = sum(1 for paper in papers if normalize_space(paper.get("relevance_quality", "")).lower() == "medium")
     survey_only_count = max(0, len(evidence_papers) - len(gap_evidence_papers))
     linked_card_count = sum(1 for card in paper_cards if normalize_space(card.get("paper_id", "")))
+    evidence_level_counts = count_card_evidence_levels(paper_cards)
     if len(gap_evidence_papers) == 0:
         decision_status = "blocked"
     elif len(gap_evidence_papers) < 5 or linked_card_count == 0:
@@ -271,20 +272,42 @@ def build_evidence_quality(
         "gap_evidence_paper_count": len(gap_evidence_papers),
         "survey_only_count": survey_only_count,
         "linked_card_count": linked_card_count,
+        "metadata_only_card_count": evidence_level_counts["metadata_only"],
+        "abstract_only_card_count": evidence_level_counts["abstract_only"],
+        "full_text_card_count": evidence_level_counts["full_text"],
+        "unknown_evidence_card_count": evidence_level_counts["unknown"],
         "minimum_gap_evidence_threshold": 5,
     }
+
+
+def count_card_evidence_levels(paper_cards: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"metadata_only": 0, "abstract_only": 0, "full_text": 0, "unknown": 0}
+    for card in paper_cards:
+        level = normalize_space(str(card.get("evidence_level", ""))).lower().replace("-", "_")
+        if level in {"metadata_abstract", "metadata_abstract_paper_card"}:
+            level = "abstract_only"
+        if level not in counts:
+            level = "unknown"
+        counts[level] += 1
+    return counts
 
 
 def build_evidence_quality_warnings(evidence_quality: dict[str, Any]) -> list[str]:
     warnings: list[str] = []
     gap_count = int(evidence_quality.get("gap_evidence_paper_count") or 0)
     linked_card_count = int(evidence_quality.get("linked_card_count") or 0)
+    full_text_count = int(evidence_quality.get("full_text_card_count") or 0)
+    limited_card_count = int(evidence_quality.get("metadata_only_card_count") or 0) + int(
+        evidence_quality.get("abstract_only_card_count") or 0
+    )
     if gap_count == 0:
         warnings.append("Gap evidence 不足：没有 strong/medium 且非 survey-only 的论文，不能下确定性研究结论。")
     elif gap_count < int(evidence_quality.get("minimum_gap_evidence_threshold") or 5):
         warnings.append(f"Gap evidence 只有 {gap_count} 篇，低于 5 篇阈值；Gap Board 标记为 partial。")
     if linked_card_count == 0:
         warnings.append("缺少绑定真实论文的 Paper Card；idea validation 只能给保守建议。")
+    if limited_card_count > 0 and full_text_count == 0:
+        warnings.append("当前 Paper Card 主要是摘要级/元数据级证据，不是全文级深读结论。")
     if int(evidence_quality.get("survey_only_count") or 0) > 0:
         warnings.append("Survey/review 论文只用于背景，不作为主要 gap evidence。")
     return warnings

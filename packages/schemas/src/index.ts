@@ -242,7 +242,10 @@ export interface ApiPaperCard {
   id: string;
   project_id: string;
   paper_id: string | null;
+  paper_title?: string;
   artifact_id: string | null;
+  source_artifact_title?: string;
+  card_source?: "paper_table" | "direction_review_artifact" | "manual_unbound";
   evidence_level?: "metadata_only" | "abstract_only" | "full_text";
   signals?: ApiPaperSignals;
   sections: ApiPaperCardSection[];
@@ -273,6 +276,10 @@ export interface ApiDirectionScope {
 
 export interface ApiDirectionPaperReading {
   paper: ApiPaper;
+  paper_id?: string;
+  paper_title?: string;
+  artifact_id?: string | null;
+  artifact_title?: string;
   abstract_translation: string;
   evidence_level?: "metadata_only" | "abstract_only" | "full_text";
   signals?: ApiPaperSignals;

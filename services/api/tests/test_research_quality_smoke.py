@@ -648,12 +648,16 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                     "minimal_reproduction": "Claim: the method reduces hallucination.",
                     "sections_json": "The paper mentions benchmark evaluation but omits concrete fields.",
                     "weakest_assumption": "The benchmark exposes real failures.",
+                    "evidence_level": "abstract_only",
                 },
             ],
             goal="build a one-week experiment",
         )
 
         self.assertEqual(bundle.experiment.status, "blocked")
+        self.assertEqual(bundle.evidence_quality["abstract_only_card_count"], 1)
+        self.assertEqual(bundle.evidence_quality["full_text_card_count"], 0)
+        self.assertTrue(any("摘要级/元数据级证据" in warning for warning in bundle.warnings))
         suggestions = " ".join(bundle.experiment.unblock_suggestions).lower()
         self.assertIn("dataset", suggestions)
         self.assertIn("baseline", suggestions)

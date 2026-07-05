@@ -40,6 +40,7 @@ import {
   collectArtifactHydrationWarnings,
   hydrateWorkflowStateFromArtifacts,
   loadHydrationArtifacts,
+  resolvePaperCardForPaper,
   selectArtifactForView,
   toPaperRow,
   toTimelineEvent,
@@ -244,6 +245,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
         directionReview,
         paperCardBusy,
         latestPaperCard,
+        selectedPaperId,
         memoryBusy,
         memoryResult,
         decisionBusy,
@@ -258,6 +260,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       directionBusy,
       directionReview,
       latestPaperCard,
+      selectedPaperId,
       literatureCoverage,
       literatureBusy,
       literatureErrors,
@@ -1258,6 +1261,7 @@ function buildWorkflowSteps(input: {
   directionReview: ApiDirectionReviewResponse | null;
   paperCardBusy: boolean;
   latestPaperCard: ApiPaperCard | null;
+  selectedPaperId: string;
   memoryBusy: boolean;
   memoryResult: ApiResearchMemoryQueryResponse | null;
   decisionBusy: boolean;
@@ -1274,6 +1278,10 @@ function buildWorkflowSteps(input: {
   const experimentStatus = input.researchDecision?.experiment?.status;
   const decisionStatus = input.researchDecision?.decision_status ?? "complete";
   const decisionEvidencePartial = isDecisionEvidencePartial(input.researchDecision);
+  const selectedPaper = input.paperRows.find((paper) => paper.id === input.selectedPaperId) ?? input.paperRows[0];
+  const selectedPaperCardMatch = resolvePaperCardForPaper(input.latestPaperCard, input.directionReview, selectedPaper);
+  const selectedPaperCard = selectedPaperCardMatch?.card ?? null;
+  const manualUnboundPaperCard = Boolean(input.latestPaperCard && !selectedPaperCard && input.latestPaperCard.card_source === "manual_unbound");
   const updatedAt = input.activeProject?.updated_at ?? "";
 
   const localSteps: WorkflowStepView[] = [
@@ -1321,12 +1329,20 @@ function buildWorkflowSteps(input: {
     toWorkflowStepView({
       id: "paper-reader",
       label: "Deep Paper Card",
-      summary: input.latestPaperCard ? `${input.latestPaperCard.sections.length} 个 section` : "选择论文生成 12 条阅读",
+      summary: selectedPaperCard
+        ? `当前论文 ${selectedPaperCard.sections.length} 个 section`
+        : manualUnboundPaperCard
+          ? "存在 manual/unbound card，未绑定当前论文"
+          : "选择论文生成 12 条阅读",
       status: resolveStepStatus({
-        blocked: !hasProject || (!hasPapers && !input.latestPaperCard) || input.apiStatus === "offline",
+        blocked: !hasProject || (!hasPapers && !selectedPaperCard && !manualUnboundPaperCard) || input.apiStatus === "offline",
         running: input.paperCardBusy,
-        complete: Boolean(input.latestPaperCard),
-        partial: Boolean(input.latestPaperCard && input.latestPaperCard.sections.length < 12),
+        complete: Boolean(selectedPaperCard && selectedPaperCard.sections.length >= 12),
+        partial: Boolean(
+          manualUnboundPaperCard ||
+            (selectedPaperCard && selectedPaperCard.sections.length < 12) ||
+            (selectedPaperCard && selectedPaperCard.evidence_level !== "full_text"),
+        ),
       }),
       warnings: [],
       errors: [],
@@ -1388,7 +1404,12 @@ function isDecisionEvidencePartial(decision: ApiResearchDecisionResponse | null)
   }
   const gapEvidenceCount = Number(quality.gap_evidence_paper_count ?? 0);
   const threshold = Number(quality.minimum_gap_evidence_threshold ?? 5);
-  return Number.isFinite(gapEvidenceCount) && Number.isFinite(threshold) && gapEvidenceCount < threshold;
+  const fullTextCount = Number(quality.full_text_card_count ?? 0);
+  const limitedEvidenceCount = Number(quality.abstract_only_card_count ?? 0) + Number(quality.metadata_only_card_count ?? 0);
+  return (
+    (Number.isFinite(gapEvidenceCount) && Number.isFinite(threshold) && gapEvidenceCount < threshold) ||
+    (Number.isFinite(limitedEvidenceCount) && limitedEvidenceCount > 0 && (!Number.isFinite(fullTextCount) || fullTextCount === 0))
+  );
 }
 
 function toWorkflowStepView(input: {

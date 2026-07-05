@@ -27,6 +27,14 @@ export type HydratedWorkflowState = {
   researchDecision: ApiResearchDecisionResponse | null;
 };
 
+export type PaperCardMatchSource = "paper_table" | "direction_review_artifact" | "manual_unbound";
+
+export type PaperCardMatch = {
+  card: ApiPaperCard;
+  matchedBy: "paper_id" | "title" | "artifact_slug" | "manual_unbound";
+  source: PaperCardMatchSource;
+};
+
 export function hydrateWorkflowStateFromArtifacts(items: ApiArtifact[]): HydratedWorkflowState {
   return {
     directionReview: hydrateDirectionReview(items),
@@ -78,6 +86,10 @@ function selectHydrationArtifactIds(summaries: ApiArtifactSummary[]): string[] {
       selected.add(hit.id);
     }
   }
+  summaries
+    .filter((artifact) => isDirectionPaperCardTitle(artifact.title))
+    .slice(0, 15)
+    .forEach((artifact) => selected.add(artifact.id));
   return [...selected];
 }
 
@@ -167,17 +179,33 @@ export function normalizeDirectionReading(
   payloadReading: unknown,
   artifactProjectId: string,
   artifactCreatedAt: string,
+  artifactId = "",
+  artifactTitle = "",
 ): ApiDirectionPaperReading {
   const reading: Record<string, unknown> = isRecord(payloadReading) ? payloadReading : {};
   const card: Record<string, unknown> = isRecord(reading.card) ? reading.card : {};
+  const rawPaper: Record<string, unknown> = isRecord(reading.paper) ? { ...reading.paper } : {};
+  const explicitPaperId = firstString(reading.paper_id, rawPaper.id, card.paper_id);
+  const explicitPaperTitle = firstString(reading.paper_title, rawPaper.title, card.paper_title, reading.title);
+  if (!asString(rawPaper.id) && explicitPaperId) {
+    rawPaper.id = explicitPaperId;
+  }
+  if (!asString(rawPaper.title) && explicitPaperTitle) {
+    rawPaper.title = explicitPaperTitle;
+  }
   const sectionPayloads = Array.isArray(reading.sections)
     ? reading.sections
     : Array.isArray(card.sections)
       ? card.sections
       : [];
+  const paper = normalizeApiPaper(rawPaper, artifactProjectId, artifactCreatedAt);
 
   return {
-    paper: normalizeApiPaper(reading.paper, artifactProjectId, artifactCreatedAt),
+    paper,
+    paper_id: explicitPaperId || paper.id,
+    paper_title: explicitPaperTitle || paper.title,
+    artifact_id: artifactId || null,
+    artifact_title: artifactTitle,
     abstract_translation: asString(reading.abstract_translation),
     evidence_level: (normalizeEvidenceLevel(firstString(reading.evidence_level, card.evidence_level)) || "metadata_only") as ApiDirectionPaperReading["evidence_level"],
     signals: normalizePaperSignals(reading.signals ?? card.signals),
@@ -385,9 +413,24 @@ function hydrateDirectionReview(items: ApiArtifact[]): ApiDirectionReviewRespons
     return title.includes("direction_review") || title.includes("baseline_map") || title.includes("direction_round");
   });
   const payload = artifact.payload;
-  const papers = Array.isArray(payload.papers)
-    ? payload.papers.map((reading) => normalizeDirectionReading(reading, artifact.artifact.project_id, artifact.artifact.created_at))
+  const reviewReadings = Array.isArray(payload.papers)
+    ? payload.papers.map((reading) =>
+        normalizeDirectionReading(
+          reading,
+          artifact.artifact.project_id,
+          artifact.artifact.created_at,
+          artifact.artifact.id,
+          artifact.artifact.title,
+        ),
+      )
     : [];
+  const cardReadings = relatedArtifacts
+    .filter((item) => item.id !== artifact.artifact.id && isDirectionPaperCardTitle(item.title))
+    .flatMap((item) => {
+      const payload = parseArtifactJson(item);
+      return payload ? [normalizeDirectionReading(payload, item.project_id, item.created_at, item.id, item.title)] : [];
+    });
+  const papers = mergeDirectionReadings(reviewReadings, cardReadings);
   const artifactRefs = Array.isArray(payload.artifact_refs)
     ? (payload.artifact_refs as ApiArtifactRef[])
     : relatedArtifacts.map((item) => ({
@@ -486,11 +529,20 @@ function hydratePaperCard(items: ApiArtifact[]): ApiPaperCard | null {
   const card = isRecord(artifact.payload.card) ? artifact.payload.card : artifact.payload;
   const paper = isRecord(artifact.payload.paper) ? artifact.payload.paper : {};
   const sections = Array.isArray(card.sections) ? card.sections.map(normalizePaperCardSection) : [];
+  const paperId = firstString(paper.id, card.paper_id);
+  const paperTitle = firstString(paper.title, card.paper_title);
   return {
     id: artifact.artifact.id,
     project_id: artifact.artifact.project_id,
-    paper_id: typeof paper.id === "string" ? paper.id : null,
+    paper_id: paperId || null,
+    paper_title: paperTitle,
     artifact_id: artifact.artifact.id,
+    source_artifact_title: artifact.artifact.title,
+    card_source: isDirectionPaperCardTitle(artifact.artifact.title)
+      ? "direction_review_artifact"
+      : paperId
+        ? "paper_table"
+        : "manual_unbound",
     evidence_level: (normalizeEvidenceLevel(firstString(card.evidence_level, artifact.payload.evidence_level)) || "metadata_only") as ApiPaperCard["evidence_level"],
     signals: normalizePaperSignals(card.signals),
     sections,
@@ -605,6 +657,168 @@ function parseJsonRecord(value: unknown): Record<string, unknown> | null {
 function stableTextKey(value: string): string {
   const normalized = value.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/gi, "-").replace(/^-|-$/g, "");
   return normalized.slice(0, 48) || "untitled";
+}
+
+export function normalizePaperTitleKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/gi, "");
+}
+
+function artifactPaperSlugKey(value: string): string {
+  const withoutExtension = value.toLowerCase().replace(/\.[a-z0-9]+$/i, "");
+  const slug = withoutExtension
+    .replace(/^agent_direction_round_\d+_paper_card_/, "")
+    .replace(/^direction_round_\d+_paper_card_/, "")
+    .replace(/^paper_card_/, "");
+  return normalizePaperTitleKey(slug);
+}
+
+function isDirectionPaperCardTitle(title: string): boolean {
+  const normalized = title.toLowerCase();
+  return normalized.includes("paper_card") && (normalized.includes("direction_round") || normalized.includes("agent_direction_round"));
+}
+
+function mergeDirectionReadings(
+  baseReadings: ApiDirectionPaperReading[],
+  cardReadings: ApiDirectionPaperReading[],
+): ApiDirectionPaperReading[] {
+  const merged = [...baseReadings];
+  for (const reading of cardReadings) {
+    const existingIndex = merged.findIndex((item) => directionReadingsReferToSamePaper(item, reading));
+    if (existingIndex >= 0) {
+      merged[existingIndex] = preferRicherDirectionReading(merged[existingIndex], reading);
+    } else {
+      merged.push(reading);
+    }
+  }
+  return merged;
+}
+
+function directionReadingsReferToSamePaper(left: ApiDirectionPaperReading, right: ApiDirectionPaperReading): boolean {
+  const leftId = left.paper_id || left.paper.id;
+  const rightId = right.paper_id || right.paper.id;
+  if (leftId && rightId && leftId === rightId) {
+    return true;
+  }
+  const leftTitle = normalizePaperTitleKey(left.paper_title || left.paper.title);
+  const rightTitle = normalizePaperTitleKey(right.paper_title || right.paper.title);
+  return Boolean(leftTitle && rightTitle && leftTitle === rightTitle);
+}
+
+function preferRicherDirectionReading(
+  current: ApiDirectionPaperReading,
+  incoming: ApiDirectionPaperReading,
+): ApiDirectionPaperReading {
+  if ((incoming.sections?.length ?? 0) > (current.sections?.length ?? 0)) {
+    return incoming;
+  }
+  if (incoming.artifact_id && !current.artifact_id) {
+    return { ...current, artifact_id: incoming.artifact_id, artifact_title: incoming.artifact_title };
+  }
+  return current;
+}
+
+export function resolvePaperCardForPaper(
+  latestPaperCard: ApiPaperCard | null,
+  directionReview: ApiDirectionReviewResponse | null,
+  paper: PaperRow | undefined,
+): PaperCardMatch | null {
+  if (!paper) {
+    if (!latestPaperCard) {
+      return null;
+    }
+    return {
+      card: latestPaperCard,
+      matchedBy: "manual_unbound",
+      source: latestPaperCard.card_source ?? "manual_unbound",
+    };
+  }
+  const directMatch = matchStandalonePaperCard(latestPaperCard, paper);
+  if (directMatch) {
+    return directMatch;
+  }
+  const directionMatch = findDirectionPaperCardMatch(directionReview, paper);
+  if (directionMatch) {
+    return directionMatch;
+  }
+  return null;
+}
+
+function matchStandalonePaperCard(card: ApiPaperCard | null, paper: PaperRow): PaperCardMatch | null {
+  if (!card) {
+    return null;
+  }
+  if (card.paper_id && card.paper_id === paper.id) {
+    return {
+      card,
+      matchedBy: "paper_id",
+      source: card.card_source ?? "paper_table",
+    };
+  }
+  if (card.card_source === "direction_review_artifact" && card.paper_title) {
+    const paperTitle = normalizePaperTitleKey(paper.title);
+    const cardTitle = normalizePaperTitleKey(card.paper_title);
+    if (paperTitle && cardTitle && paperTitle === cardTitle) {
+      return { card, matchedBy: "title", source: "direction_review_artifact" };
+    }
+    const artifactSlug = artifactPaperSlugKey(card.source_artifact_title ?? "");
+    if (isSafeArtifactSlugMatch(artifactSlug, paperTitle)) {
+      return { card, matchedBy: "artifact_slug", source: "direction_review_artifact" };
+    }
+  }
+  return null;
+}
+
+function findDirectionPaperCardMatch(
+  directionReview: ApiDirectionReviewResponse | null,
+  paper: PaperRow,
+): PaperCardMatch | null {
+  const readings = directionReview?.papers ?? [];
+  const byPaperId = readings.find((reading) => {
+    const readingPaperId = reading.paper_id || reading.paper.id;
+    return Boolean(readingPaperId && readingPaperId === paper.id);
+  });
+  if (byPaperId) {
+    return { card: directionReadingToPaperCard(byPaperId), matchedBy: "paper_id", source: "direction_review_artifact" };
+  }
+
+  const paperTitle = normalizePaperTitleKey(paper.title);
+  const byTitle = readings.find((reading) => {
+    const readingTitle = normalizePaperTitleKey(reading.paper_title || reading.paper.title);
+    return Boolean(paperTitle && readingTitle && paperTitle === readingTitle);
+  });
+  if (byTitle) {
+    return { card: directionReadingToPaperCard(byTitle), matchedBy: "title", source: "direction_review_artifact" };
+  }
+
+  const byArtifactSlug = readings.find((reading) => {
+    const slug = artifactPaperSlugKey(reading.artifact_title ?? "");
+    return isSafeArtifactSlugMatch(slug, paperTitle);
+  });
+  return byArtifactSlug
+    ? { card: directionReadingToPaperCard(byArtifactSlug), matchedBy: "artifact_slug", source: "direction_review_artifact" }
+    : null;
+}
+
+function directionReadingToPaperCard(reading: ApiDirectionPaperReading): ApiPaperCard {
+  return {
+    id: `direction-card-${reading.paper_id || reading.paper.id || normalizePaperTitleKey(reading.paper_title || reading.paper.title)}`,
+    project_id: reading.paper.project_id,
+    paper_id: reading.paper_id || reading.paper.id || null,
+    paper_title: reading.paper_title || reading.paper.title,
+    artifact_id: reading.artifact_id ?? null,
+    source_artifact_title: reading.artifact_title,
+    card_source: "direction_review_artifact",
+    evidence_level: reading.evidence_level,
+    signals: reading.signals,
+    sections: reading.sections,
+    weakest_assumption: reading.weakest_assumption,
+    minimal_reproduction: reading.minimal_reproduction,
+    created_at: reading.paper.created_at,
+  };
+}
+
+function isSafeArtifactSlugMatch(artifactSlug: string, paperTitle: string): boolean {
+  return Boolean(artifactSlug.length >= 16 && paperTitle.length >= 16 && paperTitle.startsWith(artifactSlug));
 }
 
 export function selectArtifactForView<T extends { title: string }>(items: T[], view: ViewId): T | null {

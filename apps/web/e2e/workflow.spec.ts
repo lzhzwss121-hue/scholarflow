@@ -1275,6 +1275,14 @@ test("hydrates real direction review and memory artifact shapes without blank vi
       },
     ],
   };
+  const twelveSections = Array.from({ length: 12 }, (_, index) => ({
+    id: `section_${index + 1}`,
+    title: index === 0 ? "研究问题与背景" : `Section ${index + 1}`,
+    content:
+      index === 0
+        ? "它把 VLM 幻觉问题转化为证据忠实性评估。证据边界：摘要级证据，不是全文结论。"
+        : `摘要级阅读提纲 ${index + 1}：需要 PDF 正文进一步核验。`,
+  }));
   const directionPayload = {
     direction: project.keyword,
     round: 1,
@@ -1293,7 +1301,36 @@ test("hydrates real direction review and memory artifact shapes without blank vi
     baseline_map: {
       direction: project.keyword,
       task_definition: "评估 VLM 答案是否忠实于视觉证据。",
-      classic_baselines: [],
+      classic_baselines: [
+        {
+          title: "POPE",
+          year: "2023",
+          venue: "CVPR",
+          source: "paper",
+          url: "",
+          category: "benchmark",
+          reason: "object hallucination baseline",
+          strengths: "simple negative probing",
+          risks: "limited failure modes",
+          evidence_snippets: [],
+          confidence: "medium",
+          evidence_gap: "needs full paper check",
+        },
+        {
+          title: "POPE",
+          year: "2023",
+          venue: "CVPR",
+          source: "paper",
+          url: "",
+          category: "benchmark",
+          reason: "duplicate-title regression",
+          strengths: "same title should not duplicate React key",
+          risks: "console warning",
+          evidence_snippets: [],
+          confidence: "medium",
+          evidence_gap: "needs full paper check",
+        },
+      ],
       recent_strong_baselines: [],
       alternative_paradigms: [],
       common_benchmarks: [],
@@ -1321,13 +1358,7 @@ test("hydrates real direction review and memory artifact shapes without blank vi
         },
         card: {
           evidence_level: "abstract_only",
-          sections: [
-            {
-              id: "section_1",
-              title: "研究问题与背景",
-              content: "它把 VLM 幻觉问题转化为证据忠实性评估。",
-            },
-          ],
+          sections: twelveSections,
           weakest_assumption: "负样本足以代表真实 hallucination。",
           minimal_reproduction: "用 50 个反事实样本复核 grounding faithfulness。",
           counterexample: "构造同答案但视觉证据冲突的样本。",
@@ -1466,7 +1497,13 @@ test("hydrates real direction review and memory artifact shapes without blank vi
   };
   let servedArtifacts = [directionArtifact, memoryArtifact, malformedArtifact];
   const pageErrors: string[] = [];
+  const consoleWarnings: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "warning" || message.type() === "error") {
+      consoleWarnings.push(message.text());
+    }
+  });
 
   await page.route("**/health", async (route) => {
     await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
@@ -1514,10 +1551,209 @@ test("hydrates real direction review and memory artifact shapes without blank vi
   await page.goto("/#paper-reader");
   await expect(page.getByRole("heading", { name: "摘要级阅读 · Paper Card" })).toBeVisible();
   await expect(page.getByText("研究问题与背景")).toBeVisible();
+  await expect(page.getByText("12/12 已生成")).toBeVisible();
+  await expect(page.getByText("来源：Direction Review artifact")).toBeVisible();
+  await expect(page.getByText("摘要级证据，不是全文结论", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("待生成 Paper Card")).toHaveCount(0);
 
   await page.goto("/#paper-memory");
   await expect(page.getByText("Memory-Grounded Answer")).toBeVisible();
+  await expect(page.getByText("摘要级证据，不是全文结论", { exact: true }).first()).toBeVisible();
   await expect(page.locator("dd", { hasText: "构造同答案但视觉证据冲突的样本。" })).toBeVisible();
   expect(pageErrors).toEqual([]);
+  expect(consoleWarnings.filter((message) => message.includes("Encountered two children with the same key"))).toEqual([]);
+});
+
+test("manual unbound paper card does not mark selected paper reader complete", async ({ page }) => {
+  const project = {
+    id: "project_e2e_manual_unbound",
+    title: "Manual Unbound Card Regression",
+    description: "manual card should not bind to selected papers",
+    keyword: "VQA evidence faithfulness",
+    field: "Artificial Intelligence",
+    language: "zh-CN",
+    workflow: "survey-to-experiment",
+    stage: "api",
+    active_session_id: "session_e2e_manual_unbound",
+    created_at: "2026-07-02T00:00:00+00:00",
+    updated_at: "2026-07-02T00:00:00+00:00",
+  };
+  const papers = [
+    {
+      id: "paper_e2e_bound_target",
+      project_id: project.id,
+      title: "Target VQA Faithfulness Paper",
+      authors: "A. Researcher",
+      abstract: "This is the selected real project paper.",
+      year: "2026",
+      type: "Benchmark",
+      venue: "arXiv cs.CV",
+      source: "arxiv",
+      url: "https://arxiv.org/abs/2601.00008",
+      relation: "strong match",
+      priority: "High",
+      code: "unknown",
+      relevance_score: 1.3,
+      relevance_quality: "strong",
+      created_at: project.created_at,
+    },
+  ];
+  const manualArtifact = {
+    id: "artifact_e2e_manual_unbound_card",
+    project_id: project.id,
+    title: "paper_card_manual_notes.md",
+    kind: "markdown",
+    content_markdown: "# Manual Card",
+    content_json: JSON.stringify({
+      paper: {
+        id: "",
+        project_id: project.id,
+        title: "Manual pasted notes that are not a selected paper",
+      },
+      card: {
+        evidence_level: "abstract_only",
+        sections: Array.from({ length: 12 }, (_, index) => ({
+          id: `manual_section_${index + 1}`,
+          title: `Manual section ${index + 1}`,
+          content: "Manual unbound card content should not appear for the selected paper.",
+        })),
+        weakest_assumption: "Manual notes are not bound to a paper.",
+        minimal_reproduction: "Status: blocked; missing claim + dataset + metric + baseline.",
+      },
+      evidence_level: "abstract_only",
+    }),
+    diff: "+ manual unbound card",
+    created_at: project.created_at,
+    updated_at: project.updated_at,
+  };
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
+  });
+  await page.route("**/projects", async (route) => {
+    await route.fulfill({ json: [project] });
+  });
+  await page.route(`**/projects/${project.id}/papers`, async (route) => {
+    await route.fulfill({ json: papers });
+  });
+  await page.route(`**/projects/${project.id}/timeline`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
+    await route.fulfill({ json: [artifactSummary(manualArtifact)] });
+  });
+  await page.route("**/artifacts/artifact_e2e_manual_unbound_card", async (route) => {
+    await route.fulfill({ json: manualArtifact });
+  });
+
+  await page.goto("/#paper-reader");
+  await expect(page.getByRole("heading", { name: "论文阅读 · Paper Card" })).toBeVisible();
+  await expect(page.getByText("待生成 Paper Card")).toBeVisible();
+  await expect(page.getByText("0/12 已生成")).toBeVisible();
+  await expect(page.getByText("Manual unbound card content should not appear for the selected paper.")).toHaveCount(0);
+
+  await page.goto("/#dashboard");
+  const paperReaderStep = page.locator(".workflow-step", { hasText: "Deep Paper Card" });
+  await expect(paperReaderStep.getByText("complete")).toHaveCount(0);
+});
+
+test("gap and experiment views show abstract-only evidence boundaries", async ({ page }) => {
+  const project = {
+    id: "project_e2e_decision_boundary",
+    title: "Decision Evidence Boundary Regression",
+    description: "abstract-only decision boundary",
+    keyword: "VQA evidence faithfulness",
+    field: "Artificial Intelligence",
+    language: "zh-CN",
+    workflow: "survey-to-experiment",
+    stage: "api",
+    active_session_id: "session_e2e_decision_boundary",
+    created_at: "2026-07-02T00:00:00+00:00",
+    updated_at: "2026-07-02T00:00:00+00:00",
+  };
+  const decisionPayload = {
+    gaps: [
+      {
+        id: "gap_boundary",
+        title: "Need counterfactual evidence grounding",
+        kind: "true_gap",
+        evidence: "Only one abstract-level benchmark card supports this gap.",
+        weakness: "Evidence is not full-text verified.",
+        opportunity: "Build a small counterfactual VQA set.",
+        novelty_risk: "medium",
+        feasibility: "one-week",
+      },
+    ],
+    validation: {
+      idea: "保守候选：做反事实 evidence grounding probe。",
+      why_not_incremental: "It targets a failure mode rather than a metric-only increment.",
+      difference_from_existing_work: "Uses counterfactual visual evidence.",
+      novelty_risk: "medium",
+      feasibility: "one-week",
+      key_risks: ["abstract-only evidence"],
+    },
+    experiment: {
+      status: "blocked",
+      anchor_paper_id: "",
+      anchor_paper_title: "",
+      claim: "缺少可复现 anchor",
+      dataset: "",
+      baseline: "",
+      metrics: [],
+      ablations: [],
+      resources: "Need full paper details.",
+      timeline: [],
+      success_criterion: "",
+      failure_criterion: "",
+      unblock_suggestions: ["补充 PDF 或正文方法/实验部分。"],
+    },
+    artifacts: [],
+    decision_status: "partial",
+    evidence_quality: {
+      gap_evidence_paper_count: 1,
+      minimum_gap_evidence_threshold: 5,
+      abstract_only_card_count: 1,
+      metadata_only_card_count: 0,
+      full_text_card_count: 0,
+    },
+    warnings: ["当前 Paper Card 主要是摘要级/元数据级证据，不是全文级深读结论。"],
+  };
+  const decisionArtifact = {
+    id: "artifact_e2e_decision_boundary",
+    project_id: project.id,
+    title: "gap_board_decision_boundary.md",
+    kind: "markdown",
+    content_markdown: "# Gap Board",
+    content_json: JSON.stringify(decisionPayload),
+    diff: "+ decision boundary",
+    created_at: project.created_at,
+    updated_at: project.updated_at,
+  };
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
+  });
+  await page.route("**/projects", async (route) => {
+    await route.fulfill({ json: [project] });
+  });
+  await page.route(`**/projects/${project.id}/papers`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/timeline`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
+    await route.fulfill({ json: [artifactSummary(decisionArtifact)] });
+  });
+  await page.route("**/artifacts/artifact_e2e_decision_boundary", async (route) => {
+    await route.fulfill({ json: decisionArtifact });
+  });
+
+  await page.goto("/#gap-board");
+  await expect(page.getByText("摘要级证据，不是全文结论", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText(/保守提示：当前不是确定科研结论。Only one abstract-level benchmark card supports this gap./)).toBeVisible();
+
+  await page.goto("/#experiment-planner");
+  await expect(page.getByText("摘要级证据，不是全文结论", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("listitem").filter({ hasText: "补充 PDF 或正文方法/实验部分。" })).toBeVisible();
 });

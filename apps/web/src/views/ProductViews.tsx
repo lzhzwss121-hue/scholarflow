@@ -60,7 +60,13 @@ import {
 } from "../mockData";
 import { ApiOfflineNotice } from "../components/ApiOfflineNotice";
 import { isRetrievalWarning } from "../apiClient";
-import { normalizeEvidencePack, normalizeResearchSight, toPlanStatus } from "../lib/artifactHydration";
+import {
+  normalizeEvidencePack,
+  normalizeResearchSight,
+  resolvePaperCardForPaper,
+  toPlanStatus,
+} from "../lib/artifactHydration";
+import type { PaperCardMatchSource } from "../lib/artifactHydration";
 import type {
   ApiStatus,
   ArtifactTab,
@@ -1598,12 +1604,13 @@ export function ProductPaperReaderView({
 }) {
   const [activeQuestion, setActiveQuestion] = useState(1);
   const selectedPaper = papers.find((paper) => paper.id === selectedPaperId) ?? papers[0];
-  const directionCard = selectedPaper ? findDirectionPaperCard(directionReview, selectedPaper) : null;
-  const displayCard = isCardForSelectedPaper(card, selectedPaper) ? card : directionCard;
+  const cardMatch = resolvePaperCardForPaper(card, directionReview, selectedPaper);
+  const displayCard = cardMatch?.card ?? null;
   const cardSections = displayCard?.sections ?? [];
   const signals = displayCard?.signals;
   const evidenceLevel = displayCard?.evidence_level ?? "metadata_only";
   const readerTitle = formatReaderTitle(evidenceLevel, Boolean(displayCard));
+  const evidenceBoundary = buildEvidenceBoundary(evidenceLevel);
   const missingEvidence = buildMissingEvidenceChecklist(displayCard);
   const expectedSections = [
     "研究问题与背景",
@@ -1692,9 +1699,25 @@ export function ProductPaperReaderView({
             <div>
               <strong>{displayCard ? `${formatEvidenceLevel(evidenceLevel)}卡片` : "待生成 Paper Card"}</strong>
               <p>{selectedSummary || "请先在 Paper Table 选择论文，或粘贴摘要/正文片段后生成 Paper Card。"}</p>
-              {displayCard?.evidence_level ? <small>Evidence level: {formatEvidenceLevel(displayCard.evidence_level)}</small> : null}
+              {displayCard?.evidence_level ? (
+                <small>
+                  Evidence level: {formatEvidenceLevel(displayCard.evidence_level)} · 来源：
+                  {formatPaperCardSource(cardMatch?.source ?? displayCard.card_source ?? "manual_unbound")} · 匹配：
+                  {cardMatch?.matchedBy ?? "manual_unbound"}
+                </small>
+              ) : null}
             </div>
           </article>
+
+          {displayCard && evidenceBoundary ? (
+            <section className="partial-review-banner" aria-label="paper card evidence boundary">
+              <AlertTriangle size={18} />
+              <div>
+                <strong>{evidenceBoundary.title}</strong>
+                <p>{evidenceBoundary.message}</p>
+              </div>
+            </section>
+          ) : null}
 
           {missingEvidence.length ? (
             <section className="reader-empty-state compact" aria-label="missing evidence checklist">
@@ -1716,7 +1739,7 @@ export function ProductPaperReaderView({
                 {cardSections.map((section, index) => (
                   <button
                     className={activeQuestion === index + 1 ? "question-card active" : "question-card"}
-                    key={section.id}
+                    key={`${section.id}-${index}`}
                     type="button"
                     onClick={() => setActiveQuestion(index + 1)}
                   >
@@ -1846,48 +1869,6 @@ export function ProductPaperReaderView({
   );
 }
 
-function isCardForSelectedPaper(card: ApiPaperCard | null, paper: PaperRow | undefined): boolean {
-  if (!card || !paper) {
-    return false;
-  }
-  if (card.paper_id && card.paper_id === paper.id) {
-    return true;
-  }
-  return false;
-}
-
-function findDirectionPaperCard(
-  directionReview: ApiDirectionReviewResponse | null,
-  paper: PaperRow,
-): ApiPaperCard | null {
-  const reading = (directionReview?.papers ?? []).find((item) => {
-    if (item.paper.id && item.paper.id === paper.id) {
-      return true;
-    }
-    return stableTitleKey(item.paper.title) === stableTitleKey(paper.title);
-  });
-  return reading ? directionReadingToPaperCard(reading) : null;
-}
-
-function directionReadingToPaperCard(reading: ApiDirectionPaperReading): ApiPaperCard {
-  return {
-    id: `direction-card-${reading.paper.id || stableTitleKey(reading.paper.title)}`,
-    project_id: reading.paper.project_id,
-    paper_id: reading.paper.id || null,
-    artifact_id: null,
-    evidence_level: reading.evidence_level,
-    signals: reading.signals,
-    sections: reading.sections,
-    weakest_assumption: reading.weakest_assumption,
-    minimal_reproduction: reading.minimal_reproduction,
-    created_at: reading.paper.created_at,
-  };
-}
-
-function stableTitleKey(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/gi, "");
-}
-
 function formatReaderTitle(evidenceLevel: string, hasCard: boolean): string {
   if (!hasCard) {
     return "论文阅读 · Paper Card";
@@ -1899,6 +1880,70 @@ function formatReaderTitle(evidenceLevel: string, hasCard: boolean): string {
     return "摘要级阅读 · Paper Card";
   }
   return "阅读提纲 · Paper Card";
+}
+
+function formatPaperCardSource(source: PaperCardMatchSource): string {
+  if (source === "direction_review_artifact") {
+    return "Direction Review artifact";
+  }
+  if (source === "paper_table") {
+    return "Paper Table";
+  }
+  return "Manual input / unbound";
+}
+
+function buildEvidenceBoundary(evidenceLevel: string | undefined): { title: string; message: string } | null {
+  if (evidenceLevel === "metadata_only") {
+    return {
+      title: "元数据级证据，不是全文结论",
+      message: "当前只基于标题、年份、来源等元数据生成阅读提纲。方法、实验、claim 和反例都需要补充 abstract 或 PDF 后才能确认。",
+    };
+  }
+  if (evidenceLevel === "abstract_only") {
+    return {
+      title: "摘要级证据，不是全文结论",
+      message: "当前只基于摘要和候选元数据生成结构化阅读。它适合决定是否精读，但不能替代完整 PDF 的方法和实验核验。",
+    };
+  }
+  return null;
+}
+
+function buildMemoryEvidenceBoundary(
+  hits: NonNullable<ApiResearchMemoryQueryResponse["hits"]>,
+): { title: string; message: string } | null {
+  if (!hits.length) {
+    return null;
+  }
+  const levels = hits.map((hit) => normalizeEvidencePack(normalizeResearchSight(hit.research_sight).evidence_pack).evidence_level);
+  const limitedCount = levels.filter((level) => level === "abstract_only" || level === "metadata_only" || level === "unknown").length;
+  const fullTextCount = levels.filter((level) => level === "full_text").length;
+  if (limitedCount > 0 && fullTextCount === 0) {
+    return {
+      title: "摘要级证据，不是全文结论",
+      message: `当前 ${hits.length} 条 memory hit 主要来自摘要级或元数据级 Paper Card。回答可用于定位线索，但不能当作已经核验全文后的确定判断。`,
+    };
+  }
+  return null;
+}
+
+function buildDecisionEvidenceBoundary(
+  decision: ApiResearchDecisionResponse | null,
+): { title: string; message: string } | null {
+  const quality = decision?.evidence_quality;
+  if (!quality) {
+    return null;
+  }
+  const abstractCount = Number(quality.abstract_only_card_count ?? 0);
+  const metadataCount = Number(quality.metadata_only_card_count ?? 0);
+  const fullTextCount = Number(quality.full_text_card_count ?? 0);
+  const limitedCount = abstractCount + metadataCount;
+  if (limitedCount > 0 && fullTextCount === 0) {
+    return {
+      title: "摘要级证据，不是全文结论",
+      message: `当前研究决策主要依赖 ${abstractCount} 张摘要级 card 和 ${metadataCount} 张元数据级 card。Gap、Idea Validation 和实验计划只能作为保守候选，不能视为已完成全文级论证。`,
+    };
+  }
+  return null;
 }
 
 function buildMissingEvidenceChecklist(card: ApiPaperCard | null): string[] {
@@ -2599,7 +2644,7 @@ export function DirectionReviewView({
               {recommendedReadings.slice(0, 3).map((reading, index) => (
                 <button
                   className="recommendation-item"
-                  key={reading.paper.id}
+                  key={`${reading.paper.id}-${reading.paper.title}-${index}`}
                   type="button"
                   onClick={() => onSelectedPaperChange(reading.paper.id)}
                 >
@@ -2622,7 +2667,7 @@ export function DirectionReviewView({
                 return (
                   <button
                     className={isActive ? "direction-paper-card active" : "direction-paper-card"}
-                    key={reading.paper.id}
+                    key={`${reading.paper.id}-${reading.paper.title}-${index}`}
                     type="button"
                     onClick={() => onSelectedPaperChange(reading.paper.id)}
                   >
@@ -2689,8 +2734,8 @@ function BaselineReferenceList({
     <div className="baseline-reference-list">
       <strong>{title}</strong>
       {references.length ? (
-        references.slice(0, 3).map((reference) => (
-          <article key={`${title}-${reference.title}`}>
+        references.slice(0, 3).map((reference, index) => (
+          <article key={`${title}-${reference.title}-${reference.year}-${index}`}>
             <span>{reference.year || "year unknown"} · {reference.confidence || "unknown"} confidence</span>
             <h4>{reference.title}</h4>
             <p>{reference.reason}</p>
@@ -2972,7 +3017,7 @@ function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }
       <div className="direction-section-list">
         {sections.length ? (
           sections.map((section, index) => (
-            <article className="direction-detail-section" key={section.id}>
+            <article className="direction-detail-section" key={`${section.id}-${index}`}>
               <span>{String(index + 1).padStart(2, "0")}</span>
               <div>
                 <h3>{section.title}</h3>
@@ -3019,6 +3064,7 @@ export function ResearchMemoryView({
 }) {
   const canQuery = apiStatus === "online" && !isQuerying && question.trim().length > 0;
   const memoryHits = result?.hits ?? [];
+  const memoryEvidenceBoundary = buildMemoryEvidenceBoundary(memoryHits);
 
   return (
     <div className="memory-stack">
@@ -3064,7 +3110,10 @@ export function ResearchMemoryView({
             <div className="memory-answer-header">
               <div>
                 <p className="section-kicker">Memory-Grounded Answer</p>
-                <h2>{result.question}</h2>
+                <h2>
+                  {result.question}
+                  {memoryEvidenceBoundary ? " · 摘要级证据，不是全文结论" : ""}
+                </h2>
               </div>
               <div className="memory-stat-grid">
                 <span>{result.total_memories} memories</span>
@@ -3073,6 +3122,15 @@ export function ResearchMemoryView({
               </div>
             </div>
             <p>{result.answer}</p>
+            {memoryEvidenceBoundary ? (
+              <div className="partial-review-banner">
+                <AlertTriangle size={18} />
+                <div>
+                  <strong>{memoryEvidenceBoundary.title}</strong>
+                  <p>{memoryEvidenceBoundary.message}</p>
+                </div>
+              </div>
+            ) : null}
             {result.direction_memory ? (
               <div className="memory-direction-box">
                 <strong>{result.direction_memory.direction}</strong>
@@ -3143,7 +3201,12 @@ export function ResearchMemoryView({
                     </div>
                     <div>
                       <dt>证据等级</dt>
-                      <dd>{pack.grounding_summary || "暂无 EvidencePack"}</dd>
+                      <dd>
+                        {buildEvidenceBoundary(pack.evidence_level)?.title
+                          ? `${buildEvidenceBoundary(pack.evidence_level)?.title}；`
+                          : ""}
+                        {pack.grounding_summary || "暂无 EvidencePack"}
+                      </dd>
                     </div>
                   </dl>
                 </article>
@@ -3308,7 +3371,8 @@ export function GapBoardView({
   const evidenceQuality = decision?.evidence_quality ?? {};
   const gapEvidenceCount = Number(evidenceQuality.gap_evidence_paper_count ?? 0);
   const evidenceThreshold = Number(evidenceQuality.minimum_gap_evidence_threshold ?? 5);
-  const isConservative = Boolean(decision && decisionStatus !== "complete");
+  const decisionEvidenceBoundary = buildDecisionEvidenceBoundary(decision);
+  const isConservative = Boolean(decision && (decisionStatus !== "complete" || decisionEvidenceBoundary));
 
   return (
     <div className="view-stack">
@@ -3350,9 +3414,10 @@ export function GapBoardView({
         <section className="partial-review-banner">
           <AlertTriangle size={18} />
           <div>
-            <strong>Gap Board · {decisionStatus}</strong>
+            <strong>{decisionEvidenceBoundary?.title ?? `Gap Board · ${decisionStatus}`}</strong>
             <p>
-              上游证据不足，Idea Validation 已降级为保守版本；当前不可把 gap 当作确定性科研结论。
+              {decisionEvidenceBoundary?.message ??
+                "上游证据不足，Idea Validation 已降级为保守版本；当前不可把 gap 当作确定性科研结论。"}
             </p>
           </div>
         </section>
@@ -3384,7 +3449,7 @@ export function GapBoardView({
               <dl>
                 <div>
                   <dt>Evidence</dt>
-                  <dd>{gap.evidence}</dd>
+                  <dd>{isConservative ? `保守提示：当前不是确定科研结论。${gap.evidence}` : gap.evidence}</dd>
                 </div>
                 <div>
                   <dt>Weakness</dt>
@@ -3426,6 +3491,7 @@ export function ExperimentPlannerView({
 }) {
   const plan = decision?.experiment;
   const isBlocked = plan?.status === "blocked";
+  const decisionEvidenceBoundary = buildDecisionEvidenceBoundary(decision);
 
   return (
     <div className="view-stack">
@@ -3456,6 +3522,16 @@ export function ExperimentPlannerView({
         <section className="empty-state">
           <h2>尚未生成实验计划</h2>
           <p>请先点击生成实验计划。系统会检查是否存在可复现 anchor；没有 anchor 时不会生成伪计划。</p>
+        </section>
+      ) : null}
+
+      {decisionEvidenceBoundary ? (
+        <section className="partial-review-banner">
+          <AlertTriangle size={18} />
+          <div>
+            <strong>{decisionEvidenceBoundary.title}</strong>
+            <p>{decisionEvidenceBoundary.message}</p>
+          </div>
         </section>
       ) : null}
 
