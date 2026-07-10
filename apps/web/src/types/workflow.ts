@@ -105,6 +105,7 @@ export type WorkflowActions = {
   onMemoryQuestionChange: (question: string) => void;
   onMemoryTopKChange: (topK: number) => void;
   onPaperCardInputChange: (value: string) => void;
+  onPaperPdfUpload: (paperId: string, file: File) => void;
   onProjectDraftChange: (draft: ProjectDraft) => void;
   onQueryResearchMemory: () => void;
   onSaveArtifact: () => void;

@@ -108,6 +108,7 @@ def fetch_project_paper_card_dicts(connection, project_id: str) -> list[dict]:
             p.venue AS paper_venue,
             p.source AS paper_source,
             p.url AS paper_url,
+            p.pdf_url AS paper_pdf_url,
             p.relation AS paper_relation,
             p.priority AS paper_priority,
             p.code AS paper_code,
@@ -288,6 +289,7 @@ def build_paper_card_source(connection, project_id: str, payload: PaperCardCreat
         "venue": "pasted content",
         "source": "user",
         "url": "",
+        "pdf_url": "",
         "relation": "用户提供内容生成的 Deep Paper Card。",
         "priority": "High",
         "code": "unknown",
@@ -481,11 +483,11 @@ def insert_paper_candidates(connection, project_id: str, papers: list, now: str)
         connection.execute(
             """
             INSERT INTO papers (
-                id, project_id, title, authors, abstract, year, type, venue, source, url,
+                id, project_id, title, authors, abstract, year, type, venue, source, url, pdf_url,
                 relation, priority, code, relevance_score, relevance_quality, matched_terms_json,
                 review_required, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 authors = excluded.authors,
@@ -495,6 +497,7 @@ def insert_paper_candidates(connection, project_id: str, papers: list, now: str)
                 venue = excluded.venue,
                 source = excluded.source,
                 url = excluded.url,
+                pdf_url = excluded.pdf_url,
                 relation = excluded.relation,
                 priority = excluded.priority,
                 code = excluded.code,
@@ -514,6 +517,7 @@ def insert_paper_candidates(connection, project_id: str, papers: list, now: str)
                 paper.venue,
                 paper.source,
                 paper.url,
+                getattr(paper, "pdf_url", ""),
                 paper.relation,
                 paper.priority,
                 paper.code,

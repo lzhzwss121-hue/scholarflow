@@ -4,6 +4,14 @@ The deep paper card is the core reading artifact in ScholarFlow. It is designed 
 
 The agent must not reduce this workflow to a generic paper summary.
 
+## Evidence Contract
+
+- Prefer a verified open PDF from arXiv/OpenAlex; otherwise accept a local PDF or user-provided text.
+- Promote a card to `full_text` only after the PDF text layer is parsed above the configured evidence threshold.
+- Persist provenance (`status`, `pdf_url`, `source`, parsed pages/characters, and error) without embedding the whole PDF text in metadata.
+- Keep `metadata_only` and `abstract_only` cards conservative. Show one card-level evidence warning instead of copying the same disclaimer into every section.
+- Treat extracted PDF sentences as primary evidence snippets; generated Paper Card prose remains secondary analysis that must be checked against the source.
+
 ## Output Goals
 
 Each paper card should help the user answer:
@@ -209,4 +217,3 @@ artifacts/papers/<paper_slug>/paper_card.json
 ```
 
 The JSON should preserve structured fields for later gap analysis, novelty checking, and experiment planning.
-

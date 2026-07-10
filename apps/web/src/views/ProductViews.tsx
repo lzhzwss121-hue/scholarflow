@@ -44,6 +44,7 @@ import {
   type ApiDirectionPaperReading,
   type ApiDirectionReviewResponse,
   type ApiEvidencePack,
+  type ApiFullTextProvenance,
   type ApiPaperCard,
   type ApiProject,
   type ApiResearchDecisionResponse,
@@ -853,6 +854,7 @@ interface ActiveViewProps {
   onMemoryQuestionChange: (question: string) => void;
   onMemoryTopKChange: (topK: number) => void;
   onPaperCardInputChange: (value: string) => void;
+  onPaperPdfUpload: (paperId: string, file: File) => void;
   onProjectDraftChange: (draft: ProjectDraft) => void;
   onQueryResearchMemory: () => void;
   onSearchLiterature: () => void;
@@ -912,6 +914,7 @@ export function ActiveView({
   onMemoryQuestionChange,
   onMemoryTopKChange,
   onPaperCardInputChange,
+  onPaperPdfUpload,
   onProjectDraftChange,
   onQueryResearchMemory,
   onSearchLiterature,
@@ -985,6 +988,7 @@ export function ActiveView({
             isGenerating={paperCardBusy}
             onGenerate={onGeneratePaperCard}
             onInputChange={onPaperCardInputChange}
+            onPdfUpload={onPaperPdfUpload}
             onLoadArtifact={onLoadArtifact}
             onExitDirectionPaper={onExitDirectionPaper}
             onOpenDirectionPaper={onSelectedDirectionPaperChange}
@@ -1726,6 +1730,7 @@ export function ProductPaperReaderView({
   isGenerating,
   onGenerate,
   onInputChange,
+  onPdfUpload,
   onLoadArtifact,
   onExitDirectionPaper,
   onOpenDirectionPaper,
@@ -1747,6 +1752,7 @@ export function ProductPaperReaderView({
   isGenerating: boolean;
   onGenerate: () => void;
   onInputChange: (value: string) => void;
+  onPdfUpload: (paperId: string, file: File) => void;
   onLoadArtifact: (artifactId: string) => void;
   onExitDirectionPaper: () => void;
   onOpenDirectionPaper: (paperId: string) => void;
@@ -1758,16 +1764,26 @@ export function ProductPaperReaderView({
   supplementalInput: string;
 }) {
   const [activeQuestion, setActiveQuestion] = useState(1);
+
+  useEffect(() => {
+    setActiveQuestion(1);
+  }, [card, selectedPaperId]);
+
   const directionReadings = directionReview?.papers ?? [];
   const directionReading = directionReadings.find((reading) => reading.paper.id === directionPaperId) ?? null;
+  const effectiveDirectionReading = mergeDirectionReadingWithPaperCard(directionReading, card);
 
   if (directionPaperId) {
     return (
       <DirectionPaperPage
+        canUpload={apiStatus === "online"}
         hasHydratedReview={Boolean(directionReview)}
+        isGenerating={isGenerating}
         onBack={onExitDirectionPaper}
+        onOpenEvidenceInput={() => onSelectView("paper-reader")}
         onOpenPaper={onOpenDirectionPaper}
-        reading={directionReading}
+        onPdfUpload={onPdfUpload}
+        reading={effectiveDirectionReading}
         readings={directionReadings}
         requestedPaperId={directionPaperId}
       />
@@ -1783,6 +1799,27 @@ export function ProductPaperReaderView({
   const readerTitle = formatReaderTitle(evidenceLevel, Boolean(displayCard));
   const evidenceBoundary = buildEvidenceBoundary(evidenceLevel);
   const missingEvidence = buildMissingEvidenceChecklist(displayCard);
+  const activeQuestionIndex = cardSections.length
+    ? Math.min(Math.max(activeQuestion - 1, 0), cardSections.length - 1)
+    : -1;
+  const activeSection = activeQuestionIndex >= 0 ? cardSections[activeQuestionIndex] : null;
+  const activeSectionContent = activeSection ? parsePaperCardSectionContent(activeSection.content) : null;
+  const activeSectionParagraphs = activeSectionContent
+    ? splitPaperCardSectionParagraphs(activeSectionContent.primary)
+    : [];
+  const openSupplementalEvidenceInput = () => {
+    if (typeof document === "undefined") {
+      return;
+    }
+    const panel = document.querySelector<HTMLDetailsElement>(".reader-supplemental-input");
+    if (!panel) {
+      return;
+    }
+    panel.open = true;
+    window.requestAnimationFrame(() => {
+      panel.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+    });
+  };
   const expectedSections = [
     "研究问题与背景",
     "已有研究与不足",
@@ -1797,15 +1834,24 @@ export function ProductPaperReaderView({
     "反例设计",
     "非增量 follow-up idea",
   ];
+  const conciseSignal = (label: string, value: string | undefined) => {
+    const normalized = value?.trim() ?? "";
+    if (!normalized || normalized.startsWith("当前证据不足")) {
+      return "";
+    }
+    const preview = normalized.length > 72 ? `${normalized.slice(0, 69)}…` : normalized;
+    return `${label} · ${preview}`;
+  };
   const signalTags = [
-    signals?.task ? `task: ${signals.task}` : "",
-    signals?.method ? `method: ${signals.method}` : "",
-    signals?.dataset ? `dataset: ${signals.dataset}` : "",
-    signals?.metric ? `metric: ${signals.metric}` : "",
-    signals?.baseline ? `baseline: ${signals.baseline}` : "",
-    signals?.claim ? `claim: ${signals.claim}` : "",
+    signals?.contribution_type ? `类型 · ${signals.contribution_type}` : "",
+    selectedPaper?.year ? `年份 · ${selectedPaper.year}` : "",
+    selectedPaper?.venue ? `来源 · ${selectedPaper.venue}` : "",
+    conciseSignal("Dataset", signals?.dataset),
+    conciseSignal("Metric", signals?.metric),
+    conciseSignal("Baseline", signals?.baseline),
   ].filter(Boolean);
   const selectedSummary = selectedPaper?.abstract || selectedPaper?.relation || "";
+  const selectedSummaryPreview = selectedSummary.length > 560 ? `${selectedSummary.slice(0, 557)}…` : selectedSummary;
 
   return (
     <div className="reader-canvas">
@@ -1869,7 +1915,13 @@ export function ProductPaperReaderView({
             <Sparkles size={23} />
             <div>
               <strong>{displayCard ? `${formatEvidenceLevel(evidenceLevel)}卡片` : "待生成 Paper Card"}</strong>
-              <p>{selectedSummary || "请先在 Paper Table 选择论文，或粘贴摘要/正文片段后生成 Paper Card。"}</p>
+              <p>{selectedSummaryPreview || "请先在 Paper Table 选择论文，或粘贴摘要/正文片段后生成 Paper Card。"}</p>
+              {selectedSummary.length > selectedSummaryPreview.length ? (
+                <details className="summary-card-details">
+                  <summary>查看完整摘要</summary>
+                  <p>{selectedSummary}</p>
+                </details>
+              ) : null}
               {displayCard?.evidence_level ? (
                 <small>
                   Evidence level: {formatEvidenceLevel(displayCard.evidence_level)} · 来源：
@@ -1880,46 +1932,173 @@ export function ProductPaperReaderView({
             </div>
           </article>
 
-          {displayCard && evidenceBoundary ? (
-            <section className="partial-review-banner" aria-label="paper card evidence boundary">
-              <AlertTriangle size={18} />
-              <div>
-                <strong>{evidenceBoundary.title}</strong>
-                <p>{evidenceBoundary.message}</p>
+          <FullTextProvenanceStatus
+            onOpenEvidenceInput={openSupplementalEvidenceInput}
+            provenance={displayCard?.full_text}
+          />
+
+          {displayCard && (evidenceBoundary || missingEvidence.length) ? (
+            <details className="reader-evidence-scope" aria-label="paper card evidence scope">
+              <summary>
+                <span>
+                  <ShieldCheck size={17} />
+                  <strong>证据范围</strong>
+                </span>
+                <span>{formatEvidenceLevel(evidenceLevel)}</span>
+              </summary>
+              <div className="reader-evidence-scope-content">
+                {evidenceBoundary ? (
+                  <div>
+                    <strong>{evidenceBoundary.title}</strong>
+                    <p>{evidenceBoundary.message}</p>
+                  </div>
+                ) : null}
+                {missingEvidence.length ? (
+                  <div>
+                    <strong>待补证据</strong>
+                    <ul>
+                      {missingEvidence.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
               </div>
-            </section>
+            </details>
           ) : null}
 
-          {missingEvidence.length ? (
-            <section className="reader-empty-state compact" aria-label="missing evidence checklist">
-              <AlertTriangle size={19} />
-              <div>
-                <h3>Missing evidence checklist</h3>
-                <p>{missingEvidence.join("；")}</p>
-              </div>
-            </section>
-          ) : null}
+          <details className="reader-supplemental-input">
+            <summary>
+              <span>
+                <FileText size={17} />
+                <strong>补充正文证据</strong>
+              </span>
+              <span>{supplementalInput.trim() ? `${supplementalInput.trim().length} 字` : "可选"}</span>
+            </summary>
+            <div className="reader-supplemental-input-content">
+              <PdfUploadControl
+                busy={isGenerating}
+                disabled={apiStatus !== "online" || !selectedPaper}
+                onUpload={onPdfUpload}
+                paperId={selectedPaper?.id ?? ""}
+              />
+              <div className="reader-input-divider"><span>或粘贴关键正文片段</span></div>
+              <label htmlFor="paper-card-supplemental-input">
+                粘贴 abstract、method、experiment、表格说明或正文片段
+              </label>
+              <textarea
+                id="paper-card-supplemental-input"
+                placeholder="建议优先粘贴方法、实验设置、baseline、ablation 与 failure case；随后点击上方按钮重新生成。"
+                value={supplementalInput}
+                onChange={(event) => onInputChange(event.target.value)}
+              />
+              <p>补充内容会作为本次 Paper Card 的证据输入，不会覆盖项目中的原始论文记录。</p>
+            </div>
+          </details>
 
-          <section className="question-board">
+          <section className="question-board" aria-label="paper card reading">
             <div className="question-board-head">
-              <h2>核心问题（12 个）</h2>
+              <div>
+                <p className="section-kicker">Deep Paper Card</p>
+                <h2>12 段科研精读</h2>
+              </div>
               <span>{cardSections.length}/12 已生成</span>
             </div>
             {cardSections.length ? (
-              <div className="question-grid">
-                {cardSections.map((section, index) => (
-                  <button
-                    className={activeQuestion === index + 1 ? "question-card active" : "question-card"}
-                    key={`${section.id}-${index}`}
-                    type="button"
-                    onClick={() => setActiveQuestion(index + 1)}
+              <div className="paper-reader-workspace">
+                <nav className="paper-reader-toc" aria-label="12 段精读目录">
+                  <ol>
+                    {cardSections.map((section, index) => {
+                      const isActive = activeQuestionIndex === index;
+                      return (
+                        <li key={`${section.id}-${index}`}>
+                          <button
+                            aria-controls={isActive ? `paper-reader-section-${index + 1}` : undefined}
+                            aria-current={isActive ? true : undefined}
+                            className="paper-reader-toc-item"
+                            type="button"
+                            onClick={() => setActiveQuestion(index + 1)}
+                          >
+                            <span aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
+                            <strong>{formatPaperCardSectionTitle(section.title)}</strong>
+                            <Check size={14} aria-hidden="true" />
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </nav>
+
+                {activeSection && activeSectionContent ? (
+                  <article
+                    className="paper-reader-section"
+                    id={`paper-reader-section-${activeQuestionIndex + 1}`}
+                    tabIndex={-1}
                   >
-                    <span>{index + 1}</span>
-                    <strong>{section.title}</strong>
-                    <p>{section.content}</p>
-                    <CheckCircle2 size={15} />
-                  </button>
-                ))}
+                    <header>
+                      <span>
+                        Section {String(activeQuestionIndex + 1).padStart(2, "0")} / {cardSections.length}
+                      </span>
+                      <h3>{formatPaperCardSectionTitle(activeSection.title)}</h3>
+                    </header>
+
+                    <div className="paper-reader-section-body">
+                      {activeSectionParagraphs.map((paragraph, index) => (
+                        <p key={`${activeSection.id}-paragraph-${index}`}>{paragraph}</p>
+                      ))}
+                    </div>
+
+                    {activeSectionContent.outline ||
+                    activeSectionContent.evidenceGap ||
+                    activeSectionContent.verification ? (
+                      <details className="paper-reader-section-notes">
+                        <summary>本段核验备注</summary>
+                        <dl>
+                          {activeSectionContent.outline ? (
+                            <div>
+                              <dt>阅读定位</dt>
+                              <dd>{activeSectionContent.outline}</dd>
+                            </div>
+                          ) : null}
+                          {activeSectionContent.evidenceGap ? (
+                            <div>
+                              <dt>证据缺口</dt>
+                              <dd>{activeSectionContent.evidenceGap}</dd>
+                            </div>
+                          ) : null}
+                          {activeSectionContent.verification ? (
+                            <div>
+                              <dt>核验问题</dt>
+                              <dd>{activeSectionContent.verification}</dd>
+                            </div>
+                          ) : null}
+                        </dl>
+                      </details>
+                    ) : null}
+
+                    <footer className="paper-reader-section-nav" aria-label="精读章节切换">
+                      <button
+                        disabled={activeQuestionIndex <= 0}
+                        type="button"
+                        onClick={() => setActiveQuestion(activeQuestionIndex)}
+                      >
+                        <ChevronLeft size={15} />
+                        上一节
+                      </button>
+                      <span aria-live="polite">
+                        {activeQuestionIndex + 1} / {cardSections.length}
+                      </span>
+                      <button
+                        disabled={activeQuestionIndex >= cardSections.length - 1}
+                        type="button"
+                        onClick={() => setActiveQuestion(activeQuestionIndex + 2)}
+                      >
+                        下一节
+                        <ArrowRight size={15} />
+                      </button>
+                    </footer>
+                  </article>
+                ) : null}
               </div>
             ) : (
               <div className="reader-empty-state">
@@ -1988,10 +2167,10 @@ export function ProductPaperReaderView({
             <div className="chain-step">
               <span>3</span>
               <div>
-                <strong>输入来源</strong>
+                <strong>证据来源</strong>
                 <p>
                   {displayCard?.evidence_level
-                    ? `${formatEvidenceLevel(displayCard.evidence_level)}；${displayCard.evidence_level === "full_text" ? "包含用户提供正文片段。" : "没有 PDF/完整正文，只能作为阅读提纲或摘要级分析。"}`
+                    ? `${formatPaperCardSource(cardMatch?.source ?? displayCard.card_source ?? "manual_unbound")} · ${formatEvidenceLevel(displayCard.evidence_level)}`
                     : selectedPaper
                       ? "来自当前项目 Paper Table。"
                       : supplementalInput.trim()
@@ -2041,16 +2220,24 @@ export function ProductPaperReaderView({
 }
 
 function DirectionPaperPage({
+  canUpload,
   hasHydratedReview,
+  isGenerating,
   onBack,
+  onOpenEvidenceInput,
   onOpenPaper,
+  onPdfUpload,
   reading,
   readings,
   requestedPaperId,
 }: {
+  canUpload: boolean;
   hasHydratedReview: boolean;
+  isGenerating: boolean;
   onBack: () => void;
+  onOpenEvidenceInput: () => void;
   onOpenPaper: (paperId: string) => void;
+  onPdfUpload: (paperId: string, file: File) => void;
   reading: ApiDirectionPaperReading | null;
   readings: ApiDirectionPaperReading[];
   requestedPaperId: string;
@@ -2092,7 +2279,13 @@ function DirectionPaperPage({
       </header>
 
       {reading ? (
-        <DirectionPaperDetail reading={reading} />
+        <DirectionPaperDetail
+          canUpload={canUpload}
+          isGenerating={isGenerating}
+          onOpenEvidenceInput={onOpenEvidenceInput}
+          onPdfUpload={onPdfUpload}
+          reading={reading}
+        />
       ) : (
         <section className="direction-paper-route-state" role="status">
           <BookOpen size={22} />
@@ -2136,6 +2329,161 @@ function formatPaperCardSource(source: PaperCardMatchSource): string {
     return "Paper Table";
   }
   return "Manual input / unbound";
+}
+
+function formatFullTextSource(source: string): string {
+  if (source === "arxiv_pdf") {
+    return "arXiv PDF";
+  }
+  if (source === "openalex_open_access_pdf") {
+    return "OpenAlex 开放全文";
+  }
+  if (source === "open_access_pdf") {
+    return "开放获取 PDF";
+  }
+  if (source === "user_provided") {
+    return "用户粘贴正文";
+  }
+  if (source === "user_uploaded_pdf") {
+    return "用户上传 PDF";
+  }
+  return source || "未记录来源";
+}
+
+function mergeDirectionReadingWithPaperCard(
+  reading: ApiDirectionPaperReading | null,
+  card: ApiPaperCard | null,
+): ApiDirectionPaperReading | null {
+  if (!reading || !card?.paper_id || card.paper_id !== reading.paper.id) {
+    return reading;
+  }
+  const evidenceRank = (level: string | undefined) => {
+    if (level === "full_text") {
+      return 2;
+    }
+    if (level === "abstract_only") {
+      return 1;
+    }
+    return 0;
+  };
+  if (evidenceRank(card.evidence_level) < evidenceRank(reading.evidence_level)) {
+    return reading;
+  }
+  return {
+    ...reading,
+    artifact_id: card.artifact_id ?? reading.artifact_id,
+    artifact_title: card.source_artifact_title ?? reading.artifact_title,
+    evidence_level: card.evidence_level ?? reading.evidence_level,
+    full_text: card.full_text ?? reading.full_text,
+    signals: card.signals ?? reading.signals,
+    sections: card.sections.length ? card.sections : reading.sections,
+    weakest_assumption: card.weakest_assumption || reading.weakest_assumption,
+    minimal_reproduction: card.minimal_reproduction || reading.minimal_reproduction,
+  };
+}
+
+function fullTextFailureReason(provenance: ApiFullTextProvenance): string {
+  if (provenance.error.trim()) {
+    return provenance.error.trim();
+  }
+  if (provenance.status === "download_failed") {
+    return "PDF 下载失败，来源可能需要登录或拒绝自动访问。";
+  }
+  if (provenance.status === "parse_failed") {
+    return "已获取 PDF，但没有解析出可用于科研分析的正文。";
+  }
+  if (provenance.status === "disabled") {
+    return "当前服务未启用全文获取。";
+  }
+  return "没有发现可公开访问的 PDF 地址。";
+}
+
+function FullTextProvenanceStatus({
+  onOpenEvidenceInput,
+  provenance,
+}: {
+  onOpenEvidenceInput?: () => void;
+  provenance: ApiFullTextProvenance | undefined;
+}) {
+  if (!provenance) {
+    return null;
+  }
+
+  const extracted = provenance.status === "extracted";
+  return (
+    <section
+      className={extracted ? "full-text-provenance-status extracted" : "full-text-provenance-status limited"}
+      aria-label="full text acquisition status"
+    >
+      {extracted ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}
+      <div>
+        <strong>
+          {extracted
+            ? `已解析 ${provenance.page_count.toLocaleString("zh-CN")} 页 / ${provenance.character_count.toLocaleString("zh-CN")} 字符`
+            : fullTextFailureReason(provenance)}
+        </strong>
+        <p>
+          来源：{formatFullTextSource(provenance.source)}
+          {provenance.pdf_url ? (
+            <>
+              {" · "}
+              <a href={provenance.pdf_url} rel="noreferrer" target="_blank">
+                查看 PDF 来源
+              </a>
+            </>
+          ) : null}
+        </p>
+      </div>
+      {!extracted && onOpenEvidenceInput ? (
+        <button type="button" onClick={onOpenEvidenceInput}>
+          补充正文证据
+          <ArrowRight size={14} />
+        </button>
+      ) : null}
+    </section>
+  );
+}
+
+function PdfUploadControl({
+  busy,
+  disabled,
+  onUpload,
+  paperId,
+}: {
+  busy: boolean;
+  disabled: boolean;
+  onUpload: (paperId: string, file: File) => void;
+  paperId: string;
+}) {
+  const inputId = `paper-pdf-upload-${paperId.replace(/[^a-zA-Z0-9_-]/g, "-") || "unbound"}`;
+  const unavailable = disabled || busy || !paperId;
+  return (
+    <div className="pdf-upload-control" aria-label="upload paper PDF">
+      <div>
+        <Download size={18} aria-hidden="true" />
+        <span>
+          <strong>直接上传论文 PDF</strong>
+          <small>解析文本层并重新生成全文级 Paper Card；文件仅发送到本地 ScholarFlow API。</small>
+        </span>
+      </div>
+      <label className={unavailable ? "disabled" : ""} htmlFor={inputId} aria-disabled={unavailable}>
+        {busy ? "正在解析…" : "选择 PDF"}
+      </label>
+      <input
+        accept="application/pdf,.pdf"
+        disabled={unavailable}
+        id={inputId}
+        type="file"
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          event.currentTarget.value = "";
+          if (file) {
+            onUpload(paperId, file);
+          }
+        }}
+      />
+    </div>
+  );
 }
 
 function buildEvidenceBoundary(evidenceLevel: string | undefined): { title: string; message: string } | null {
@@ -2209,6 +2557,84 @@ function buildMissingEvidenceChecklist(card: ApiPaperCard | null): string[] {
     checklist.push("最小复现实验未解锁：需要补齐 claim + dataset + metric + baseline");
   }
   return [...new Set(checklist)];
+}
+
+type ParsedPaperCardSectionContent = {
+  evidenceGap: string;
+  outline: string;
+  primary: string;
+  verification: string;
+};
+
+function parsePaperCardSectionContent(content: string): ParsedPaperCardSectionContent {
+  let normalized = content.replace(/\r\n?/g, "\n").trim();
+  const boundaryMatch = normalized.match(
+    /^证据边界[（(](?:metadata_only|abstract_only)[）)][:：][\s\S]*?(?=\n阅读提纲[:：])/,
+  );
+
+  if (boundaryMatch) {
+    normalized = normalized.slice(boundaryMatch[0].length).replace(/^\n+/, "");
+  }
+
+  const outlinePrefix = "阅读提纲：";
+  const visibleMarker = "\n当前可见线索：";
+  const gapMarker = "\n证据缺口：";
+  const verificationMarker = "\n需要验证的问题：";
+  const visibleIndex = normalized.indexOf(visibleMarker);
+  const verificationIndex = normalized.lastIndexOf(verificationMarker);
+  const gapIndex = verificationIndex >= 0
+    ? normalized.lastIndexOf(gapMarker, verificationIndex - 1)
+    : normalized.lastIndexOf(gapMarker);
+
+  if (
+    normalized.startsWith(outlinePrefix) &&
+    visibleIndex >= 0 &&
+    gapIndex > visibleIndex &&
+    verificationIndex > gapIndex
+  ) {
+    return {
+      outline: normalized.slice(outlinePrefix.length, visibleIndex).trim(),
+      primary: normalized.slice(visibleIndex + visibleMarker.length, gapIndex).trim(),
+      evidenceGap: normalized.slice(gapIndex + gapMarker.length, verificationIndex).trim(),
+      verification: normalized.slice(verificationIndex + verificationMarker.length).trim(),
+    };
+  }
+
+  return {
+    evidenceGap: "",
+    outline: "",
+    primary: normalized,
+    verification: "",
+  };
+}
+
+function formatPaperCardSectionTitle(title: string): string {
+  return title.replace(/^\s*\d{1,2}\s*[.、:：)）]\s*/, "").trim();
+}
+
+function splitPaperCardSectionParagraphs(content: string): string[] {
+  const withSignalBreaks = content.replace(
+    /;\s*(?=(?:method|dataset|metric|baseline|claim|limitation|type)=)/gi,
+    ";\n",
+  );
+  const sourceLines = withSignalBreaks.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  const paragraphs: string[] = [];
+  for (const line of sourceLines) {
+    const sentences = line.split(/(?<=[。！？])\s+/).map((sentence) => sentence.trim()).filter(Boolean);
+    let current = "";
+    for (const sentence of sentences) {
+      if (current && current.length + sentence.length > 380) {
+        paragraphs.push(current);
+        current = sentence;
+      } else {
+        current = current ? `${current} ${sentence}` : sentence;
+      }
+    }
+    if (current) {
+      paragraphs.push(current);
+    }
+  }
+  return paragraphs.length ? paragraphs : [content];
 }
 
 function ConferenceMarquee() {
@@ -2765,6 +3191,7 @@ export function DirectionReviewView({
   const canGenerate = apiStatus === "online" && !isGenerating && direction.trim().length > 0;
   const expectedRoundCount = review?.target_paper_count ?? 10;
   const actualRoundCount = review?.relevant_read_count ?? review?.round_read_count ?? readings.length;
+  const fullTextCount = readings.filter((reading) => reading.evidence_level === "full_text").length;
   const isPartialReview = review?.review_status === "partial";
   const isBlockedReview = review?.review_status === "blocked";
   const coverage = review?.relevance_coverage ?? {};
@@ -2775,11 +3202,11 @@ export function DirectionReviewView({
   const reviewWarnings = review ? [partialRoundWarning, ...review.errors].filter(Boolean) : [];
   const statusLabel = review
     ? review.review_status === "complete"
-      ? "Complete"
+      ? "候选覆盖完成"
       : review.review_status === "blocked"
-        ? "Blocked"
-        : "Partial"
-    : "Waiting";
+        ? "证据阻塞"
+        : "部分完成"
+    : "等待生成";
   const directionSummary = formatAcademicText(review?.direction_summary ?? "");
   const directionSummaryPreview = buildDirectionSummaryPreview(directionSummary);
 
@@ -2838,8 +3265,8 @@ export function DirectionReviewView({
                 <p className="section-kicker">Round {review.round} · Cumulative Understanding</p>
                 <h1>{formatAcademicText(review.direction)}</h1>
                 <p className="direction-summary-intro">
-                  {statusLabel === "Complete"
-                    ? "本轮候选阅读达到方向级阈值；不代表所有论文都完成全文阅读。"
+                  {review.review_status === "complete"
+                    ? `本轮候选覆盖达到方向级阈值，其中 ${fullTextCount}/${readings.length} 篇已解析全文；候选覆盖不等于全文精读完成。`
                     : "当前结果存在检索或证据缺口，请先查看警告再继续。"}
                 </p>
               </div>
@@ -2852,16 +3279,16 @@ export function DirectionReviewView({
                 <strong>{actualRoundCount}/{expectedRoundCount}</strong>
               </div>
               <div>
+                <span>全文已解析</span>
+                <strong>{fullTextCount}/{readings.length}</strong>
+              </div>
+              <div>
                 <span>过滤离题</span>
                 <strong>{review.off_topic_count ?? coverage.off_topic_count ?? 0}</strong>
               </div>
               <div>
-                <span>累计阅读</span>
+                <span>累计候选</span>
                 <strong>{review.total_read_count}</strong>
-              </div>
-              <div>
-                <span>年份范围</span>
-                <strong>{review.scope?.year_range ?? "近三年"}</strong>
               </div>
             </div>
 
@@ -3150,7 +3577,19 @@ function DirectionArtifactRefs({
   );
 }
 
-function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }) {
+function DirectionPaperDetail({
+  canUpload,
+  isGenerating,
+  onOpenEvidenceInput,
+  onPdfUpload,
+  reading,
+}: {
+  canUpload: boolean;
+  isGenerating: boolean;
+  onOpenEvidenceInput: () => void;
+  onPdfUpload: (paperId: string, file: File) => void;
+  reading: ApiDirectionPaperReading;
+}) {
   const signals = reading.signals;
   const missingSignals = signals?.missing_signals ?? [];
   const sections = reading.sections ?? [];
@@ -3193,6 +3632,20 @@ function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }
         <small>Evidence level: {formatEvidenceLevel(reading.evidence_level ?? "metadata_only")}</small>
         <p>{reading.abstract_translation}</p>
       </article>
+
+      <FullTextProvenanceStatus
+        onOpenEvidenceInput={onOpenEvidenceInput}
+        provenance={reading.full_text}
+      />
+
+      {reading.full_text?.status !== "extracted" ? (
+        <PdfUploadControl
+          busy={isGenerating}
+          disabled={!canUpload}
+          onUpload={onPdfUpload}
+          paperId={reading.paper.id}
+        />
+      ) : null}
 
       {signals ? (
         <article className="paper-signals-panel" aria-label="paper evidence signals">

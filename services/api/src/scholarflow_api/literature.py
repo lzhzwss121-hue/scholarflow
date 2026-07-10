@@ -127,6 +127,7 @@ class PaperCandidate:
     url: str
     relation: str
     priority: str
+    pdf_url: str = ""
     code: str = "unknown"
     relevance_score: float = 0.0
     relevance_quality: str = "medium"
@@ -524,10 +525,12 @@ def search_arxiv(query: str, max_results: int, relaxed: bool = False) -> list[Pa
             for author in entry.findall("atom:author", namespace)
         )
         url = ""
+        pdf_url = ""
         for link in entry.findall("atom:link", namespace):
             if link.attrib.get("rel") == "alternate":
                 url = link.attrib.get("href", "")
-                break
+            if link.attrib.get("type") == "application/pdf":
+                pdf_url = link.attrib.get("href", "")
         primary_category = entry.find("arxiv:primary_category", namespace)
         category = primary_category.attrib.get("term", "") if primary_category is not None else ""
         papers.append(
@@ -540,6 +543,7 @@ def search_arxiv(query: str, max_results: int, relaxed: bool = False) -> list[Pa
                 venue=f"arXiv {category}".strip(),
                 source="arxiv",
                 url=url,
+                pdf_url=pdf_url,
                 relation="待排序：由 ScholarFlow 根据关键词相关性计算。",
                 priority="Medium",
             ),
@@ -570,6 +574,7 @@ def search_openalex(query: str, max_results: int) -> list[PaperCandidate]:
                 "authorships",
                 "abstract_inverted_index",
                 "primary_location",
+                "best_oa_location",
                 "type",
                 "cited_by_count",
             ],
@@ -601,8 +606,10 @@ def search_openalex(query: str, max_results: int) -> list[PaperCandidate]:
             continue
 
         primary_location = work.get("primary_location") or {}
+        best_oa_location = work.get("best_oa_location") or {}
         source = primary_location.get("source") or {}
         url = primary_location.get("landing_page_url") or work.get("doi") or work.get("id") or ""
+        pdf_url = best_oa_location.get("pdf_url") or primary_location.get("pdf_url") or ""
         authors = ", ".join(extract_openalex_authors(work.get("authorships") or []))
         abstract = reconstruct_openalex_abstract(work.get("abstract_inverted_index") or {})
         papers.append(
@@ -615,6 +622,7 @@ def search_openalex(query: str, max_results: int) -> list[PaperCandidate]:
                 venue=normalize_space(source.get("display_name") or "OpenAlex"),
                 source="openalex",
                 url=url,
+                pdf_url=pdf_url,
                 relation="待排序：由 ScholarFlow 根据关键词相关性计算。",
                 priority="Medium",
                 relevance_score=min(float(work.get("cited_by_count") or 0) / 3000.0, 0.35),
@@ -784,8 +792,14 @@ def rank_and_deduplicate_result(candidates: list[PaperCandidate], query: str) ->
     for candidate in candidates:
         key = normalize_title_key(candidate.title)
         existing = deduped.get(key)
-        if existing is None or source_rank(candidate.source) > source_rank(existing.source):
+        if existing is None:
             deduped[key] = candidate
+            continue
+        if source_rank(candidate.source) > source_rank(existing.source):
+            merge_candidate_access(candidate, existing)
+            deduped[key] = candidate
+        else:
+            merge_candidate_access(existing, candidate)
 
     intent = build_query_intent(query)
     ranked: list[PaperCandidate] = []
@@ -813,6 +827,26 @@ def rank_and_deduplicate_result(candidates: list[PaperCandidate], query: str) ->
         "filtered_count": quality_counts["weak"] + quality_counts["off_topic"],
     }
     return RankedPaperSet(papers=returned, coverage=coverage)
+
+
+def merge_candidate_access(preferred: PaperCandidate, alternate: PaperCandidate) -> PaperCandidate:
+    """Keep the ranked metadata record while preserving an OA PDF found on a duplicate."""
+    if not preferred.pdf_url:
+        preferred.pdf_url = alternate.pdf_url or derive_arxiv_pdf_url(alternate.url)
+    if not preferred.url and alternate.url:
+        preferred.url = alternate.url
+    return preferred
+
+
+def derive_arxiv_pdf_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(normalize_space(url))
+    if (parsed.hostname or "").lower() not in {"arxiv.org", "www.arxiv.org", "export.arxiv.org"}:
+        return ""
+    match = re.match(r"/(?:abs|pdf)/(.+?)(?:\.pdf)?$", parsed.path, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    identifier = match.group(1)
+    return f"https://arxiv.org/pdf/{identifier}.pdf"
 
 
 def score_candidate(candidate: PaperCandidate, query_terms: set[str] | QueryIntent) -> CandidateRelevance:

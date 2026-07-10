@@ -165,6 +165,13 @@ uses a maximum 760px reading column.
 - The full Direction Paper detail remains intact: evidence level, translation,
   signals, Research Sight, reproduction, counterexample, follow-up, and all
   structured sections.
+- The Deep Paper Card never lays twelve long answers into equal-height columns.
+  Use a compact twelve-item table of contents and render one readable section
+  at a time; evidence scope and missing evidence appear once at card level.
+- Full-text state is provenance, not decoration: show acquisition status, PDF
+  source, parsed page/character counts, and the exact failure reason. When an
+  open PDF cannot be resolved, keep a local PDF upload and pasted-evidence path
+  available without upgrading the card beyond its verified evidence level.
 
 ## 7. Motion and interaction
 

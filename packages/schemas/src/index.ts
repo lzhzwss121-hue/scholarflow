@@ -58,6 +58,7 @@ export interface ApiPaper {
   venue: string;
   source: string;
   url: string;
+  pdf_url?: string;
   relation: string;
   priority: string;
   code: string;
@@ -171,6 +172,22 @@ export interface ApiPaperSignals {
   missing_signals: string[];
 }
 
+export type ApiFullTextStatus =
+  | "extracted"
+  | "not_available"
+  | "download_failed"
+  | "parse_failed"
+  | "disabled";
+
+export interface ApiFullTextProvenance {
+  status: ApiFullTextStatus;
+  pdf_url: string;
+  source: string;
+  page_count: number;
+  character_count: number;
+  error: string;
+}
+
 export interface ApiEvidenceSnippet {
   id: string;
   source: string;
@@ -247,6 +264,7 @@ export interface ApiPaperCard {
   source_artifact_title?: string;
   card_source?: "paper_table" | "direction_review_artifact" | "manual_unbound";
   evidence_level?: "metadata_only" | "abstract_only" | "full_text";
+  full_text?: ApiFullTextProvenance;
   signals?: ApiPaperSignals;
   sections: ApiPaperCardSection[];
   weakest_assumption: string;
@@ -257,6 +275,14 @@ export interface ApiPaperCard {
 export interface ApiPaperCardResponse {
   card: ApiPaperCard;
   artifact: ApiArtifact;
+}
+
+export interface ApiPaperFullTextExtractResponse {
+  paper_id: string;
+  text: string;
+  full_text: ApiFullTextProvenance;
+  card: ApiPaperCard | null;
+  artifact: ApiArtifact | null;
 }
 
 export interface ApiDirectionReviewRequest {
@@ -282,6 +308,7 @@ export interface ApiDirectionPaperReading {
   artifact_title?: string;
   abstract_translation: string;
   evidence_level?: "metadata_only" | "abstract_only" | "full_text";
+  full_text?: ApiFullTextProvenance;
   signals?: ApiPaperSignals;
   sections: ApiPaperCardSection[];
   research_sight: ApiResearchSight;

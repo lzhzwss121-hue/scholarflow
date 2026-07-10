@@ -7,10 +7,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 from scholarflow_api.baseline_map import BaselineMap, render_baseline_map_markdown
+from scholarflow_api.full_text import FullTextResult, resolve_open_full_texts
 from scholarflow_api.literature import (
     PaperCandidate,
     expand_queries,
     format_relevance_coverage,
+    merge_candidate_access,
     search_literature,
     significant_terms as literature_significant_terms,
 )
@@ -66,6 +68,7 @@ class DirectionPaperReading:
     paper: dict[str, Any]
     abstract_translation: str
     card: DeepPaperCard
+    full_text: dict[str, Any]
     research_sight: ResearchSight
     why_selected: str
     venue_signal: str
@@ -76,6 +79,7 @@ class DirectionPaperReading:
             "paper": self.paper,
             "abstract_translation": self.abstract_translation,
             "evidence_level": self.card.evidence_level,
+            "full_text": self.full_text,
             "signals": self.card.signals.to_dict(),
             "sections": [section.to_dict() for section in self.card.sections],
             "research_sight": self.research_sight.to_dict(),
@@ -200,8 +204,13 @@ def select_top_direction_papers(
         if year and year < min_year:
             continue
         existing = deduped.get(key)
-        if existing is None or score_direction_paper(candidate, direction) > score_direction_paper(existing, direction):
+        if existing is None:
             deduped[key] = candidate
+        elif score_direction_paper(candidate, direction) > score_direction_paper(existing, direction):
+            merge_candidate_access(candidate, existing)
+            deduped[key] = candidate
+        else:
+            merge_candidate_access(existing, candidate)
 
     ranked = sorted(deduped.values(), key=lambda paper: score_direction_paper(paper, direction), reverse=True)
     return ranked[:limit]
@@ -215,15 +224,18 @@ def build_direction_readings(
     scored = sorted(papers, key=lambda paper: score_direction_paper_dict(paper, direction), reverse=True)
     recommended_ids = {paper.get("id", "") for paper in scored[:3]}
     readings: list[DirectionPaperReading] = []
-    for paper in papers:
-        card = generate_deep_paper_card(paper)
+    full_text_results = resolve_open_full_texts(papers)
+    for paper, full_text in zip(papers, full_text_results, strict=True):
+        paper_for_evidence = build_full_text_evidence_paper(paper, full_text)
+        card = generate_deep_paper_card(paper, full_text.text if full_text.is_extracted else "")
         sections = [section.to_dict() for section in card.sections]
-        research_sight = build_research_sight(paper, sections, baseline_map, direction, card.signals)
+        research_sight = build_research_sight(paper_for_evidence, sections, baseline_map, direction, card.signals)
         readings.append(
             DirectionPaperReading(
                 paper=paper,
                 abstract_translation=translate_abstract_to_chinese(paper),
                 card=card,
+                full_text=full_text.to_provenance(),
                 research_sight=research_sight,
                 why_selected=build_selection_reason(paper, direction),
                 venue_signal=detect_venue_signal(paper.get("venue", "")),
@@ -232,6 +244,15 @@ def build_direction_readings(
         )
     enforce_research_sight_diversity(readings)
     return readings
+
+
+def build_full_text_evidence_paper(paper: dict[str, Any], result: FullTextResult) -> dict[str, Any]:
+    evidence_paper = dict(paper)
+    evidence_paper["full_text_provenance"] = result.to_provenance()
+    if result.is_extracted:
+        evidence_paper["evidence_level"] = "full_text"
+        evidence_paper["full_text"] = result.text
+    return evidence_paper
 
 
 def enforce_research_sight_diversity(readings: list[DirectionPaperReading]) -> None:

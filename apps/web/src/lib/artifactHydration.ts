@@ -6,6 +6,7 @@ import type {
   ApiDirectionPaperReading,
   ApiDirectionReviewResponse,
   ApiEvidencePack,
+  ApiFullTextProvenance,
   ApiPaper,
   ApiPaperCard,
   ApiPaperCardSection,
@@ -208,6 +209,7 @@ export function normalizeDirectionReading(
     artifact_title: artifactTitle,
     abstract_translation: asString(reading.abstract_translation),
     evidence_level: (normalizeEvidenceLevel(firstString(reading.evidence_level, card.evidence_level)) || "metadata_only") as ApiDirectionPaperReading["evidence_level"],
+    full_text: normalizeFullTextProvenance(reading.full_text ?? card.full_text),
     signals: normalizePaperSignals(reading.signals ?? card.signals),
     sections: sectionPayloads.map(normalizePaperCardSection),
     research_sight: normalizeResearchSight(reading.research_sight),
@@ -283,6 +285,7 @@ function normalizeApiPaper(payload: unknown, artifactProjectId: string, artifact
     venue: asString(paper.venue),
     source: asString(paper.source),
     url: asString(paper.url),
+    pdf_url: asString(paper.pdf_url),
     relation: asString(paper.relation),
     priority: asString(paper.priority) || "Medium",
     code: asString(paper.code) || "unknown",
@@ -379,6 +382,30 @@ export function normalizeEvidencePack(payload: unknown): ApiEvidencePack {
       : [],
     missing_evidence: asStringArray(pack.missing_evidence),
     grounding_summary: asString(pack.grounding_summary) || "暂无 EvidencePack",
+  };
+}
+
+function normalizeFullTextProvenance(payload: unknown): ApiFullTextProvenance | undefined {
+  if (!isRecord(payload)) {
+    return undefined;
+  }
+  const rawStatus = asString(payload.status);
+  const status: ApiFullTextProvenance["status"] = [
+    "extracted",
+    "not_available",
+    "download_failed",
+    "parse_failed",
+    "disabled",
+  ].includes(rawStatus)
+    ? (rawStatus as ApiFullTextProvenance["status"])
+    : "not_available";
+  return {
+    status,
+    pdf_url: asString(payload.pdf_url),
+    source: asString(payload.source),
+    page_count: asNumber(payload.page_count),
+    character_count: asNumber(payload.character_count),
+    error: asString(payload.error),
   };
 }
 
@@ -544,6 +571,7 @@ function hydratePaperCard(items: ApiArtifact[]): ApiPaperCard | null {
         ? "paper_table"
         : "manual_unbound",
     evidence_level: (normalizeEvidenceLevel(firstString(card.evidence_level, artifact.payload.evidence_level)) || "metadata_only") as ApiPaperCard["evidence_level"],
+    full_text: normalizeFullTextProvenance(artifact.payload.full_text ?? card.full_text),
     signals: normalizePaperSignals(card.signals),
     sections,
     weakest_assumption: typeof card.weakest_assumption === "string" ? card.weakest_assumption : "",
@@ -809,6 +837,7 @@ function directionReadingToPaperCard(reading: ApiDirectionPaperReading): ApiPape
     source_artifact_title: reading.artifact_title,
     card_source: "direction_review_artifact",
     evidence_level: reading.evidence_level,
+    full_text: reading.full_text,
     signals: reading.signals,
     sections: reading.sections,
     weakest_assumption: reading.weakest_assumption,

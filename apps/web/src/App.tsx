@@ -175,6 +175,7 @@ export function App() {
             onMemoryQuestionChange={actions.onMemoryQuestionChange}
             onMemoryTopKChange={actions.onMemoryTopKChange}
             onPaperCardInputChange={actions.onPaperCardInputChange}
+            onPaperPdfUpload={actions.onPaperPdfUpload}
             onQueryResearchMemory={actions.onQueryResearchMemory}
             onProjectDraftChange={actions.onProjectDraftChange}
             onSearchLiterature={actions.onSearchLiterature}

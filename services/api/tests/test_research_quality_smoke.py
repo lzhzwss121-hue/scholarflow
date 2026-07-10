@@ -48,7 +48,10 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         def fake_openalex(query: str, max_results: int) -> list[literature.PaperCandidate]:
             raise literature.SourceDegradedError("openalex", query, 503, "temporary unavailable")
 
-        with patch.object(literature, "search_arxiv", side_effect=fake_arxiv), patch.object(
+        with patch.object(literature, "get_cached_retrieval", return_value=None), patch.object(
+            literature,
+            "save_cached_retrieval",
+        ), patch.object(literature, "search_arxiv", side_effect=fake_arxiv), patch.object(
             literature,
             "search_openalex",
             side_effect=fake_openalex,
@@ -819,7 +822,7 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertTrue(response.artifact.id)
 
     def test_paper_card_metadata_and_abstract_levels_mark_evidence_boundary(self) -> None:
-        from scholarflow_api.paper_card import generate_deep_paper_card
+        from scholarflow_api.paper_card import generate_deep_paper_card, render_card_markdown
 
         metadata_card = generate_deep_paper_card({"title": "Unknown Metadata Only Paper"})
         abstract_card = generate_deep_paper_card(
@@ -832,9 +835,13 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertEqual(metadata_card.evidence_level, "metadata_only")
         self.assertEqual(abstract_card.evidence_level, "abstract_only")
         self.assertNotIn("全文级深读", metadata_card.sections[0].content)
-        self.assertIn("不是完整正文阅读结论", metadata_card.sections[0].content)
-        self.assertTrue(all("证据边界" in section.content for section in abstract_card.sections))
-        self.assertIn("不能当作已讲清整篇论文", abstract_card.sections[0].content)
+        self.assertTrue(
+            all("证据边界（abstract_only）：" not in section.content for section in abstract_card.sections),
+        )
+        self.assertEqual(len({section.content for section in abstract_card.sections}), 12)
+        rendered = render_card_markdown(abstract_card, {"title": abstract_card.paper_title})
+        self.assertIn("Evidence boundary: 证据边界（abstract_only）", rendered)
+        self.assertIn("不能当作已讲清整篇论文", rendered)
         self.assertIn("Status: blocked", abstract_card.minimal_reproduction)
 
     def test_full_text_card_extracts_dataset_metric_baseline_and_ready_minimal_reproduction(self) -> None:

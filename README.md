@@ -101,6 +101,8 @@ Paper Card 默认围绕 12 个问题展开：
 
 如果缺少方法、实验、dataset 或 metric 信息，系统会明确写出“当前证据不足”，而不是编造泛泛解释。
 
+Direction Review 和单篇 Paper Card 会优先尝试解析 arXiv/OpenAlex 提供的开放 PDF。只有正文文本达到校验阈值时才会标记为 `full_text`，并记录 PDF 来源、解析页数、字符数和失败原因；自动获取失败时，可以在阅读页直接上传本地 PDF 或粘贴关键正文片段。12 段分析使用目录切换、一次只显示一段，证据边界只在卡片级展示一次。
+
 ### 5. Research Sight 科研判断
 
 ScholarFlow 不只总结论文，还会尝试评价论文的科研质量。Research Sight 会关注四个维度：

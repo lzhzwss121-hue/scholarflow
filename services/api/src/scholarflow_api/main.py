@@ -7,7 +7,7 @@ import json
 import re
 import threading
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from scholarflow_api import __version__
@@ -56,6 +56,7 @@ from scholarflow_api.direction_review import (
     render_direction_review_markdown,
     retrieve_direction_candidate_pool,
 )
+from scholarflow_api.full_text import FullTextResult, parse_pdf_bytes, provided_full_text, resolve_open_full_text
 from scholarflow_api.literature import LOW_RECALL_THRESHOLD, render_paper_table_json, render_paper_table_markdown, search_literature
 from scholarflow_api.paper_card import (
     generate_deep_paper_card,
@@ -96,6 +97,7 @@ from scholarflow_api.schemas import (
     PaperCard,
     PaperCardCreateRequest,
     PaperCardResponse,
+    PaperFullTextExtractResponse,
     Project,
     ProjectCreate,
     ResearchSight,
@@ -969,19 +971,32 @@ def search_project_literature(project_id: str, payload: LiteratureSearchRequest)
 
 @app.post("/projects/{project_id}/paper-cards", response_model=PaperCardResponse, status_code=201)
 def create_project_paper_card(project_id: str, payload: PaperCardCreateRequest) -> PaperCardResponse:
+    with get_connection() as connection:
+        paper = build_paper_card_source(connection, project_id, payload)
+    full_text = provided_full_text(payload.paper_text) if payload.paper_text else resolve_open_full_text(paper)
+    return persist_project_paper_card(project_id, payload, full_text)
+
+
+def persist_project_paper_card(
+    project_id: str,
+    payload: PaperCardCreateRequest,
+    full_text: FullTextResult,
+) -> PaperCardResponse:
     now = utc_now()
     with get_connection() as connection:
         project = fetch_project_dict(connection, project_id)
         session_id = ensure_active_session(connection, project, now)
         paper = build_paper_card_source(connection, project_id, payload)
-        card = generate_deep_paper_card(paper, payload.paper_text)
+        card_text = payload.paper_text or (full_text.text if full_text.is_extracted else "")
+        card = generate_deep_paper_card(paper, card_text)
+        provenance = full_text.to_provenance()
         artifact = insert_artifact_row(
             connection=connection,
             project_id=project_id,
             title=f"paper_card_{paper_slug(card.paper_title)}.md",
             kind="markdown",
-            content_markdown=render_card_markdown(card, paper),
-            content_json=render_card_json(card, paper),
+            content_markdown=render_card_markdown(card, paper, provenance),
+            content_json=render_card_json(card, paper, provenance),
             diff="+ Generated 12-section Deep Paper Card\n+ Saved structured JSON for downstream gap analysis",
             now=now,
         )
@@ -1033,6 +1048,7 @@ def create_project_paper_card(project_id: str, payload: PaperCardCreateRequest) 
             paper_id=payload.paper_id,
             artifact_id=artifact["id"],
             evidence_level=card.evidence_level,
+            full_text=provenance,
             signals=card.signals.to_dict(),
             sections=[section.to_dict() for section in card.sections],
             weakest_assumption=card.weakest_assumption,
@@ -1040,6 +1056,37 @@ def create_project_paper_card(project_id: str, payload: PaperCardCreateRequest) 
             created_at=now,
         ),
         artifact=Artifact.model_validate(artifact),
+    )
+
+
+@app.post(
+    "/projects/{project_id}/papers/{paper_id}/full-text",
+    response_model=PaperFullTextExtractResponse,
+)
+def extract_project_paper_full_text(
+    project_id: str,
+    paper_id: str,
+    payload: bytes = Body(..., media_type="application/pdf"),
+) -> PaperFullTextExtractResponse:
+    """Parse a user-supplied PDF without pretending a failed parse is full-text evidence."""
+    with get_connection() as connection:
+        fetch_paper_dict(connection, project_id, paper_id)
+    result = parse_pdf_bytes(payload, source="user_uploaded_pdf")
+    generated = (
+        persist_project_paper_card(
+            project_id,
+            PaperCardCreateRequest(paper_id=paper_id),
+            result,
+        )
+        if result.is_extracted
+        else None
+    )
+    return PaperFullTextExtractResponse(
+        paper_id=paper_id,
+        text=result.text if result.is_extracted else "",
+        full_text=result.to_provenance(),
+        card=generated.card if generated else None,
+        artifact=generated.artifact if generated else None,
     )
 
 
@@ -1116,7 +1163,7 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
                 project_id=project_id,
                 title=f"direction_round_{payload.round}_paper_card_{paper_slug(reading.card.paper_title)}.md",
                 kind="markdown",
-                content_markdown=render_card_markdown(reading.card, reading.paper),
+                content_markdown=render_card_markdown(reading.card, reading.paper, reading.full_text),
                 content_json=json.dumps(reading.to_dict(), ensure_ascii=False, indent=2),
                 diff="+ Generated direction-review paper card\n+ Added abstract translation for interactive UI",
                 now=completed_at,
@@ -1897,7 +1944,7 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
                 project_id=context.project["id"],
                 title=f"agent_direction_round_{round_index}_paper_card_{paper_slug(reading.card.paper_title)}.md",
                 kind="markdown",
-                content_markdown=render_card_markdown(reading.card, reading.paper),
+                content_markdown=render_card_markdown(reading.card, reading.paper, reading.full_text),
                 content_json=json.dumps(reading.to_dict(), ensure_ascii=False, indent=2),
                 diff="+ Agent tool direction_review\n+ Generated direction-review paper card",
                 now=now,

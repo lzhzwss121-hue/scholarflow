@@ -116,6 +116,19 @@ def build_paper_evidence_snippets(
             ),
         )
 
+    full_text = normalize_space(paper.get("full_text", ""))
+    for index, sentence in enumerate(select_full_text_sentences(full_text, direction), start=1):
+        snippets.append(
+            EvidenceSnippet(
+                id=f"pdf_full_text_{index}",
+                source="pdf.full_text",
+                kind=infer_sentence_kind(sentence),
+                text=sentence[:360],
+                note="来自开放 PDF 文本层的原文片段；页码、表格结构与公式版式仍需回到 PDF 复核。",
+                confidence="high",
+            ),
+        )
+
     for section in sections[:4]:
         title_text = normalize_space(section.get("title", ""))
         content = normalize_space(section.get("content", ""))
@@ -147,11 +160,21 @@ def infer_missing_evidence(paper: dict[str, Any], sections: list[dict[str, Any]]
         missing.append("venue 仍是 arXiv/source 信号，顶会顶刊结论需要后续 metadata 验证。")
     if not normalize_space(paper.get("url", "")):
         missing.append("缺少论文 URL，用户无法直接回到原文核验。")
-    missing.append("尚未接入 PDF 全文解析、引用图和代码仓库证据。")
+    if infer_evidence_level(paper, sections) == "full_text" and normalize_space(paper.get("full_text", "")):
+        missing.append("已解析 PDF 文本层；表格结构、公式版式、引用图和代码仓库仍需回到原始材料复核。")
+    else:
+        provenance = paper.get("full_text_provenance") if isinstance(paper.get("full_text_provenance"), dict) else {}
+        failure = normalize_space(provenance.get("error", ""))
+        if failure:
+            missing.append(f"PDF 全文未进入证据链：{failure}")
+        else:
+            missing.append("未获得可解析的开放 PDF 全文；方法、实验、消融和失败样本仍需补充。")
     return unique_preserve_order(missing)
 
 
 def infer_confidence(snippets: list[EvidenceSnippet], missing: list[str], paper: dict[str, Any]) -> str:
+    if any(snippet.source == "pdf.full_text" for snippet in snippets):
+        return "high"
     abstract_available = bool(normalize_space(paper.get("abstract", "")))
     venue = normalize_space(paper.get("venue", ""))
     if abstract_available and len(snippets) >= 4 and len(missing) <= 2 and venue and "arxiv" not in venue.lower():
@@ -200,6 +223,38 @@ def select_relevant_sentences(text: str, direction: str) -> list[str]:
     sentences = [normalize_space(sentence) for sentence in re.split(r"(?<=[。！？.!?])\s+", text) if normalize_space(sentence)]
     matched = [sentence for sentence in sentences if any(term in sentence.lower() for term in terms)]
     return (matched or sentences)[:2]
+
+
+def select_full_text_sentences(text: str, direction: str) -> list[str]:
+    if not text:
+        return []
+    direction_terms = significant_terms(direction)
+    research_terms = {
+        "method",
+        "experiment",
+        "evaluation",
+        "dataset",
+        "baseline",
+        "ablation",
+        "result",
+        "limitation",
+        "failure",
+    }
+    sentences = [
+        normalize_space(sentence)
+        for sentence in re.split(r"(?<=[。！？.!?])\s+", text)
+        if len(normalize_space(sentence)) >= 40
+    ]
+    ranked = sorted(
+        enumerate(sentences),
+        key=lambda item: (
+            sum(term in item[1].lower() for term in research_terms),
+            sum(term in item[1].lower() for term in direction_terms),
+            -item[0],
+        ),
+        reverse=True,
+    )
+    return [sentence for _index, sentence in ranked[:3]]
 
 
 def infer_sentence_kind(sentence: str) -> str:

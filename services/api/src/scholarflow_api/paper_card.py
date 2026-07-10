@@ -319,23 +319,11 @@ def apply_evidence_boundary_to_sections(
     sections: list[PaperCardSection],
     evidence_level: str,
 ) -> list[PaperCardSection]:
-    if evidence_level == "full_text":
-        return sections
-    boundary = evidence_boundary_sentence(evidence_level)
-    return [
-        PaperCardSection(
-            id=section.id,
-            title=section.title,
-            content=(
-                f"{boundary}\n"
-                f"阅读提纲：阅读原文时应重点核验「{section.title}」对应的证据。\n"
-                f"当前可见线索：{section.content}\n"
-                f"证据缺口：{evidence_gap_sentence(evidence_level)}\n"
-                "需要验证的问题：补充 PDF/正文后，检查这一段是否有原文方法、实验表、消融或失败样本支撑。"
-            ),
-        )
-        for section in sections
-    ]
+    # Evidence level is a card-level contract. Repeating the same warning inside all
+    # 12 sections destroys the paper-specific analysis and pollutes saved memories.
+    # The API exposes evidence_level/full_text provenance and renderers show one
+    # global warning instead; each section keeps only its distinct research content.
+    return sections
 
 
 def evidence_boundary_sentence(evidence_level: str) -> str:
@@ -539,18 +527,9 @@ def render_signal_summary(signals: PaperSignals) -> str:
 
 
 def missing_signal_sentence(signals: PaperSignals, fields: list[str]) -> str:
-    labels = {
-        "method": "方法机制",
-        "dataset": "数据集/benchmark",
-        "metric": "评价指标",
-        "baseline": "对照 baseline",
-        "claim": "核心 claim",
-        "limitation": "已有不足",
-    }
-    missing = [labels[field] for field in fields if field in signals.missing_signals]
-    if not missing:
-        return ""
-    return f" 证据边界：当前缺少 {', '.join(missing)}，因此这一段只能给出保守判断，不能补写成论文已验证的结论。"
+    # Missing fields are already explicit in PaperSignals. Repeating a generic
+    # boundary sentence across sections made artifacts and memories unreadable.
+    return ""
 
 
 def unique_preserve_order(values: list[str]) -> list[str]:
@@ -642,7 +621,7 @@ def build_takeaways_section(signals: PaperSignals, focus: str) -> str:
     if signals.contribution_type == "survey":
         return (
             "Take-away 不是复现某个模型，而是提取它的文献组织价值：它如何划分问题空间、哪些范式被认为重要、"
-            "哪些失败模式仍未解决。读这类论文时要特别警惕：survey 的覆盖面和分类轴本身就是它的证据边界。"
+            "哪些失败模式仍未解决。读这类论文时要特别检查 survey 的覆盖面和分类轴是否有明确纳入规则。"
         )
     return (
         f"任务层面：这篇论文应被理解为 `{signals.task}` 下的 `{signals.contribution_type}` 工作。"
@@ -690,7 +669,7 @@ def build_math_section(focus: str, signals: PaperSignals) -> str:
             "理论直觉是把不可控的长回答拆成可检查的中间状态，从而降低幻觉和不可追踪风险。"
         )
     return (
-        "当前输入没有足够信息判断论文是否包含关键数学推导。ScholarFlow 只保留证据边界："
+        "当前输入没有足够信息判断论文是否包含关键数学推导。这里仅保留待核验问题："
         "如果后续提供论文正文或公式段落，再解释每个变量、目标函数和理论假设。"
     )
 
@@ -772,13 +751,25 @@ def build_follow_up_idea(signals: PaperSignals, focus: str) -> str:
     )
 
 
-def render_card_markdown(card: DeepPaperCard, paper: dict[str, Any]) -> str:
+def render_card_markdown(
+    card: DeepPaperCard,
+    paper: dict[str, Any],
+    full_text: dict[str, Any] | None = None,
+) -> str:
+    provenance = full_text or {}
+    boundary = "" if card.evidence_level == "full_text" else evidence_boundary_sentence(card.evidence_level)
     header = [
         f"# {card_markdown_title(card.evidence_level)}",
         f"Paper: {card.paper_title}",
         f"Authors: {paper.get('authors') or 'unknown'}",
         f"Venue/Year: {paper.get('venue') or paper.get('source') or 'unknown'} / {paper.get('year') or 'unknown'}",
         f"Evidence level: {card.evidence_level}",
+        f"Full-text status: {provenance.get('status') or 'not_available'}",
+        f"Full-text source: {provenance.get('source') or 'none'}",
+        f"PDF URL: {provenance.get('pdf_url') or paper.get('pdf_url') or 'none'}",
+        f"Parsed pages/chars: {provenance.get('page_count') or 0} / {provenance.get('character_count') or 0}",
+        f"Full-text note: {provenance.get('error') or 'none'}",
+        f"Evidence boundary: {boundary or 'PDF 文本已解析；关键 claim 仍需回原文页码、表格和公式复核。'}",
         "",
         "## Paper Signals",
         f"- Task: {card.signals.task}",
@@ -804,7 +795,11 @@ def card_markdown_title(evidence_level: str) -> str:
     return "Metadata Reading Outline"
 
 
-def render_card_json(card: DeepPaperCard, paper: dict[str, Any]) -> str:
+def render_card_json(
+    card: DeepPaperCard,
+    paper: dict[str, Any],
+    full_text: dict[str, Any] | None = None,
+) -> str:
     return json.dumps(
         {
             "paper": {
@@ -818,10 +813,19 @@ def render_card_json(card: DeepPaperCard, paper: dict[str, Any]) -> str:
                 "venue": paper.get("venue") or "",
                 "source": paper.get("source") or "",
                 "url": paper.get("url") or "",
+                "pdf_url": paper.get("pdf_url") or "",
                 "priority": paper.get("priority") or "",
             },
             "card": card.to_dict(),
             "evidence_level": card.evidence_level,
+            "full_text": full_text or {
+                "status": "not_available",
+                "pdf_url": paper.get("pdf_url") or "",
+                "source": "",
+                "page_count": 0,
+                "character_count": 0,
+                "error": "",
+            },
         },
         ensure_ascii=False,
         indent=2,

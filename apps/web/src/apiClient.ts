@@ -15,6 +15,7 @@ import type {
   ApiPaper,
   ApiPaperCardCreateRequest,
   ApiPaperCardResponse,
+  ApiPaperFullTextExtractResponse,
   ApiProject,
   ApiProjectCreate,
   ApiResearchDecisionRequest,
@@ -26,6 +27,10 @@ import type {
 
 const API_BASE_URL = import.meta.env.VITE_SCHOLARFLOW_API_BASE_URL ?? "http://127.0.0.1:8000";
 const API_REQUEST_TIMEOUT_MS = readPositiveIntegerEnv(import.meta.env.VITE_SCHOLARFLOW_API_TIMEOUT_MS, 30000);
+const API_RESEARCH_TIMEOUT_MS = readPositiveIntegerEnv(
+  import.meta.env.VITE_SCHOLARFLOW_RESEARCH_TIMEOUT_MS,
+  Math.max(API_REQUEST_TIMEOUT_MS, 90000),
+);
 
 export type ScholarFlowApiErrorKind =
   | "timeout"
@@ -58,9 +63,9 @@ export type ApiErrorView = {
   path?: string;
 };
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+async function request<T>(path: string, options?: RequestInit, timeoutMs = API_REQUEST_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
   const upstreamSignal = options?.signal;
   const abortFromUpstream = () => controller.abort(upstreamSignal?.reason);
 
@@ -102,7 +107,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
         });
       }
       throw new ScholarFlowApiError(
-        `ScholarFlow API request timed out after ${Math.round(API_REQUEST_TIMEOUT_MS / 1000)}s: ${path}`,
+        `ScholarFlow API request timed out after ${Math.round(timeoutMs / 1000)}s: ${path}`,
         { path, detail: "timeout" },
       );
     }
@@ -261,12 +266,30 @@ export function createProjectPaperCard(projectId: string, payload: ApiPaperCardC
   });
 }
 
+export function extractProjectPaperFullText(
+  projectId: string,
+  paperId: string,
+  file: File,
+  options?: RequestInit,
+) {
+  return request<ApiPaperFullTextExtractResponse>(`/projects/${projectId}/papers/${paperId}/full-text`, {
+    ...options,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/pdf",
+      "X-ScholarFlow-Filename": encodeURIComponent(file.name),
+      ...options?.headers,
+    },
+    body: file,
+  });
+}
+
 export function createDirectionReview(projectId: string, payload: ApiDirectionReviewRequest, options?: RequestInit) {
   return request<ApiDirectionReviewResponse>(`/projects/${projectId}/direction-reviews`, {
     ...options,
     method: "POST",
     body: JSON.stringify(payload),
-  });
+  }, API_RESEARCH_TIMEOUT_MS);
 }
 
 export function createResearchDecisions(projectId: string, payload: ApiResearchDecisionRequest = {}, options?: RequestInit) {

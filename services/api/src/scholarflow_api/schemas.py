@@ -47,6 +47,7 @@ class Paper(BaseModel):
     venue: str
     source: str
     url: str
+    pdf_url: str = ""
     relation: str
     priority: str
     code: str
@@ -163,6 +164,21 @@ class PaperSignals(BaseModel):
     missing_signals: list[str] = Field(default_factory=list)
 
 
+class FullTextProvenance(BaseModel):
+    status: Literal[
+        "extracted",
+        "not_available",
+        "download_failed",
+        "parse_failed",
+        "disabled",
+    ] = "not_available"
+    pdf_url: str = ""
+    source: str = ""
+    page_count: int = 0
+    character_count: int = 0
+    error: str = ""
+
+
 class EvidenceSnippet(BaseModel):
     id: str = ""
     source: str = ""
@@ -236,6 +252,7 @@ class PaperCard(BaseModel):
     paper_id: str | None
     artifact_id: str | None
     evidence_level: Literal["metadata_only", "abstract_only", "full_text"] = "metadata_only"
+    full_text: FullTextProvenance = Field(default_factory=FullTextProvenance)
     signals: PaperSignals = Field(default_factory=PaperSignals)
     sections: list[PaperCardSection]
     weakest_assumption: str
@@ -246,6 +263,14 @@ class PaperCard(BaseModel):
 class PaperCardResponse(BaseModel):
     card: PaperCard
     artifact: Artifact
+
+
+class PaperFullTextExtractResponse(BaseModel):
+    paper_id: str
+    text: str = ""
+    full_text: FullTextProvenance = Field(default_factory=FullTextProvenance)
+    card: PaperCard | None = None
+    artifact: Artifact | None = None
 
 
 class DirectionReviewRequest(BaseModel):
@@ -267,6 +292,7 @@ class DirectionPaperReading(BaseModel):
     paper: Paper
     abstract_translation: str
     evidence_level: Literal["metadata_only", "abstract_only", "full_text"] = "metadata_only"
+    full_text: FullTextProvenance = Field(default_factory=FullTextProvenance)
     signals: PaperSignals = Field(default_factory=PaperSignals)
     sections: list[PaperCardSection]
     research_sight: ResearchSight

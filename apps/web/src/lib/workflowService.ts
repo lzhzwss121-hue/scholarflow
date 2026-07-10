@@ -20,6 +20,7 @@ import {
   createProjectPaperCard,
   createResearchDecisions,
   executeAgentRun,
+  extractProjectPaperFullText,
   getAgentRunStatus,
   getArtifact,
   getHealth,
@@ -780,6 +781,66 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     }
   }
 
+  async function handlePaperPdfUpload(paperId: string, file: File) {
+    if (!activeProject) {
+      setApiMessage("没有可写入的后端项目，请先创建或启动 API。");
+      return;
+    }
+    if (isDemoProject(activeProject.id)) {
+      blockDemoProjectAction();
+      return;
+    }
+    const paper = paperRows.find((item) => item.id === paperId);
+    if (!paper) {
+      setApiMessage("当前项目中没有找到这篇论文，无法绑定上传的 PDF。");
+      return;
+    }
+    if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
+      setApiMessage("请选择 PDF 文件。");
+      return;
+    }
+    if (file.size === 0 || file.size > 20 * 1024 * 1024) {
+      setApiMessage("PDF 必须大于 0 字节且不超过 20 MB。");
+      return;
+    }
+
+    const projectId = activeProject.id;
+    const guard = beginRequest("paper-card");
+    setPaperCardBusy(true);
+    setApiMessage(`正在解析 PDF 并重建 Paper Card：${file.name}`);
+    try {
+      const extraction = await extractProjectPaperFullText(projectId, paperId, file, { signal: guard.signal });
+      if (!guard.isCurrent() || activeProjectIdRef.current !== projectId) {
+        return;
+      }
+      if (
+        extraction.full_text.status !== "extracted" ||
+        !extraction.text.trim() ||
+        !extraction.card ||
+        !extraction.artifact
+      ) {
+        setApiMessage(
+          extraction.full_text.error || "PDF 没有可解析的文本层；请改用可复制文本的 PDF，或粘贴正文片段。",
+        );
+        return;
+      }
+      setLatestPaperCard(extraction.card);
+      setLastSavedArtifact(extraction.artifact);
+      setPaperCardInput("");
+      setApiMessage(
+        `PDF 已解析 ${extraction.full_text.page_count} 页 / ${extraction.full_text.character_count.toLocaleString("zh-CN")} 字符，全文级 Paper Card 已更新。`,
+      );
+      await loadProjectResources(projectId, guard);
+    } catch (error) {
+      if (!isAbortError(error) && guard.isCurrent()) {
+        setApiMessage(formatApiFailure(error, "PDF 解析或 Paper Card 生成失败，请检查文件文本层与 API 日志。"));
+      }
+    } finally {
+      setPaperCardBusy(false);
+      guard.finish();
+    }
+  }
+
   async function handleCreateDirectionReview() {
     if (!activeProject) {
       setApiMessage("没有可写入的后端项目，请先创建或启动 API。");
@@ -1150,6 +1211,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     onMemoryQuestionChange: setMemoryQuestion,
     onMemoryTopKChange: setMemoryTopK,
     onPaperCardInputChange: setPaperCardInput,
+    onPaperPdfUpload: handlePaperPdfUpload,
     onProjectDraftChange: setProjectDraft,
     onQueryResearchMemory: handleQueryResearchMemory,
     onSaveArtifact: handleSaveArtifact,
