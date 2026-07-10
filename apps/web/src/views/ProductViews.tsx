@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import {
   AlertTriangle,
   ArrowRight,
@@ -129,23 +129,64 @@ export function WorkflowShell({
   onSelectView: (view: ViewId) => void;
   viewModel: WorkflowViewModel;
 }) {
+  const [sidebarOpen, setSidebarOpen] = useState(() =>
+    typeof window === "undefined" ? true : window.innerWidth > 860,
+  );
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const latestNotice = viewModel.warnings[0] ?? null;
   const activeStep = viewModel.workflowSteps.find((step) => step.id === activeView);
+  const completedStepCount = viewModel.workflowSteps.filter((step) => step.status === "complete").length;
+  const partialStepCount = viewModel.workflowSteps.filter((step) => step.status === "partial").length;
+  const progressValue = completedStepCount + partialStepCount * 0.5;
+
+  useEffect(() => {
+    function handleResize() {
+      if (window.innerWidth <= 860) {
+        setSidebarOpen(false);
+      }
+    }
+
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  function selectView(view: ViewId) {
+    onSelectView(view);
+    if (typeof window !== "undefined" && window.innerWidth <= 860) {
+      setSidebarOpen(false);
+    }
+  }
 
   return (
-    <div className="workflow-shell">
+    <div className={`workflow-shell ${sidebarOpen ? "sidebar-open" : "sidebar-collapsed"} ${inspectorOpen ? "inspector-open" : ""}`}>
       <aside className="workflow-rail" aria-label="workflow steps">
-        <button className="workflow-brand" type="button" onClick={() => onSelectView("dashboard")}>
-          <span className="sf-logo small">SF</span>
-          <span>
-            <strong>ScholarFlow</strong>
-            <small>Research Workspace</small>
-          </span>
-        </button>
+        <div className="workflow-brand-row">
+          <button className="workflow-brand" type="button" onClick={() => selectView("dashboard")}>
+            <span className="sf-logo small" aria-hidden="true">
+              <span>S</span>
+            </span>
+            <span>
+              <strong>ScholarFlow</strong>
+              <small>Research workspace</small>
+            </span>
+          </button>
+          <button
+            aria-label="折叠工作流侧栏"
+            className="workflow-shell-icon-button workflow-collapse-button"
+            type="button"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <ChevronLeft size={16} />
+          </button>
+        </div>
 
         <label className="project-select-block">
-          <span>项目</span>
+          <span className="project-select-label">
+            <span>Active project</span>
+            <small>{viewModel.projects.length} local</small>
+          </span>
           <select
+            aria-label="项目"
             value={viewModel.activeProject?.id ?? ""}
             onChange={(event) => actions.onSelectProject(event.target.value)}
           >
@@ -157,20 +198,43 @@ export function WorkflowShell({
               </option>
             ))}
           </select>
+          <small className="project-select-meta">
+            {viewModel.activeProject
+              ? `${viewModel.activeProject.field || "General research"} · ${viewModel.activeProject.stage}`
+              : "No demo auto-selection"}
+          </small>
         </label>
 
+        <div className="workflow-rail-heading">
+          <span>Research pipeline</span>
+          <strong>
+            {completedStepCount}/{viewModel.workflowSteps.length}
+          </strong>
+        </div>
+        <progress
+          aria-label="workflow completion"
+          className="workflow-progress"
+          max={Math.max(viewModel.workflowSteps.length, 1)}
+          value={progressValue}
+        />
+
         <nav className="workflow-step-list">
-          {viewModel.workflowSteps.map((step) => {
+          {viewModel.workflowSteps.map((step, index) => {
             const Icon = navIcons[step.id];
             const isActive = step.id === activeView || (activeView === "paper-reader" && step.id === "paper-reader");
             return (
               <button
                 className={isActive ? "workflow-step active" : "workflow-step"}
+                data-status={step.status}
+                aria-current={isActive ? "page" : undefined}
                 key={step.id}
                 type="button"
-                onClick={() => onSelectView(step.id)}
+                onClick={() => selectView(step.id)}
               >
-                <Icon size={17} />
+                <span className="workflow-step-icon" aria-hidden="true">
+                  <Icon size={16} />
+                  <small>{String(index + 1).padStart(2, "0")}</small>
+                </span>
                 <span>
                   <strong>{step.label}</strong>
                   <small>{step.summary}</small>
@@ -180,14 +244,34 @@ export function WorkflowShell({
             );
           })}
         </nav>
+
+        <footer className="workflow-rail-footer">
+          <span>
+            <i aria-hidden="true" />
+            Local-first workspace
+          </span>
+          <small>v{SCHOLARFLOW_VERSION}</small>
+        </footer>
       </aside>
 
       <main className="workflow-main" aria-label={ariaLabel}>
         <header className="workflow-header">
-          <div>
-            <p className="section-kicker">Current Workspace</p>
+          <div className="workflow-header-copy">
+            {!sidebarOpen ? (
+              <button
+                aria-label="展开工作流侧栏"
+                className="workflow-shell-icon-button workflow-open-sidebar-button"
+                type="button"
+                onClick={() => setSidebarOpen(true)}
+              >
+                <ArrowRight size={16} />
+              </button>
+            ) : null}
+            <p className="section-kicker">
+              Workspace <span aria-hidden="true">/</span> {activeStep?.label ?? "Project overview"}
+            </p>
             <h1>{viewModel.activeProject?.title ?? "创建真实项目开始"}</h1>
-            <span>
+            <span className="workflow-header-description">
               {viewModel.activeProject
                 ? isDemoProject(viewModel.activeProject)
                   ? "Demo 项目仅用于界面预览，不代表真实 workflow 输出"
@@ -199,7 +283,17 @@ export function WorkflowShell({
             <span className={`api-chip ${viewModel.apiStatus}`}>{viewModel.apiStatus}</span>
             <span>{viewModel.paperRows.length} papers</span>
             <span>{viewModel.artifactCount} artifacts</span>
-            <button className="secondary-command compact" type="button" onClick={() => onSelectView("new-project")}>
+            <button
+              aria-expanded={inspectorOpen}
+              className="secondary-command compact workflow-trace-button"
+              type="button"
+              onClick={() => setInspectorOpen((value) => !value)}
+            >
+              <FileText size={14} />
+              研究轨迹
+              <strong>{viewModel.warnings.length + viewModel.artifactCount}</strong>
+            </button>
+            <button className="secondary-command compact" type="button" onClick={() => selectView("new-project")}>
               <Plus size={15} />
               新建项目
             </button>
@@ -223,7 +317,39 @@ export function WorkflowShell({
         <section className="workflow-content">{children}</section>
       </main>
 
-      <aside className="workflow-inspector" aria-label="workflow artifacts and warnings">
+      {inspectorOpen ? (
+        <button
+          aria-label="关闭研究轨迹"
+          className="workflow-drawer-backdrop"
+          type="button"
+          onClick={() => setInspectorOpen(false)}
+        />
+      ) : null}
+
+      {sidebarOpen ? (
+        <button
+          aria-label="关闭工作流侧栏"
+          className="workflow-sidebar-backdrop"
+          type="button"
+          onClick={() => setSidebarOpen(false)}
+        />
+      ) : null}
+
+      <aside className="workflow-inspector" aria-label="workflow artifacts and warnings" hidden={!inspectorOpen}>
+        <header className="workflow-inspector-header">
+          <div>
+            <p className="section-kicker">Research trace</p>
+            <h2>Evidence context</h2>
+          </div>
+          <button
+            aria-label="关闭研究轨迹"
+            className="workflow-shell-icon-button"
+            type="button"
+            onClick={() => setInspectorOpen(false)}
+          >
+            <X size={16} />
+          </button>
+        </header>
         <WorkflowNoticeList notices={viewModel.warnings} />
         <WorkflowArtifactPanel
           activeArtifact={viewModel.activeArtifact}
@@ -238,7 +364,12 @@ export function WorkflowShell({
 }
 
 function StatusPill({ status }: { status: WorkflowStepStatus }) {
-  return <em className={`workflow-status ${status}`}>{status}</em>;
+  return (
+    <em className={`workflow-status ${status}`}>
+      <span aria-hidden="true" />
+      {status}
+    </em>
+  );
 }
 
 function WorkflowNoticeList({ notices }: { notices: WorkflowNotice[] }) {
@@ -692,6 +823,7 @@ interface ActiveViewProps {
   decisionGoal: string;
   directionBusy: boolean;
   directionInput: string;
+  directionPaperRouteId: string;
   directionReview: ApiDirectionReviewResponse | null;
   directionRound: number;
   literatureCoverage: Record<string, number>;
@@ -714,6 +846,7 @@ interface ActiveViewProps {
   onDirectionInputChange: (direction: string) => void;
   onDirectionRoundChange: (round: number) => void;
   onExecuteAgentRun: () => void;
+  onExitDirectionPaper: () => void;
   onGeneratePaperCard: () => void;
   onLiteratureQueryChange: (query: string) => void;
   onLoadArtifact: (artifactId: string) => void;
@@ -731,7 +864,6 @@ interface ActiveViewProps {
   paperCardInput: string;
   projectCount: number;
   researchDecision: ApiResearchDecisionResponse | null;
-  selectedDirectionPaperId: string;
   selectedPaperId: string;
   view: ViewId;
 }
@@ -750,6 +882,7 @@ export function ActiveView({
   decisionGoal,
   directionBusy,
   directionInput,
+  directionPaperRouteId,
   directionReview,
   directionRound,
   literatureCoverage,
@@ -772,6 +905,7 @@ export function ActiveView({
   onDirectionInputChange,
   onDirectionRoundChange,
   onExecuteAgentRun,
+  onExitDirectionPaper,
   onGeneratePaperCard,
   onLiteratureQueryChange,
   onLoadArtifact,
@@ -789,7 +923,6 @@ export function ActiveView({
   paperCardInput,
   projectCount,
   researchDecision,
-  selectedDirectionPaperId,
   selectedPaperId,
   view,
 }: ActiveViewProps) {
@@ -846,12 +979,15 @@ export function ActiveView({
             artifactCount={artifactCount}
             apiStatus={apiStatus}
             card={latestPaperCard}
+            directionPaperId={directionPaperRouteId}
             directionReview={directionReview}
             artifactSummaries={artifactSummaries}
             isGenerating={paperCardBusy}
             onGenerate={onGeneratePaperCard}
             onInputChange={onPaperCardInputChange}
             onLoadArtifact={onLoadArtifact}
+            onExitDirectionPaper={onExitDirectionPaper}
+            onOpenDirectionPaper={onSelectedDirectionPaperChange}
             onSelectedPaperChange={onSelectedPaperChange}
             onSelectView={onSelectView}
             papers={paperRows}
@@ -873,11 +1009,10 @@ export function ActiveView({
             onDirectionChange={onDirectionInputChange}
             onGenerate={onCreateDirectionReview}
             onLoadArtifact={onLoadArtifact}
+            onOpenPaperCard={onSelectedDirectionPaperChange}
             onRoundChange={onDirectionRoundChange}
-            onSelectedPaperChange={onSelectedDirectionPaperChange}
             review={directionReview}
             round={directionRound}
-            selectedPaperId={selectedDirectionPaperId}
           />
         </>
       );
@@ -986,29 +1121,43 @@ export function ProductHomeView({
   return (
     <div className="dashboard-workbench">
       <section className="workbench-summary-panel">
-        <div>
-          <p className="section-kicker">Project Snapshot</p>
+        <div className="workbench-summary-copy">
+          <p className="section-kicker">Project snapshot</p>
           <h2>{activeProject?.title ?? "先创建一个科研项目"}</h2>
           <p>
             {activeProject
               ? activeProject.description || "当前项目已经连接到本地 SQLite 工作区。"
               : "ScholarFlow 只展示真实项目状态。创建项目后，Paper Table、Direction Review、Paper Memory、Gap Board 和 Experiment Plan 才会逐步进入可用状态。"}
           </p>
+          <div className="workbench-context-row">
+            <span>{activeProject?.field || "Evidence-first workflow"}</span>
+            <span>{activeProject?.workflow || "Survey → experiment"}</span>
+            <span>{activeProject?.stage || "Awaiting project"}</span>
+          </div>
         </div>
-        <div className="workbench-action-row">
-          <button className="secondary-command" type="button" onClick={() => onSelectView("new-project")}>
-            <Plus size={17} />
-            新建项目
-          </button>
-          <button
-            className="secondary-command"
-            disabled={!activeProject || apiStatus !== "online"}
-            type="button"
-            onClick={() => onSelectView("paper-table")}
-          >
-            <Search size={17} />
-            进入 Paper Table
-          </button>
+        <div className="workbench-summary-actions">
+          <div className={`workbench-live-state ${apiStatus}`}>
+            <span aria-hidden="true" />
+            <div>
+              <small>Workspace state</small>
+              <strong>{apiStatus === "online" ? "Ready for research" : "Backend required"}</strong>
+            </div>
+          </div>
+          <div className="workbench-action-row">
+            <button className="secondary-command" type="button" onClick={() => onSelectView("new-project")}>
+              <Plus size={17} />
+              新建项目
+            </button>
+            <button
+              className="secondary-command workbench-primary-command"
+              disabled={!activeProject || apiStatus !== "online"}
+              type="button"
+              onClick={() => onSelectView("paper-table")}
+            >
+              <Search size={17} />
+              进入 Paper Table
+            </button>
+          </div>
         </div>
       </section>
 
@@ -1572,11 +1721,14 @@ export function ProductPaperReaderView({
   artifactSummaries,
   apiStatus,
   card,
+  directionPaperId,
   directionReview,
   isGenerating,
   onGenerate,
   onInputChange,
   onLoadArtifact,
+  onExitDirectionPaper,
+  onOpenDirectionPaper,
   onSelectedPaperChange,
   onSelectView,
   papers,
@@ -1590,11 +1742,14 @@ export function ProductPaperReaderView({
   artifactSummaries: ApiArtifactSummary[];
   apiStatus: ApiStatus;
   card: ApiPaperCard | null;
+  directionPaperId: string;
   directionReview: ApiDirectionReviewResponse | null;
   isGenerating: boolean;
   onGenerate: () => void;
   onInputChange: (value: string) => void;
   onLoadArtifact: (artifactId: string) => void;
+  onExitDirectionPaper: () => void;
+  onOpenDirectionPaper: (paperId: string) => void;
   onSelectedPaperChange: (paperId: string) => void;
   onSelectView: (view: ViewId) => void;
   papers: PaperRow[];
@@ -1603,6 +1758,22 @@ export function ProductPaperReaderView({
   supplementalInput: string;
 }) {
   const [activeQuestion, setActiveQuestion] = useState(1);
+  const directionReadings = directionReview?.papers ?? [];
+  const directionReading = directionReadings.find((reading) => reading.paper.id === directionPaperId) ?? null;
+
+  if (directionPaperId) {
+    return (
+      <DirectionPaperPage
+        hasHydratedReview={Boolean(directionReview)}
+        onBack={onExitDirectionPaper}
+        onOpenPaper={onOpenDirectionPaper}
+        reading={directionReading}
+        readings={directionReadings}
+        requestedPaperId={directionPaperId}
+      />
+    );
+  }
+
   const selectedPaper = papers.find((paper) => paper.id === selectedPaperId) ?? papers[0];
   const cardMatch = resolvePaperCardForPaper(card, directionReview, selectedPaper);
   const displayCard = cardMatch?.card ?? null;
@@ -1865,6 +2036,81 @@ export function ProductPaperReaderView({
           </section>
         </aside>
       </section>
+    </div>
+  );
+}
+
+function DirectionPaperPage({
+  hasHydratedReview,
+  onBack,
+  onOpenPaper,
+  reading,
+  readings,
+  requestedPaperId,
+}: {
+  hasHydratedReview: boolean;
+  onBack: () => void;
+  onOpenPaper: (paperId: string) => void;
+  reading: ApiDirectionPaperReading | null;
+  readings: ApiDirectionPaperReading[];
+  requestedPaperId: string;
+}) {
+  const readingIndex = reading ? readings.findIndex((item) => item.paper.id === reading.paper.id) : -1;
+  const previousReading = readingIndex > 0 ? readings[readingIndex - 1] : null;
+  const nextReading = readingIndex >= 0 && readingIndex < readings.length - 1 ? readings[readingIndex + 1] : null;
+
+  return (
+    <div className="direction-paper-page">
+      <header className="direction-paper-toolbar">
+        <button className="back-link" type="button" onClick={onBack}>
+          <ChevronLeft size={16} />
+          返回 Direction Review
+        </button>
+        <div className="direction-paper-position" aria-live="polite">
+          {reading ? `${readingIndex + 1} / ${readings.length}` : "Paper Card"}
+        </div>
+        <div className="direction-paper-paging">
+          <button
+            aria-label="上一篇论文"
+            disabled={!previousReading}
+            type="button"
+            onClick={() => previousReading && onOpenPaper(previousReading.paper.id)}
+          >
+            <ChevronLeft size={15} />
+            上一篇
+          </button>
+          <button
+            aria-label="下一篇论文"
+            disabled={!nextReading}
+            type="button"
+            onClick={() => nextReading && onOpenPaper(nextReading.paper.id)}
+          >
+            下一篇
+            <ArrowRight size={15} />
+          </button>
+        </div>
+      </header>
+
+      {reading ? (
+        <DirectionPaperDetail reading={reading} />
+      ) : (
+        <section className="direction-paper-route-state" role="status">
+          <BookOpen size={22} />
+          <div>
+            <h1>{hasHydratedReview ? "未找到这篇 Paper Card" : "正在恢复 Paper Card"}</h1>
+            <p>
+              {hasHydratedReview
+                ? `当前 Direction Review 中没有 paper id=${requestedPaperId}。系统不会回退到第一篇论文。`
+                : "正在从当前项目的 Direction Review artifact 恢复论文详情，请稍候。"}
+            </p>
+            {hasHydratedReview ? (
+              <button className="secondary-command" type="button" onClick={onBack}>
+                返回论文列表
+              </button>
+            ) : null}
+          </div>
+        </section>
+      )}
     </div>
   );
 }
@@ -2493,11 +2739,10 @@ export function DirectionReviewView({
   onDirectionChange,
   onGenerate,
   onLoadArtifact,
+  onOpenPaperCard,
   onRoundChange,
-  onSelectedPaperChange,
   review,
   round,
-  selectedPaperId,
 }: {
   apiMessage: string;
   apiStatus: ApiStatus;
@@ -2506,15 +2751,14 @@ export function DirectionReviewView({
   onDirectionChange: (direction: string) => void;
   onGenerate: () => void;
   onLoadArtifact: (artifactId: string) => void;
+  onOpenPaperCard: (paperId: string) => void;
   onRoundChange: (round: number) => void;
-  onSelectedPaperChange: (paperId: string) => void;
   review: ApiDirectionReviewResponse | null;
   round: number;
-  selectedPaperId: string;
 }) {
+  const [summaryExpanded, setSummaryExpanded] = useState(false);
   const readings = review?.papers ?? [];
   const artifactRefs = getDirectionArtifactRefs(review);
-  const selectedReading = readings.find((reading) => reading.paper.id === selectedPaperId) ?? null;
   const recommendedPaperIds = review?.recommended_paper_ids ?? [];
   const recommendedReadings =
     readings.filter((reading) => recommendedPaperIds.includes(reading.paper.id) || reading.self_read_priority) ?? [];
@@ -2529,14 +2773,24 @@ export function DirectionReviewView({
       ? `本轮实际只读取 ${actualRoundCount}/${expectedRoundCount} 篇 strong/medium 论文；weak=${review.low_relevance_count ?? coverage.weak_match_count ?? 0}，off-topic=${review.off_topic_count ?? coverage.off_topic_count ?? 0}。`
       : "";
   const reviewWarnings = review ? [partialRoundWarning, ...review.errors].filter(Boolean) : [];
+  const statusLabel = review
+    ? review.review_status === "complete"
+      ? "Complete"
+      : review.review_status === "blocked"
+        ? "Blocked"
+        : "Partial"
+    : "Waiting";
+  const directionSummary = formatAcademicText(review?.direction_summary ?? "");
+  const directionSummaryPreview = buildDirectionSummaryPreview(directionSummary);
 
   return (
-    <div className="direction-review-stack">
+    <div className="direction-review-page">
       <section className="direction-review-controls" aria-label="direction review controls">
         <div className="direction-control-header">
           <div>
             <p className="section-kicker">Direction Review</p>
-            <h2>方向级三轮论文精读</h2>
+            <h2>方向精读工作台</h2>
+            <p>每轮筛选并结构化阅读最多 10 篇强/中相关论文；详情在独立 Paper Card 页面打开。</p>
           </div>
           <button className="secondary-command" disabled={!canGenerate} type="button" onClick={onGenerate}>
             <BrainCircuit size={17} />
@@ -2567,7 +2821,7 @@ export function DirectionReviewView({
           <span>近三年</span>
           <span>{review ? `目标 ${expectedRoundCount} 篇，本轮实际 ${actualRoundCount} 篇` : "目标每轮 10 篇"}</span>
           <span>顶会/顶刊优先</span>
-          <span>点击卡片查看细节</span>
+          <span>点击进入独立 Paper Card</span>
         </div>
 
         <div className={`project-status-note ${apiStatus}`}>
@@ -2581,19 +2835,36 @@ export function DirectionReviewView({
           <section className="direction-summary-panel" aria-label="direction summary">
             <div className="direction-summary-header">
               <div>
-                <p className="section-kicker">Cumulative Understanding</p>
-                <h2>{review.direction}</h2>
+                <p className="section-kicker">Round {review.round} · Cumulative Understanding</p>
+                <h1>{formatAcademicText(review.direction)}</h1>
+                <p className="direction-summary-intro">
+                  {statusLabel === "Complete"
+                    ? "本轮候选阅读达到方向级阈值；不代表所有论文都完成全文阅读。"
+                    : "当前结果存在检索或证据缺口，请先查看警告再继续。"}
+                </p>
               </div>
-              <div className="direction-stat-grid">
-                <span>Round {review.round}</span>
-                <span>{review.review_status === "complete" ? "Complete" : review.review_status === "blocked" ? "Blocked" : "Partial"}</span>
-                <span>强/中相关 {actualRoundCount}/{expectedRoundCount}</span>
-                <span>过滤离题 {review.off_topic_count ?? coverage.off_topic_count ?? 0}</span>
-                <span>累计 {review.total_read_count} papers</span>
-                {review.scope ? <span>{review.scope.year_range}</span> : null}
+              <span className={`direction-status-badge ${review.review_status}`}>{statusLabel}</span>
+            </div>
+
+            <div className="direction-metric-strip" aria-label="direction review metrics">
+              <div>
+                <span>强/中相关</span>
+                <strong>{actualRoundCount}/{expectedRoundCount}</strong>
+              </div>
+              <div>
+                <span>过滤离题</span>
+                <strong>{review.off_topic_count ?? coverage.off_topic_count ?? 0}</strong>
+              </div>
+              <div>
+                <span>累计阅读</span>
+                <strong>{review.total_read_count}</strong>
+              </div>
+              <div>
+                <span>年份范围</span>
+                <strong>{review.scope?.year_range ?? "近三年"}</strong>
               </div>
             </div>
-            <p>{review.direction_summary}</p>
+
             {partialRoundWarning ? (
               <div className="partial-review-banner">
                 <AlertTriangle size={18} />
@@ -2603,100 +2874,104 @@ export function DirectionReviewView({
                 </div>
               </div>
             ) : null}
-            {review.scope ? (
-              <>
-                <div className="direction-scope-grid">
-                  <div>
-                    <strong>纳入范围</strong>
-                    <span>{review.scope.included_scope}</span>
-                  </div>
-                  <div>
-                    <strong>排除范围</strong>
-                    <span>{review.scope.excluded_scope}</span>
-                  </div>
-                </div>
-                <div className="direction-chip-row">
-                  {review.scope.subtopics.map((subtopic) => (
-                    <span key={subtopic}>{subtopic}</span>
-                  ))}
-                </div>
-              </>
-            ) : null}
-            {review.baseline_map ? <BaselineMapPanel baselineMap={review.baseline_map} /> : null}
-            {artifactRefs.length ? (
-              <DirectionArtifactRefs artifacts={artifactRefs} onLoadArtifact={onLoadArtifact} />
-            ) : null}
-            {reviewWarnings.length ? (
-              <div className="retrieval-errors">
-                <strong>检索警告</strong>
-                <p>{warningPreview(reviewWarnings, 3)}</p>
-              </div>
-            ) : null}
+
+            <div
+              className={summaryExpanded ? "direction-summary-copy expanded" : "direction-summary-copy"}
+              id="direction-summary-copy"
+            >
+              <strong>本轮判断</strong>
+              <p>{summaryExpanded ? directionSummary : directionSummaryPreview}</p>
+            </div>
+            <button
+              aria-controls="direction-summary-copy"
+              aria-expanded={summaryExpanded}
+              className="direction-summary-toggle"
+              type="button"
+              onClick={() => setSummaryExpanded((value) => !value)}
+            >
+              {summaryExpanded ? "收起完整总结" : "展开完整总结"}
+              <ChevronDown size={15} />
+            </button>
           </section>
 
-          {readings.length ? (
-          <section className="recommendation-panel" aria-label="recommended papers">
-            <div>
-              <p className="section-kicker">Personal Deep Reading</p>
-              <h2>最值得用户本人精读的 3 篇</h2>
+          {reviewWarnings.length ? (
+            <div className="retrieval-errors direction-visible-warning" role="alert">
+              <strong>检索与证据警告</strong>
+              <p>{warningPreview(reviewWarnings, 3)}</p>
             </div>
-            <div className="recommendation-list">
-              {recommendedReadings.slice(0, 3).map((reading, index) => (
-                <button
-                  className="recommendation-item"
-                  key={`${reading.paper.id}-${reading.paper.title}-${index}`}
-                  type="button"
-                  onClick={() => onSelectedPaperChange(reading.paper.id)}
-                >
-                  <span>{index + 1}</span>
-                  <div>
-                    <strong>{reading.paper.title}</strong>
-                    <small>{reading.why_selected}</small>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </section>
           ) : null}
 
           {readings.length ? (
-          <div className="direction-reader-layout">
-            <section className="direction-paper-grid" aria-label="direction paper cards">
-              {readings.map((reading, index) => {
-                const isActive = selectedPaperId === reading.paper.id;
-                return (
+            <section className="recommendation-panel" aria-label="recommended papers">
+              <div className="direction-section-header">
+                <div>
+                  <p className="section-kicker">Personal Deep Reading</p>
+                  <h2>优先亲自精读</h2>
+                </div>
+                <span>{Math.min(recommendedReadings.length, 3)} papers</span>
+              </div>
+              <div className="recommendation-list">
+                {recommendedReadings.slice(0, 3).map((reading, index) => (
                   <button
-                    className={isActive ? "direction-paper-card active" : "direction-paper-card"}
+                    aria-describedby={`recommended-paper-description-${index}`}
+                    aria-label={`打开推荐 Paper Card：${reading.paper.title}`}
+                    className="recommendation-item"
                     key={`${reading.paper.id}-${reading.paper.title}-${index}`}
                     type="button"
-                    onClick={() => onSelectedPaperChange(reading.paper.id)}
+                    onClick={() => onOpenPaperCard(reading.paper.id)}
                   >
-                    <div className="direction-paper-card-header">
-                      <span>{String(index + 1).padStart(2, "0")}</span>
+                    <span>{index + 1}</span>
+                    <div>
+                      <strong>{formatAcademicText(reading.paper.title)}</strong>
+                      <small id={`recommended-paper-description-${index}`}>{reading.why_selected}</small>
+                    </div>
+                    <ArrowRight size={16} />
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          {readings.length ? (
+            <section className="direction-paper-list" aria-label="direction paper cards">
+              <div className="direction-section-header">
+                <div>
+                  <p className="section-kicker">Round {review.round} Library</p>
+                  <h2>本轮全部 Paper Cards</h2>
+                </div>
+                <span>{readings.length} papers</span>
+              </div>
+              <div className="direction-paper-rows">
+              {readings.map((reading, index) => {
+                return (
+                  <button
+                    aria-describedby={`direction-paper-description-${index} direction-paper-metadata-${index} direction-paper-status-${index}`}
+                    aria-label={`打开 Paper Card：${reading.paper.title}`}
+                    className="direction-paper-row"
+                    key={`${reading.paper.id}-${reading.paper.title}-${index}`}
+                    type="button"
+                    onClick={() => onOpenPaperCard(reading.paper.id)}
+                  >
+                    <span className="direction-paper-index">{String(index + 1).padStart(2, "0")}</span>
+                    <div className="direction-paper-row-copy">
+                      <h3>{formatAcademicText(reading.paper.title)}</h3>
+                      <p id={`direction-paper-description-${index}`}>{reading.why_selected}</p>
+                      <div className="direction-paper-meta" id={`direction-paper-metadata-${index}`}>
+                        <span>{reading.paper.authors || "authors unknown"}</span>
+                        <span>{reading.paper.year || "year unknown"}</span>
+                        <span>{reading.paper.venue || reading.paper.source || "source unknown"}</span>
+                      </div>
+                    </div>
+                    <div className="direction-paper-row-status" id={`direction-paper-status-${index}`}>
                       {reading.self_read_priority ? <strong>推荐精读</strong> : null}
+                      <span>{formatEvidenceLevel(reading.evidence_level ?? "metadata_only")}</span>
                     </div>
-                    <h3>{reading.paper.title}</h3>
-                    <p>{reading.why_selected}</p>
-                    <div className="direction-paper-meta">
-                      <span>{reading.paper.year || "year unknown"}</span>
-                      <span>{reading.paper.venue || reading.paper.source || "source unknown"}</span>
-                    </div>
-                    <small>{reading.venue_signal}</small>
+                    <ArrowRight size={17} />
                   </button>
                 );
               })}
+              </div>
             </section>
-
-            {selectedReading ? (
-              <DirectionPaperDetail reading={selectedReading} />
-            ) : (
-              <section className="direction-detail empty" aria-label="paper detail placeholder">
-                <BookOpen size={20} />
-                <h2>选择一张论文卡片</h2>
-                <p>摘要中文内容和 12 条精读结果会在这里显示，列表页不会直接铺开长文本。</p>
-              </section>
-            )}
-          </div>
           ) : (
             <section className="direction-empty-state">
               <BookOpen size={22} />
@@ -2706,6 +2981,41 @@ export function DirectionReviewView({
               </div>
             </section>
           )}
+
+          <details className="direction-evidence-details">
+            <summary>
+              <span>
+                <strong>研究依据与产物</strong>
+                <small>Scope、BaselineMap 与 {artifactRefs.length} 个已保存 Artifact</small>
+              </span>
+              <ChevronDown size={17} />
+            </summary>
+            <div className="direction-evidence-content">
+              {review.scope ? (
+                <>
+                  <div className="direction-scope-grid">
+                    <div>
+                      <strong>纳入范围</strong>
+                      <span>{review.scope.included_scope}</span>
+                    </div>
+                    <div>
+                      <strong>排除范围</strong>
+                      <span>{review.scope.excluded_scope}</span>
+                    </div>
+                  </div>
+                  <div className="direction-subtopic-row">
+                    {review.scope.subtopics.map((subtopic) => (
+                      <span key={subtopic}>{subtopic}</span>
+                    ))}
+                  </div>
+                </>
+              ) : null}
+              {review.baseline_map ? <BaselineMapPanel baselineMap={review.baseline_map} /> : null}
+              {artifactRefs.length ? (
+                <DirectionArtifactRefs artifacts={artifactRefs} onLoadArtifact={onLoadArtifact} />
+              ) : null}
+            </div>
+          </details>
         </>
       ) : (
         <section className="direction-empty-state">
@@ -2721,6 +3031,28 @@ export function DirectionReviewView({
       )}
     </div>
   );
+}
+
+function formatAcademicText(value: string): string {
+  return value
+    .replace(/\$\s*(\d+)\^\{\\circ\}\s*\$/g, "$1°")
+    .replace(/(\d+)\^\{\\circ\}/g, "$1°")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildDirectionSummaryPreview(value: string, maxLength = 340): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  const candidate = value.slice(0, maxLength);
+  const sentenceEnd = Math.max(
+    candidate.lastIndexOf("。"),
+    candidate.lastIndexOf("；"),
+    candidate.lastIndexOf(". "),
+  );
+  const cutoff = sentenceEnd >= Math.floor(maxLength * 0.58) ? sentenceEnd + 1 : maxLength;
+  return `${candidate.slice(0, cutoff).trimEnd()}…`;
 }
 
 function BaselineReferenceList({
@@ -2845,7 +3177,9 @@ function DirectionPaperDetail({ reading }: { reading: ApiDirectionPaperReading }
       <div className="direction-detail-header">
         <div>
           <p className="section-kicker">Selected Paper Detail</p>
-          <h2>{reading.paper?.title ?? "Untitled paper"}</h2>
+          <h2 id="direction-paper-title" tabIndex={-1}>
+            {formatAcademicText(reading.paper?.title ?? "Untitled paper")}
+          </h2>
         </div>
         {reading.paper?.url ? (
           <a href={reading.paper.url} rel="noreferrer" target="_blank">

@@ -683,6 +683,7 @@ test("agent execute refreshes timeline artifacts and keeps partial blocked workf
   await expect(agentPanel.getByText("running: literature_search.")).toBeVisible();
   await expect(agentPanel.getByText(/当前工具：literature_search/)).toBeVisible();
   await expect(page.getByText("Agent Run partial: experiment blocked.")).toBeVisible();
+  await page.getByRole("button", { name: /研究轨迹/ }).click();
   await expect(page.locator(".workflow-artifact-list").getByText("agent_run_e2e.md").first()).toBeVisible();
   await expect(page.locator(".workflow-step", { hasText: "Gap Board" }).locator(".workflow-status.partial")).toBeVisible();
   await expect(page.locator(".workflow-step", { hasText: "Experiment Plan" }).locator(".workflow-status.blocked")).toBeVisible();
@@ -1530,13 +1531,24 @@ test("hydrates real direction review and memory artifact shapes without blank vi
   });
 
   await page.goto("/#direction-review");
-  await expect(page.getByRole("button", { name: /Artifact Shape Paper/ }).first()).toBeVisible();
+  const directionPaperList = page.getByRole("region", { name: "direction paper cards" });
+  const directionPaperButton = directionPaperList.getByRole("button", {
+    name: `打开 Paper Card：${paper.title}`,
+    exact: true,
+  });
+  await expect(directionPaperButton).toBeVisible();
   await expect(page.getByText(/Artifact JSON 解析失败/).first()).toBeVisible();
-  await page.getByRole("button", { name: /Artifact Shape Paper/ }).first().click();
+  await expect(page.getByRole("region", { name: "selected paper detail" })).toHaveCount(0);
+  await directionPaperButton.click();
+  await expect(page).toHaveURL(/#paper-reader\/paper_e2e_artifact_shape\?from=direction-review/);
   await expect(page.getByText("Selected Paper Detail")).toBeVisible();
+  await expect(page.getByRole("heading", { name: paper.title, exact: true })).toBeFocused();
   await expect(page.getByText("Paper Signals")).toBeVisible();
   await expect(page.getByText("Research Sight")).toBeVisible();
   await expect(page.locator(".view-error-state")).toHaveCount(0);
+  await page.goBack();
+  await expect(page).toHaveURL(/#direction-review/);
+  await expect(page.getByRole("region", { name: "selected paper detail" })).toHaveCount(0);
 
   await page.goto("/#paper-memory");
   await expect(page.getByText("Memory-Grounded Answer")).toBeVisible();
@@ -1544,9 +1556,17 @@ test("hydrates real direction review and memory artifact shapes without blank vi
 
   servedArtifacts = [v2DirectionArtifact, v2MemoryArtifact, malformedArtifact];
   await page.goto("/#direction-review");
-  await expect(page.getByRole("button", { name: /Artifact Shape Paper/ }).first()).toBeVisible();
-  await page.getByRole("button", { name: /Artifact Shape Paper/ }).first().click();
+  await expect(directionPaperButton).toBeVisible();
+  await directionPaperButton.click();
+  await expect(page).toHaveURL(/#paper-reader\/paper_e2e_artifact_shape\?from=direction-review/);
   await expect(page.getByText("研究问题与背景")).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("Selected Paper Detail")).toBeVisible();
+  await expect(page.getByRole("heading", { name: paper.title, exact: true })).toBeVisible();
+
+  await page.goto("/#paper-reader/missing-paper-id?from=direction-review");
+  await expect(page.getByRole("heading", { name: "未找到这篇 Paper Card" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: paper.title, exact: true })).toHaveCount(0);
 
   await page.goto("/#paper-reader");
   await expect(page.getByRole("heading", { name: "摘要级阅读 · Paper Card" })).toBeVisible();

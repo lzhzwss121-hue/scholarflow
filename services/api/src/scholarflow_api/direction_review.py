@@ -487,7 +487,7 @@ def render_direction_review_markdown(bundle: DirectionReviewBundle) -> str:
             "## Retrieval Warnings",
             "\n".join(f"- {error}" for error in bundle.errors) if bundle.errors else "- none",
             "## UI Note",
-            "摘要中文翻译和 12 条精读内容保存在每张论文卡片中，前端通过点击论文卡片展开，不在列表页直接铺开。",
+            "摘要中文翻译和 12 条精读内容保存在每张论文卡片中，前端点击后进入独立阅读页，不在列表页直接铺开。",
         ],
     )
 

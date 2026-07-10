@@ -21,19 +21,36 @@ const viewAliases: Record<string, ViewId> = {
   "deep-paper-card": "paper-reader",
 };
 
-function readViewFromHash(): ViewId {
+type AppRoute = {
+  view: ViewId;
+  paperId: string;
+  from: "direction-review" | null;
+};
+
+function readRouteFromHash(): AppRoute {
   if (typeof window === "undefined") {
-    return "dashboard";
+    return { view: "dashboard", paperId: "", from: null };
   }
-  const hashView = window.location.hash.replace("#", "");
-  if (hashView in viewAliases) {
-    return viewAliases[hashView];
+  const rawHash = window.location.hash.replace(/^#/, "");
+  const [rawPath, rawQuery = ""] = rawHash.split("?");
+  const [rawView = "", rawPaperId = ""] = rawPath.split("/");
+  const view = rawView in viewAliases ? viewAliases[rawView] : rawView;
+  const normalizedView = productViewIds.includes(view as ViewId) ? (view as ViewId) : "dashboard";
+  let paperId = "";
+  if (normalizedView === "paper-reader" && rawPaperId) {
+    try {
+      paperId = decodeURIComponent(rawPaperId);
+    } catch {
+      paperId = rawPaperId;
+    }
   }
-  return productViewIds.includes(hashView as ViewId) ? (hashView as ViewId) : "dashboard";
+  const from = new URLSearchParams(rawQuery).get("from") === "direction-review" ? "direction-review" : null;
+  return { view: normalizedView, paperId, from };
 }
 
 export function App() {
-  const [activeView, setActiveView] = useState<ViewId>(() => readViewFromHash());
+  const [route, setRoute] = useState<AppRoute>(() => readRouteFromHash());
+  const activeView = route.view;
   const { actions, viewModel } = useWorkflowController(activeView, setActiveViewAndHash);
   const activeNavItem = useMemo(
     () => navItems.find((item) => item.id === activeView),
@@ -41,19 +58,69 @@ export function App() {
   );
 
   useEffect(() => {
-    function handleHashChange() {
-      setActiveView(readViewFromHash());
+    function handleRouteChange() {
+      setRoute(readRouteFromHash());
     }
 
-    window.addEventListener("hashchange", handleHashChange);
-    return () => window.removeEventListener("hashchange", handleHashChange);
+    window.addEventListener("hashchange", handleRouteChange);
+    window.addEventListener("popstate", handleRouteChange);
+    return () => {
+      window.removeEventListener("hashchange", handleRouteChange);
+      window.removeEventListener("popstate", handleRouteChange);
+    };
   }, []);
 
+  useEffect(() => {
+    const main = document.querySelector<HTMLElement>(".workflow-main");
+    main?.scrollTo({ top: 0, behavior: "auto" });
+    if (!route.paperId || !viewModel.directionReview) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>("#direction-paper-title")?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [route.paperId, viewModel.directionReview]);
+
   function setActiveViewAndHash(view: ViewId) {
-    setActiveView(view);
+    setRoute({ view, paperId: "", from: null });
     if (typeof window !== "undefined") {
       window.history.replaceState(null, "", `#${view}`);
     }
+  }
+
+  function openDirectionPaper(paperId: string) {
+    actions.onSelectedDirectionPaperChange(paperId);
+    actions.onSelectedPaperChange(paperId);
+    const nextRoute: AppRoute = { view: "paper-reader", paperId, from: "direction-review" };
+    setRoute(nextRoute);
+    if (typeof window !== "undefined") {
+      const encodedPaperId = encodeURIComponent(paperId);
+      const nextUrl = `#paper-reader/${encodedPaperId}?from=direction-review`;
+      const isPagingInsideDirectionReader =
+        route.view === "paper-reader" && route.from === "direction-review" && Boolean(route.paperId);
+      if (isPagingInsideDirectionReader) {
+        window.history.replaceState(
+          { ...window.history.state, from: "direction-review", paperId },
+          "",
+          nextUrl,
+        );
+      } else {
+        window.history.pushState(
+          { scholarflowDetail: true, from: "direction-review", paperId },
+          "",
+          nextUrl,
+        );
+      }
+    }
+  }
+
+  function closeDirectionPaper() {
+    if (typeof window !== "undefined" && window.history.state?.scholarflowDetail) {
+      window.history.back();
+      return;
+    }
+    setActiveViewAndHash("direction-review");
   }
 
   return (
@@ -65,7 +132,7 @@ export function App() {
         onSelectView={setActiveViewAndHash}
         viewModel={viewModel}
       >
-        <ViewErrorBoundary view={activeView}>
+        <ViewErrorBoundary key={`${activeView}:${route.paperId}`} view={activeView}>
           <ActiveView
             activeProject={viewModel.activeProject}
             agentBusy={viewModel.busy.agent}
@@ -80,6 +147,7 @@ export function App() {
             decisionGoal={viewModel.decisionGoal}
             directionBusy={viewModel.busy.direction}
             directionInput={viewModel.directionInput}
+            directionPaperRouteId={route.paperId}
             directionReview={viewModel.directionReview}
             directionRound={viewModel.directionRound}
             literatureCoverage={viewModel.literatureCoverage}
@@ -110,7 +178,8 @@ export function App() {
             onQueryResearchMemory={actions.onQueryResearchMemory}
             onProjectDraftChange={actions.onProjectDraftChange}
             onSearchLiterature={actions.onSearchLiterature}
-            onSelectedDirectionPaperChange={actions.onSelectedDirectionPaperChange}
+            onExitDirectionPaper={closeDirectionPaper}
+            onSelectedDirectionPaperChange={openDirectionPaper}
             onSelectedPaperChange={actions.onSelectedPaperChange}
             onSelectView={setActiveViewAndHash}
             paperRows={viewModel.paperRows}
@@ -118,7 +187,6 @@ export function App() {
             paperCardInput={viewModel.paperCardInput}
             projectCount={viewModel.projectCount}
             researchDecision={viewModel.researchDecision}
-            selectedDirectionPaperId={viewModel.selectedDirectionPaperId}
             selectedPaperId={viewModel.selectedPaperId}
             latestPaperCard={viewModel.latestPaperCard}
             view={activeView}
