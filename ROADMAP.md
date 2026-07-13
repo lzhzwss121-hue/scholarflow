@@ -86,13 +86,13 @@ Planned deliverables:
 
 - Model provider abstraction.
 - OpenRouter provider using the `minimax/minimax-m2.5` model setup.
-- Optional DeepSeek fallback provider.
+- Named DeepSeek placeholder adapter that currently returns the deterministic local plan; no direct DeepSeek HTTP call yet.
 - Tool registry.
 - Minimal research tools.
 - Research Plan Mode.
 - Tool timeline persistence.
 
-Status: complete.
+Status: complete for the provider abstraction, OpenRouter planning, local deterministic fallback, tool registry, plan mode, and timeline persistence. Direct DeepSeek API integration remains future work.
 
 ## Phase 6: Literature Retrieval MVP
 
@@ -160,13 +160,13 @@ Planned deliverables:
 
 - Direction Review API endpoint.
 - React view for direction-level paper cards.
-- 10 recent high-relevance papers per round.
+- Up to 10 recent strong/medium-relevance papers per round.
 - Three rounds maximum, with cumulative 30-paper coverage.
 - Cumulative direction summary after each round.
 - Top-3 personal deep-reading recommendations.
-- Click-to-expand paper cards for abstract Chinese reading entry and the 12-section protocol.
+- Click-to-open paper cards with an abstract reading entry and the 12-section protocol.
 
-Status: complete for metadata-and-abstract based review. Full-PDF batch parsing remains future work.
+Status: complete for metadata/abstract review, open-access PDF batch parsing, provenance display, and local PDF upload. OCR, paywalled full text, and publisher-specific extraction remain future work.
 
 ## Phase 11: Paper Memory Bank
 
@@ -232,7 +232,7 @@ Planned deliverables:
 - UI sections that show what each critique is grounded in.
 - Paper Memory integration so retrieved critique carries its evidence boundary.
 
-Status: complete for metadata/abstract/paper-card evidence packs. Full-PDF evidence extraction, citation graph grounding, code evidence, and venue verification remain future work.
+Status: complete for metadata, abstract, paper-card, and parsed-PDF text evidence packs. OCR, citation graph grounding, code evidence, publisher-specific extraction, and venue verification remain future work.
 
 ## Phase 15: Trustworthiness Hardening
 

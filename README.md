@@ -4,18 +4,20 @@
 
 ScholarFlow 的目标不是做一个“论文搜索框”，而是把用户给出的研究方向、关键词或模糊 idea，转化为可以持续追踪、反复提问、继续推进的科研工作流。
 
-它适合研究生、科研新手、AI 方向开发者和希望快速进入某个研究方向的用户使用。系统会围绕一个研究方向完成论文检索、方向综述、论文精读、记忆检索、研究空白分析和实验计划设计，帮助用户少做重复整理，多做真正有判断力的科研思考。
+它适合研究生、科研新手、AI 方向开发者和希望快速进入某个研究方向的用户使用。系统会围绕一个研究方向完成论文检索、方向综述、证据受限的论文阅读辅助、记忆检索、研究空白分析和实验计划设计，帮助用户少做重复整理，多做真正有判断力的科研思考。
+
+> 第一次运行？直接跳到[快速上手](#快速上手)。建议先使用无 Key 模式确认前后端、SQLite 和论文检索均正常，再配置 OpenRouter。
 
 ## 核心目标
 
 | 目标 | ScholarFlow 的做法 |
 | --- | --- |
 | 降低新手入门门槛 | 用户只需要输入研究方向，系统会组织论文、背景、方法、实验和研究脉络 |
-| 提高文献阅读效率 | 每篇论文生成结构化 Paper Card，包含摘要翻译和 12 条深度阅读分析 |
-| 避免只输出模板总结 | 通过 PaperSignals、Evidence、Research Sight 标记论文的证据、缺口和脆弱假设 |
-| 支持连续研究 | 每轮读取 10 篇论文，最多三轮累计 30 篇，并构建可检索的 Paper Memory |
+| 提高文献阅读效率 | 生成结构化 Paper Card，包含摘要阅读概述和 12 项启发式阅读提纲 |
+| 明确证据边界 | 通过 PaperSignals、Evidence、Research Sight 标记可见证据、缺口和脆弱假设 |
+| 支持连续研究 | 每轮目标最多读取 10 篇论文，最多三轮累计 30 篇，并逐轮更新 Paper Memory |
 | 辅助产生研究 idea | 从 limitation、benchmark 风险、baseline 对比和反例设计中寻找 follow-up 方向 |
-| 支持实际复现 | 生成一周最小复现实验计划，明确 claim、dataset、metric 和 baseline |
+| 辅助制定复现计划 | 生成一周最小复现实验计划，明确 claim、dataset、metric 和 baseline；项目本身不执行训练 |
 
 ## 能做什么
 
@@ -34,7 +36,7 @@ ScholarFlow 会先把方向拆解为更适合检索和分析的任务表达，�
 
 ### 2. 文献检索与排序
 
-系统会检索并整理相关论文，重点面向近三年的高相关论文。检索结果会进入结构化 Paper Table：
+系统会从 arXiv 和 OpenAlex 检索、去重并按相关性整理候选论文。普通 Paper Table 不做近三年硬过滤；Direction Review 会在年份已知时优先筛选近三年的高相关候选。
 
 | 字段 | 说明 |
 | --- | --- |
@@ -42,22 +44,24 @@ ScholarFlow 会先把方向拆解为更适合检索和分析的任务表达，�
 | 年份 | 论文发表年份 |
 | 作者 | 主要作者信息 |
 | 来源 | arXiv、OpenAlex 等来源 |
-| 类型 | Method、Benchmark、Survey、Analysis 等 |
+| 类型 | arXiv 通常为 `Preprint`；OpenAlex 保留上游 work type |
 | 相关性理由 | 为什么这篇论文和用户方向相关 |
-| 优先级 | High、Medium、Low |
+| 优先级 | High、Medium、Watch |
 | 链接 | 原文或条目地址 |
 
 如果外部检索源限流或没有返回结果，页面会显示空结果提示，不会把旧 demo 论文冒充为本次搜索结果。
 
-### 3. 十篇论文一轮的方向精读
+### 3. 每轮最多十篇论文的方向阅读
 
-ScholarFlow 的方向阅读不是一次性塞给模型 30 篇论文，而是按轮次推进：
+ScholarFlow 的方向阅读不是一次性处理 30 篇论文，而是按轮次推进：
 
 ```text
-第 1 轮：读取 10 篇论文
-第 2 轮：继续读取 10 篇论文，并结合前 10 篇更新理解
-第 3 轮：继续读取 10 篇论文，形成最多 30 篇论文的方向记忆
+第 1 轮：目标读取最多 10 篇论文
+第 2 轮：继续读取最多 10 篇，并结合已有记忆更新理解
+第 3 轮：继续读取最多 10 篇，形成累计最多 30 篇的方向记忆
 ```
+
+如果强/中相关候选不足，结果会明确标记为 `partial` 或 `blocked`，不会用弱相关论文强行补满 10 篇。
 
 每轮结束后，系统会生成方向总结，说明：
 
@@ -70,7 +74,7 @@ ScholarFlow 的方向阅读不是一次性塞给模型 30 篇论文，而是按�
 
 ### 4. Deep Paper Card
 
-每篇论文会生成一张可交互 Paper Card。用户点击论文卡片后，可以看到摘要翻译和深度阅读内容。
+每篇入选论文会生成一张可交互 Paper Card。用户点击卡片后，可以看到摘要阅读概述和 12 项启发式阅读提纲。当前版本不提供逐句机器翻译，也不应把这些提纲当作专家精读或同行评审的替代品。
 
 Paper Card 默认围绕 12 个问题展开：
 
@@ -87,7 +91,7 @@ Paper Card 默认围绕 12 个问题展开：
 11. 如果反对这篇论文，应该如何设计反例？
 12. 基于 limitation 和真实需求，可以提出什么有价值的 follow-up idea？
 
-为了避免模板化输出，Paper Card 会先抽取 PaperSignals：
+为了让阅读提纲尽量绑定可见证据，Paper Card 会先抽取 PaperSignals：
 
 | Signal | 含义 |
 | --- | --- |
@@ -101,11 +105,11 @@ Paper Card 默认围绕 12 个问题展开：
 
 如果缺少方法、实验、dataset 或 metric 信息，系统会明确写出“当前证据不足”，而不是编造泛泛解释。
 
-Direction Review 和单篇 Paper Card 会优先尝试解析 arXiv/OpenAlex 提供的开放 PDF。只有正文文本达到校验阈值时才会标记为 `full_text`，并记录 PDF 来源、解析页数、字符数和失败原因；自动获取失败时，可以在阅读页直接上传本地 PDF 或粘贴关键正文片段。12 段分析使用目录切换、一次只显示一段，证据边界只在卡片级展示一次。
+Direction Review 和单篇 Paper Card 会优先尝试解析 arXiv/OpenAlex 提供的开放 PDF。PDF 最多处理 80 页并保留最多 50,000 个正文字符；只有提取文本达到 PDF 校验阈值时才会标记为 `full_text`，同时记录来源、解析页数、字符数和失败原因。自动获取失败时，可以在阅读页上传本地 PDF 或粘贴关键正文片段；粘贴文本使用启发式证据等级，不等同于完整 PDF 核验。12 项提纲使用目录切换，一次只显示一项。
 
 ### 5. Research Sight 科研判断
 
-ScholarFlow 不只总结论文，还会尝试评价论文的科研质量。Research Sight 会关注四个维度：
+ScholarFlow 不只整理摘要，还会生成一份启发式科研判断草稿。Research Sight 关注四个维度，但其结论仍需用户回到原文核验：
 
 | 维度 | 核心问题 |
 | --- | --- |
@@ -126,12 +130,12 @@ ScholarFlow 不只总结论文，还会尝试评价论文的科研质量。Resea
 ScholarFlow 会把已读论文转成结构化记忆，而不是依赖聊天窗口上下文硬记。
 
 ```text
-30 篇论文
+最多 30 篇论文
   -> 每篇生成结构化 Paper Card
-  -> 每 10 篇生成 round summary
-  -> 30 篇生成 direction memory
+  -> 每轮结束生成 round summary
+  -> 每轮更新 direction memory
   -> 用户提问时按相关性检索 3-8 篇相关论文
-  -> 模型基于检索结果回答
+  -> 系统基于检索结果生成证据受限回答
 ```
 
 这样做的好处是：
@@ -154,7 +158,7 @@ Gap Board 用于整理研究空白和潜在方向。它不会简单输出“可�
 
 ### 8. Experiment Plan
 
-Experiment Plan 会从论文中选择适合复现的 anchor paper，并生成一周实验计划。
+Experiment Plan 会从论文中选择适合复现的 anchor paper，并生成一周实验计划，但不会替用户下载数据集、运行训练或验证实验结果。
 
 系统会优先选择同时具备以下信息的论文：
 
@@ -171,17 +175,18 @@ Experiment Plan 会从论文中选择适合复现的 anchor paper，并生成一
 ```mermaid
 flowchart TD
   A["用户输入研究方向"] --> B["方向理解与关键词扩展"]
-  B --> C["文献检索与去重排序"]
-  C --> D["选择近三年高相关论文"]
-  D --> E["生成 Paper Table"]
-  E --> F["抽取 PaperSignals"]
-  F --> G["生成 Deep Paper Card"]
-  G --> H["生成 Research Sight"]
-  H --> I["写入 Paper Memory"]
-  I --> J["生成方向总结"]
-  J --> K["生成 Gap Board"]
-  K --> L["生成 Experiment Plan"]
-  I --> M["用户后续提问"]
+  B --> C["arXiv / OpenAlex 检索、去重与相关性排序"]
+  C --> D["生成不限年份的 Paper Table"]
+  D --> E["Direction Review 独立检索并优先筛选近三年候选"]
+  E --> F["选择最多 10 篇并提取可用证据"]
+  F --> G["抽取 PaperSignals"]
+  G --> H["生成 Deep Paper Card"]
+  H --> I["生成 Research Sight"]
+  I --> J["写入 Paper Memory 与 round summary"]
+  J --> K["生成方向总结"]
+  K --> L["生成 Gap Board"]
+  L --> P["生成 Experiment Plan"]
+  J --> M["用户后续提问"]
   M --> N["检索 3-8 篇相关论文记忆"]
   N --> O["基于证据回答"]
 ```
@@ -198,6 +203,7 @@ scholarflow/
       src/scholarflow_api/
         literature.py     文献检索
         direction_review.py 方向综述
+        full_text.py      开放 PDF 下载、校验与正文抽取
         paper_card.py     深度论文卡片
         research_sight.py 科研判断
         research_memory.py 论文记忆检索
@@ -215,8 +221,8 @@ scholarflow/
 | 前端 | React、Vite、TypeScript |
 | 后端 | FastAPI、Pydantic |
 | 数据 | SQLite、本地 artifact |
-| 模型 | OpenRouter 优先，可配置 DeepSeek 备用 |
-| 检索 | arXiv、OpenAlex，可配置 Semantic Scholar、Crossref |
+| 模型 | OpenRouter（当前用于 Research Plan）与本地确定性 fallback |
+| 检索 | arXiv、OpenAlex；开放 PDF 自动解析与本地 PDF 上传 |
 | 本地工具 | Node.js CLI、本地 workspace |
 
 ## 目录说明
@@ -224,6 +230,7 @@ scholarflow/
 | 文件或目录 | 作用 |
 | --- | --- |
 | `apps/web/` | 网页界面 |
+| `apps/web/.env.example` | 可选的前端 API 地址与超时模板 |
 | `apps/cli/` | 本地命令 |
 | `services/api/` | 后端服务 |
 | `packages/schemas/` | 共享类型 |
@@ -238,121 +245,195 @@ scholarflow/
 | `package.json` | 项目脚本 |
 | `package-lock.json` | 依赖锁定 |
 
+## 当前实现范围
+
+> [!IMPORTANT]
+> ScholarFlow v0.1.0 可以在没有模型 API Key 的情况下启动，但此时 Agent Plan 使用本地确定性 fallback。当前唯一会发起远程模型请求的提供方是 OpenRouter，而且只用于 Research Plan；Direction Review、Paper Card、Memory、Gap Board 和 Experiment Plan 目前主要由本地检索、证据抽取与规则逻辑生成。直接 DeepSeek API、OpenAI API、Semantic Scholar 和 Crossref 尚未接入，请不要把预留环境变量理解为已经可用的连接器。
+
+当前实际论文检索源是 arXiv 和 OpenAlex。arXiv 无需 API Key；OpenAlex 目前只给匿名请求很小的每日试用额度，正常使用应申请免费的 `OPENALEX_API_KEY`。首次真实检索和开放 PDF 下载必须能够访问互联网。PDF 解析依赖文本层，不包含 OCR；扫描件、加密文件或没有文本层的 PDF 可能无法解析。
+
 ## 快速上手
 
-### 1. 环境要求
+以下步骤以 macOS、Linux 或 WSL2 为准。原生 Windows 尚未完成完整验证，建议 Windows 用户使用 WSL2。
 
-请先确认本机具备：
+推荐第一次运行时使用“两个终端分别启动”的方式，便于直接看到前后端错误。CLI 后台启动适合依赖和环境变量已经验证无误之后使用。
+
+### 1. 检查环境
 
 ```bash
 node --version
 npm --version
 python3 --version
 git --version
+curl --version
 ```
 
-建议版本：
+| 工具 | 支持范围 | 推荐 |
+| --- | --- | --- |
+| Node.js | `^20.19.0` 或 `>=22.12.0` | Node.js 24 LTS |
+| npm | `>=10` | 随 Node.js LTS 安装的稳定版本 |
+| Python | `>=3.11` | Python 3.11 或 3.12 |
+| Git | 较新版本 | 支持 HTTPS clone 即可 |
+| curl | 可访问 localhost HTTP | 用于真实 health 检查 |
 
-| 工具 | 版本 |
-| --- | --- |
-| Node.js | 20 或更高 |
-| npm | 10 或更高 |
-| Python | 3.11 或更高 |
-| Git | 任意较新版本 |
+如果 Node.js 只是 `20.0` 至 `20.18`，Vite 可能无法启动；Node.js 20 目前也已进入上游 EOL。新安装请优先使用 [Node.js 24 LTS](https://nodejs.org/en/download)。Python 缺失或低于 3.11 时，请从 [Python Downloads](https://www.python.org/downloads/) 安装受支持版本，完成后重新运行上面的版本检查。
 
-### 2. 克隆项目
+Windows 用户建议先在管理员 PowerShell 执行 `wsl --install`，重启后打开 WSL 的 Ubuntu shell，并在 WSL 内完成本文后续命令。详见 [Install WSL](https://learn.microsoft.com/windows/wsl/install)。
+
+### 2. 克隆仓库
+
+下面默认把仓库克隆到当前用户 home 目录。没有配置 GitHub SSH Key 时，使用 HTTPS：
 
 ```bash
+cd ~
+git clone https://github.com/lzhzwss121-hue/scholarflow.git
+cd scholarflow
+```
+
+已经配置 SSH Key 时也可以使用：
+
+```bash
+cd ~
 git clone git@github.com:lzhzwss121-hue/scholarflow.git
 cd scholarflow
 ```
 
-### 3. 安装前端依赖
+后续命令都应在仓库根目录执行，不要只进入 `apps/web` 安装依赖，因为前端还依赖 workspace 中的 `packages/schemas`。
+
+### 3. 安装 Node.js 与 Python 依赖
+
+仓库包含 `package-lock.json`，首次安装推荐使用可复现的 `npm ci`：
 
 ```bash
-npm install
+npm ci
 ```
 
-### 4. 安装后端依赖
+创建独立 Python 虚拟环境并安装完整后端依赖：
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
+python -m pip install --upgrade pip
 python -m pip install -r services/api/requirements.txt
 ```
 
-### 5. 配置环境变量
+确认 PDF 解析等关键依赖已经装入当前虚拟环境：
 
-复制示例配置：
+```bash
+python -c "import fastapi, uvicorn, dotenv, certifi, pypdf; print('backend dependencies OK', pypdf.__version__)"
+```
+
+如果这里出现 `ModuleNotFoundError`，请确认命令行前面显示虚拟环境名称 `(.venv)`，然后重新执行 requirements 安装命令。
+
+### 4. 创建本地配置
 
 ```bash
 cp .env.example .env
 ```
 
-编辑 `.env`，至少填写：
+可以使用任意文本编辑器修改，例如 `nano .env`；保存后需要重启后端才能重新加载配置。
 
-```bash
+只想先验证本地界面和工作流、暂时没有模型 Key 时，复制后的模板已经是安全的“无模型 Key fallback 模式”，关键配置如下：
+
+```dotenv
 SCHOLARFLOW_MODEL_PROVIDER=openrouter
-OPENROUTER_API_KEY=你的 OpenRouter API Key
+OPENROUTER_API_KEY=
+OPENALEX_API_KEY=
+SCHOLARFLOW_AUTO_FETCH_PDF=1
+```
+
+Web UI 当前会显式请求 `openrouter` provider；当 `OPENROUTER_API_KEY` 为空时，后端会立即退回本地确定性计划，不会请求 OpenRouter。`SCHOLARFLOW_MODEL_PROVIDER=local` 只影响没有显式传入 provider 的 API 调用，不能用于切换当前 Web 流程。
+
+希望使用真实 OpenRouter 模型生成 Research Plan 时：
+
+```dotenv
+SCHOLARFLOW_MODEL_PROVIDER=openrouter
+OPENROUTER_API_KEY=你的真实_OpenRouter_API_Key
 OPENROUTER_MODEL=minimax/minimax-m2.5
-OPENROUTER_FAST_MODEL=minimax/minimax-m2.5
-OPENROUTER_RAG_MODEL=qwen/qwen3-embedding-8b
+OPENALEX_API_KEY=你的免费_OpenAlex_API_Key
+SCHOLARFLOW_AUTO_FETCH_PDF=1
 ```
 
-如果希望减少 OpenAlex 或 Crossref 请求限制，可以补充：
+OpenAlex 官方已在 2026 年用 API Key 体系替代 polite pool，`mailto` 参数会被忽略。免费 Key 可在 [OpenAlex Authentication & Pricing](https://developers.openalex.org/api-reference/authentication) 指引的账户设置页获取。没有 OpenAlex Key 时 ScholarFlow 仍可依赖 arXiv，并会在 OpenAlex 额度耗尽或请求失败时显示降级 warning。不要把任何真实 API Key 提交到 Git；`.env` 已被 `.gitignore` 排除。
 
-```bash
-OPENALEX_EMAIL=你的邮箱
-CROSSREF_MAILTO=你的邮箱
-```
+后端会自动读取仓库根目录的 `.env`。默认端口下，前端不需要额外环境变量：它会请求 `http://127.0.0.1:8000`，普通请求超时 30 秒，研究任务超时 90 秒。
 
-后端启动时会自动读取项目根目录的 `.env`。前端仍会按 Vite 规则读取 `VITE_` 前缀变量。
-默认前端 API 请求超时为 30 秒，可通过 `VITE_SCHOLARFLOW_API_TIMEOUT_MS` 调整。
-文献检索会对 arXiv / OpenAlex 请求设置超时，并把相同 source + query + max_results 的短期结果写入 SQLite cache。若 OpenAlex 触发 429/503/504，系统会在本轮检索中暂停该 source，并显示 `openalex_cooldown`、`arxiv_rate_limited` 或 `using_cached_results` 等 warning。
+> [!NOTE]
+> 当前 Vite root 是 `apps/web`，因此仓库根目录 `.env` 里的 `VITE_` 变量不会自动被手动启动的前端读取。默认端口不受影响；如需自定义 API 地址或超时，请使用启动命令前的 shell 环境变量，或新建 `apps/web/.env.local`。
 
-### 6. 初始化数据库
+### 5. 初始化手动模式数据库
+
+保持 `.venv` 激活：
 
 ```bash
 npm run db:init
 ```
 
-默认数据库位置：
+默认会创建：
 
 ```text
 services/api/.data/scholarflow.sqlite3
 ```
 
-### 7. 启动后端
+API 启动时也会自动运行数据库初始化；显式执行这一步可以提前发现 Python 环境、目录权限或数据库迁移问题。
 
-开发时推荐使用 reload：
+### 6. 启动后端（终端 A）
+
+下面的路径对应前文推荐的 home 目录克隆方式；如果仓库保存在别处，请替换 `~/scholarflow`。
 
 ```bash
+cd ~/scholarflow
+source .venv/bin/activate
 npm run dev:api:reload
 ```
 
-默认 API 地址：
+保持该终端运行。默认地址：
 
-```text
-http://127.0.0.1:8000
-```
+- API：`http://127.0.0.1:8000`
+- OpenAPI 文档：`http://127.0.0.1:8000/docs`
 
-### 8. 启动前端
-
-另开一个终端：
+保持终端 A 运行。在准备启动前端的终端 B 中，先验证真实 HTTP 服务：
 
 ```bash
+curl -fsS http://127.0.0.1:8000/health
+curl -fsS http://127.0.0.1:8000/projects
+```
+
+`/health` 的预期返回为：
+
+```json
+{"status":"ok","service":"scholarflow-api","version":"0.1.0"}
+```
+
+`npm run health:api` 只是进程内导入检查，不会访问 8000 端口，因此不能代替上面的 `curl`。
+
+### 7. 启动前端（终端 B）
+
+```bash
+cd ~/scholarflow
 npm run dev:web
 ```
 
-浏览器打开：
+打开：
 
 ```text
-http://127.0.0.1:5173
+http://127.0.0.1:5173/
 ```
 
-## 使用 CLI 一键启动
+第一次使用可以直接进入 `http://127.0.0.1:5173/#new-project` 创建项目。创建成功后会进入 Paper Table；完成论文检索后再进入 Direction Review。只打开前端而没有启动后端时，页面外壳仍可能显示，但创建项目、检索和精读功能不可用。
 
-如果不想分别启动前端和后端，可以使用内置 CLI：
+停止服务时，在两个终端中分别按 `Ctrl+C`。
+
+### 8. 启动成功检查
+
+- `curl http://127.0.0.1:8000/health` 返回 `status: ok`。
+- `http://127.0.0.1:5173/` 能打开，并且页面没有显示 API 离线提示。
+- 能够创建一个真实项目并在刷新页面后继续看到它。
+- 能够发起 arXiv/OpenAlex 检索；如果网络或上游受限，页面应显示明确 warning，而不是 demo 结果。
+
+## 依赖安装后的 CLI 后台启动
+
+完成 `npm ci`、Python requirements 安装和 `.env` 配置后，可以让 CLI 在后台同时启动前后端。`init` 只创建本地工作区目录和配置，不会安装依赖；`start` 也不会等待 HTTP health 检查成功。
 
 ```bash
 npm --workspace @scholarflow/cli run start -- init
@@ -366,25 +447,37 @@ npm --workspace @scholarflow/cli run start -- start
 | Web UI | `http://127.0.0.1:5173` |
 | API | `http://127.0.0.1:8000` |
 | 本地工作区 | `~/.scholarflow` |
+| SQLite | `~/.scholarflow/cache/scholarflow.sqlite3` |
 
-查看状态：
+启动后同时检查进程状态和真实 HTTP 服务：
 
 ```bash
 npm --workspace @scholarflow/cli run start -- status
+curl -fsS http://127.0.0.1:8000/health
 ```
 
-停止服务：
+`status` 只检查记录的 PID 是否存在。如果显示 `running` 但网页打不开，请查看：
+
+```bash
+tail -n 100 ~/.scholarflow/logs/api.log
+tail -n 100 ~/.scholarflow/logs/web.log
+```
+
+停止 CLI 记录的服务：
 
 ```bash
 npm --workspace @scholarflow/cli run start -- stop
 ```
 
-指定工作区：
+指定工作区或端口：
 
 ```bash
-SCHOLARFLOW_WORKSPACE=/path/to/workspace npm --workspace @scholarflow/cli run start -- init
-SCHOLARFLOW_WORKSPACE=/path/to/workspace npm --workspace @scholarflow/cli run start -- start
+npm --workspace @scholarflow/cli run start -- init --workspace /path/to/workspace
+npm --workspace @scholarflow/cli run start -- start --workspace /path/to/workspace --api-port 8001 --web-port 5174
 ```
+
+> [!WARNING]
+> 手动模式默认读取 `services/api/.data/scholarflow.sqlite3`，CLI 模式则强制使用当前 workspace 下的 `cache/scholarflow.sqlite3`。两种模式不要混用并期待看到同一批项目；切换启动方式后“项目消失”通常只是连接到了不同 SQLite 文件。
 
 ## 推荐使用方式
 
@@ -393,7 +486,7 @@ SCHOLARFLOW_WORKSPACE=/path/to/workspace npm --workspace @scholarflow/cli run st
 3. 输入一个具体研究方向，不要只输入过宽的词。
 4. 先检索论文，检查返回论文是否真的符合方向。
 5. 运行 Direction Review，获得第一轮方向理解。
-6. 打开 Paper Card，逐篇查看摘要翻译和 12 条分析。
+6. 打开 Paper Card，逐篇查看摘要阅读概述和 12 项启发式提纲。
 7. 使用 Paper Memory 针对已读论文提问。
 8. 查看 Gap Board，筛选可能有价值的研究空白。
 9. 生成 Experiment Plan，确认是否存在一周内可验证的实验切口。
@@ -417,6 +510,46 @@ AI
 深度学习
 ```
 
+Direction Review 会独立检索候选并尝试并发下载开放 PDF，通常比普通 Paper Table 检索更慢。前端为研究任务预留 90 秒；开放 PDF 不可得、下载失败或文本不足时，论文保持 `abstract_only` 是正常的证据边界，不代表服务没有运行。
+
+## 配置与端口
+
+常用且当前实际生效的配置：
+
+| 变量 | 默认值 | 作用 |
+| --- | --- | --- |
+| `OPENROUTER_API_KEY` | 空 | 为空时使用本地确定性 Research Plan；非空时调用 OpenRouter |
+| `OPENROUTER_MODEL` | `minimax/minimax-m2.5` | OpenRouter Chat Completions 使用的模型 |
+| `OPENROUTER_TIMEOUT_SECONDS` | 示例为 `25` | OpenRouter 后端超时；应低于前端普通请求的 30 秒超时 |
+| `OPENALEX_API_KEY` | 空 | 正常使用 OpenAlex 时强烈建议配置的免费 Key；匿名额度很小 |
+| `SCHOLARFLOW_DB_PATH` | `services/api/.data/scholarflow.sqlite3` | 手动模式 SQLite 路径；CLI 会覆盖它 |
+| `SCHOLARFLOW_AUTO_FETCH_PDF` | `1` | 是否自动获取开放 PDF |
+| `SCHOLARFLOW_PDF_MAX_BYTES` | `20971520` | 后端下载/解析上限；默认与 Web 固定的 20 MiB 上传上限一致 |
+| `SCHOLARFLOW_PDF_MAX_PAGES` | `80` | 最多处理的 PDF 页数 |
+| `SCHOLARFLOW_PDF_MAX_TEXT_CHARS` | `50000` | 最多保留的正文证据字符数 |
+| `SCHOLARFLOW_PDF_MIN_TEXT_CHARS` | `1200` | PDF 升级为全文证据所需的最少字符数 |
+
+当前未实现直接 DeepSeek/OpenAI HTTP provider，也未实现 Semantic Scholar/Crossref 检索。相关预留变量即使写入 `.env` 也不会启用这些服务。
+
+### 手动模式修改端口
+
+后端改为 8001：
+
+```bash
+source .venv/bin/activate
+python -m uvicorn scholarflow_api.main:app --app-dir services/api/src --host 127.0.0.1 --port 8001 --reload
+```
+
+另一个终端把前端改为 5174，并显式指向新的 API：
+
+```bash
+VITE_SCHOLARFLOW_API_BASE_URL=http://127.0.0.1:8001 npm --workspace @scholarflow/web run dev -- --port 5174 --strictPort
+```
+
+也可以复制 `apps/web/.env.example` 为 `apps/web/.env.local` 后修改前端 API 地址和超时。根目录 `.env` 中的 `API_PORT`、`WEB_PORT` 不会改变 npm 启动脚本的端口，因此示例配置不再提供这两个无效变量。
+
+CLI 自定义端口请使用 `--api-port` 和 `--web-port`；CLI 会把正确的 API 地址自动注入前端进程。
+
 ## 开发命令
 
 | 命令 | 作用 |
@@ -428,18 +561,38 @@ AI
 | `npm run check` | 运行 TypeScript 和 CLI 检查 |
 | `npm run build` | 构建前端和共享包 |
 | `npm run test:e2e` | 运行 Playwright 浏览器 smoke，默认使用 mocked API，不代表真实外部检索质量 |
-| `npm run health:api` | 检查 API health |
+| `npm run health:api` | 后端导入与 health 函数 smoke；不检查 HTTP 端口 |
 | `npm run version:cli` | 查看 CLI 版本 |
 
-Python 语法检查：
+首次运行 Playwright 前需要安装 Chromium：
 
 ```bash
-python3 -m compileall services/api/src/scholarflow_api
+npx playwright install chromium
+npm run test:e2e
+```
+
+后端语法与测试：
+
+```bash
+source .venv/bin/activate
+python -m compileall services/api/src/scholarflow_api services/api/tests
+PYTHONPATH=services/api/src python -m unittest discover -s services/api/tests -p "test_*.py"
 ```
 
 ## 本地数据与隐私
 
-ScholarFlow 是 local-first 项目。CLI 默认将运行数据保存在：
+ScholarFlow 是 local-first 项目，但不是完全离线应用。当前没有用户认证或多租户隔离，请只绑定 `127.0.0.1` 本地使用，不要直接暴露为公网服务。
+
+主要数据位置：
+
+| 启动方式 | SQLite | 日志与进程状态 |
+| --- | --- | --- |
+| 手动 npm 启动 | `services/api/.data/scholarflow.sqlite3` | 前后端当前终端 |
+| CLI 启动 | `~/.scholarflow/cache/scholarflow.sqlite3` | `~/.scholarflow/logs/`、`services.json` |
+
+项目、论文、Paper Card 和 artifact 当前主要保存在 SQLite。CLI 创建的 `projects/` 与 `artifacts/` 目录是预留工作区结构，不代表后端会把每个 artifact 另存为文件。
+
+CLI 默认工作区：
 
 ```text
 ~/.scholarflow/
@@ -451,6 +604,17 @@ ScholarFlow 是 local-first 项目。CLI 默认将运行数据保存在：
     scholarflow.sqlite3
     services.json
 ```
+
+网络与持久化边界：
+
+| 操作 | 会发送或保存什么 |
+| --- | --- |
+| arXiv/OpenAlex 检索 | 将检索词发送给对应公开服务，并把短期结果缓存到当前 SQLite |
+| 开放 PDF 自动获取 | 从论文元数据提供的公网 URL 下载 PDF，在本地解析 |
+| OpenRouter Research Plan | 只要 `OPENROUTER_API_KEY` 非空就会尝试发送任务，以及项目标题、描述、关键词、领域、语言和 workflow；无效 Key 也会产生一次失败请求 |
+| 本地 PDF 上传 | PDF bytes 在本地 API 内存中解析；原 PDF 和完整提取文本不落盘，派生 Paper Card、provenance 与必要证据摘录写入 SQLite |
+
+将项目用于敏感研究前，请阅读 [`SECURITY.md`](SECURITY.md)，并自行确认第三方 API 的隐私条款。
 
 请不要提交以下内容：
 
@@ -464,29 +628,82 @@ ScholarFlow 是 local-first 项目。CLI 默认将运行数据保存在：
 
 ## 常见问题
 
+### `npm ci` 出现 `EBADENGINE`
+
+当前 Vite 要求 Node.js `^20.19.0` 或 `>=22.12.0`。运行 `node --version`，然后升级到 Node.js 24 LTS。只满足宽泛的 Node 20 并不一定可用。
+
+### 克隆时出现 `Permission denied (publickey)`
+
+本机没有配置 GitHub SSH Key。改用 HTTPS：
+
+```bash
+git clone https://github.com/lzhzwss121-hue/scholarflow.git
+```
+
+### Ubuntu/WSL 无法创建 `.venv`
+
+如果出现 `ensurepip is not available`，先安装 venv 组件，再重新创建虚拟环境：
+
+```bash
+sudo apt update
+sudo apt install python3-venv curl
+python3 --version
+python3 -m venv .venv
+```
+
+如果输出仍低于 Python 3.11，请先安装更新的 Python，再创建 `.venv`。WSL 用户应在 WSL 内安装并运行 Git、Node.js、npm 和 Python，避免混用 Windows 可执行文件。仓库建议放在 Linux home 目录，例如 `~/scholarflow`，以免 `/mnt/c` 文件监听过慢。通常可以直接在 Windows 浏览器访问 WSL 中的 `http://127.0.0.1:5173/`。
+
+### 出现 `No module named uvicorn`、`dotenv` 或 `pypdf`
+
+确认当前位于仓库根目录并重新安装 requirements：
+
+```bash
+source .venv/bin/activate
+python -m pip install -r services/api/requirements.txt
+```
+
+不要只执行 `pip install -e services/api`；当前完整运行依赖以 `services/api/requirements.txt` 为准。
+
 ### 浏览器打不开 `http://127.0.0.1:5173`
 
-先确认前端是否启动：
+检查前端终端是否仍在运行，并以终端实际输出的 URL 为准。手动启动的服务请在对应终端按 `Ctrl+C` 停止；CLI 的 `stop` 只能停止同一 workspace 的 CLI 记录进程。
 
 ```bash
 npm run dev:web
 ```
 
-如果端口被占用，可以查看终端输出中的新端口，或先停止旧服务：
+如果 5173 已被占用，Vite 默认可能选择其它端口。需要严格使用 5173 时：
 
 ```bash
-npm --workspace @scholarflow/cli run start -- stop
+npm --workspace @scholarflow/web run dev -- --port 5173 --strictPort
 ```
 
-### 前端能打开，但没有真实模型输出
+### 前端能打开，但显示 API 离线
 
-确认已经加载模型配置：
-
-确认 `.env` 已保存后重新启动后端：
+前端外壳可以在后端未启动时显示。请检查真实 HTTP health：
 
 ```bash
+curl -fsS http://127.0.0.1:8000/health
+```
+
+如果连接失败，在终端 A 激活 `.venv` 后重新启动后端。若后端使用自定义端口，还必须通过 `VITE_SCHOLARFLOW_API_BASE_URL` 告诉前端正确地址。
+
+### 没有 API Key 能否运行
+
+可以。保持 `OPENROUTER_API_KEY=` 为空，Web UI 仍能启动，Research Plan 会使用本地确定性 fallback。论文检索仍然需要访问 arXiv/OpenAlex，所以“无模型 Key”不等于“完全离线”。
+
+### 配置 Key 后仍没有预期的模型内容
+
+当前远程模型只参与 Research Plan。Direction Review、Paper Card、Memory、Gap Board 和 Experiment Plan 主要是本地检索、证据抽取和规则生成，不会因为填写 Key 自动变成端到端 LLM 精读。
+
+确认 `.env` 中 `OPENROUTER_API_KEY` 是真实 Key，而不是示例占位符，并在修改后重启后端：
+
+```bash
+source .venv/bin/activate
 npm run dev:api:reload
 ```
+
+OpenRouter 返回 401 时，请检查 Key、模型标识和账户状态；若只想使用 fallback，清空 Key。
 
 ### arXiv / OpenAlex 证书错误
 
@@ -496,18 +713,46 @@ npm run dev:api:reload
 python -m pip install -r services/api/requirements.txt
 ```
 
-ScholarFlow 会通过 `certifi` 为 Python HTTP 请求提供 CA 证书。
+ScholarFlow 的 arXiv/OpenAlex 元数据请求会使用 `certifi` CA。开放 PDF 与 OpenRouter 请求仍依赖操作系统/Python 的默认信任链；如果只有某一类请求失败，请根据后端日志定位具体域名。
 
-### OpenAlex 返回 429
+### 检索为空、OpenAlex 返回 429 或 arXiv 限流
 
-429 表示外部论文检索源暂时限流。可以：
+这通常表示检索词过宽、网络不可达或上游暂时限流。可以：
 
 - 稍后重试。
-- 配置 `OPENALEX_EMAIL`。
+- 配置免费的 `OPENALEX_API_KEY`。
 - 换一个更具体的关键词。
 - 优先使用已有检索结果继续分析。
 
-ScholarFlow 不会把旧论文冒充成本次检索结果。
+ScholarFlow 会明确显示 `openalex_cooldown`、`arxiv_rate_limited`、`using_cached_results` 或 `low_recall` 等 warning，不会把旧 demo 论文冒充成本次检索结果。
+
+### PDF 已下载或上传，但仍显示 `abstract_only`
+
+检查页面显示的具体失败原因。常见情况包括：
+
+- PDF 超过 20 MiB。
+- 文件加密、损坏或不是有效 PDF。
+- 扫描版没有文本层；当前版本没有 OCR。
+- 最多处理 80 页后，提取并保留的正文证据不足 1,200 字符。
+- 开放 PDF URL 不可访问或下载超时。
+
+可以改为上传带文本层的 PDF，或粘贴方法、实验和局限等关键正文片段。粘贴片段产生的是启发式证据等级，仍需人工核验原文。
+
+### 切换启动方式后项目不见了
+
+请确认当前数据库路径。手动模式默认使用 `services/api/.data/scholarflow.sqlite3`，CLI 模式使用 `~/.scholarflow/cache/scholarflow.sqlite3`。数据通常没有被删除，而是当前服务连接到了另一个 SQLite 文件。
+
+### CLI 显示 `running`，但网页仍打不开
+
+CLI `status` 只检查 PID，不验证服务已经成功监听端口。继续运行：
+
+```bash
+curl -fsS http://127.0.0.1:8000/health
+tail -n 100 ~/.scholarflow/logs/api.log
+tail -n 100 ~/.scholarflow/logs/web.log
+```
+
+修复依赖或端口问题后，先执行 CLI `stop`，再执行 `start`。
 
 ### 应该用 Web UI 还是 CLI
 
