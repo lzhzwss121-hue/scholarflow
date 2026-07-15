@@ -71,6 +71,9 @@ export function collectArtifactHydrationWarnings(items: ApiArtifact[]): string[]
 
 function selectHydrationArtifactIds(summaries: ApiArtifactSummary[]): string[] {
   const selected = new Set<string>();
+  const newestFirst = [...summaries].sort((left, right) =>
+    (right.updated_at || right.created_at).localeCompare(left.updated_at || left.created_at),
+  );
   const groups = [
     ["direction_review"],
     ["paper_table", "literature_search"],
@@ -79,7 +82,7 @@ function selectHydrationArtifactIds(summaries: ApiArtifactSummary[]): string[] {
     ["paper_card"],
   ];
   for (const patterns of groups) {
-    const hit = summaries.find((artifact) => {
+    const hit = newestFirst.find((artifact) => {
       const title = artifact.title.toLowerCase();
       return patterns.some((pattern) => title.includes(pattern));
     });
@@ -87,7 +90,7 @@ function selectHydrationArtifactIds(summaries: ApiArtifactSummary[]): string[] {
       selected.add(hit.id);
     }
   }
-  summaries
+  newestFirst
     .filter((artifact) => isDirectionPaperCardTitle(artifact.title))
     .slice(0, 15)
     .forEach((artifact) => selected.add(artifact.id));
@@ -321,6 +324,7 @@ function normalizePaperSignals(payload: unknown): ApiPaperSignals | undefined {
     claim: asString(payload.claim),
     limitation: asString(payload.limitation),
     contribution_type: asString(payload.contribution_type),
+    contribution_evidence: asString(payload.contribution_evidence),
     missing_signals: asStringArray(payload.missing_signals),
   };
 }
@@ -545,14 +549,25 @@ function hydrateResearchDecision(items: ApiArtifact[]): ApiResearchDecisionRespo
 }
 
 function hydratePaperCard(items: ApiArtifact[]): ApiPaperCard | null {
-  const artifact = findArtifactPayload(
-    items,
-    (title) => title.includes("paper_card"),
-    (payload) => (isRecord(payload.card) && Array.isArray(payload.card.sections)) || Array.isArray(payload.sections),
-  );
-  if (!artifact) {
-    return null;
-  }
+  const candidates = items.flatMap((artifact) => {
+    if (!artifact.title.toLowerCase().includes("paper_card")) {
+      return [];
+    }
+    const payload = parseArtifactJson(artifact);
+    if (!payload) {
+      return [];
+    }
+    const card = isRecord(payload.card) ? payload.card : payload;
+    if (!Array.isArray(card.sections)) {
+      return [];
+    }
+    return [hydratePaperCardArtifact(artifact, payload)];
+  });
+  return candidates.reduce<ApiPaperCard | null>((best, candidate) => preferPaperCard(best, candidate), null);
+}
+
+function hydratePaperCardArtifact(artifactDetail: ApiArtifact, payload: Record<string, unknown>): ApiPaperCard {
+  const artifact = { artifact: artifactDetail, payload };
   const card = isRecord(artifact.payload.card) ? artifact.payload.card : artifact.payload;
   const paper = isRecord(artifact.payload.paper) ? artifact.payload.paper : {};
   const sections = Array.isArray(card.sections) ? card.sections.map(normalizePaperCardSection) : [];
@@ -578,6 +593,38 @@ function hydratePaperCard(items: ApiArtifact[]): ApiPaperCard | null {
     minimal_reproduction: typeof card.minimal_reproduction === "string" ? card.minimal_reproduction : "",
     created_at: artifact.artifact.created_at,
   };
+}
+
+export function preferPaperCard(current: ApiPaperCard | null, incoming: ApiPaperCard | null): ApiPaperCard | null {
+  if (!current) {
+    return incoming;
+  }
+  if (!incoming) {
+    return current;
+  }
+  const currentRank = paperCardEvidenceRank(current);
+  const incomingRank = paperCardEvidenceRank(incoming);
+  if (incomingRank !== currentRank) {
+    return incomingRank > currentRank ? incoming : current;
+  }
+  return compareIsoTimestamp(incoming.created_at, current.created_at) >= 0 ? incoming : current;
+}
+
+function paperCardEvidenceRank(card: ApiPaperCard): number {
+  if (card.evidence_level === "full_text" && card.full_text?.status === "extracted") {
+    return 3;
+  }
+  if (card.evidence_level === "full_text") {
+    return 2;
+  }
+  if (card.evidence_level === "abstract_only") {
+    return 1;
+  }
+  return 0;
+}
+
+function compareIsoTimestamp(left: string, right: string): number {
+  return left.localeCompare(right);
 }
 
 function findArtifactPayload(
@@ -736,13 +783,34 @@ function preferRicherDirectionReading(
   current: ApiDirectionPaperReading,
   incoming: ApiDirectionPaperReading,
 ): ApiDirectionPaperReading {
+  const incomingEvidenceRank = directionReadingEvidenceRank(incoming);
+  const currentEvidenceRank = directionReadingEvidenceRank(current);
+  if (incomingEvidenceRank !== currentEvidenceRank) {
+    return incomingEvidenceRank > currentEvidenceRank ? incoming : current;
+  }
   if ((incoming.sections?.length ?? 0) > (current.sections?.length ?? 0)) {
+    return incoming;
+  }
+  if (compareIsoTimestamp(incoming.paper.created_at, current.paper.created_at) > 0) {
     return incoming;
   }
   if (incoming.artifact_id && !current.artifact_id) {
     return { ...current, artifact_id: incoming.artifact_id, artifact_title: incoming.artifact_title };
   }
   return current;
+}
+
+function directionReadingEvidenceRank(reading: ApiDirectionPaperReading): number {
+  if (reading.evidence_level === "full_text" && reading.full_text?.status === "extracted") {
+    return 3;
+  }
+  if (reading.evidence_level === "full_text") {
+    return 2;
+  }
+  if (reading.evidence_level === "abstract_only") {
+    return 1;
+  }
+  return 0;
 }
 
 export function resolvePaperCardForPaper(

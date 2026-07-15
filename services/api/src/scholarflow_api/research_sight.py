@@ -57,17 +57,28 @@ def build_research_sight(
     benchmark_risk = baseline_map.evaluation_risks[0] if baseline_map.evaluation_risks else "当前评估风险需要继续补充。"
     evidence_pack = build_paper_evidence_pack(paper, sections, direction)
     evidence_profile = build_evidence_profile(evidence_pack)
-    values = build_signal_aware_sight_values(
-        title=title,
-        text=text,
-        direction=direction,
-        baseline_map=baseline_map,
-        baseline_reference=baseline_reference,
-        method_family=method_family,
-        contribution_type=contribution_type,
-        benchmark_risk=benchmark_risk,
-        signals=signal_view,
-    )
+    source_evidence = first_source_evidence(evidence_pack)
+    required_fields = ["claim", "dataset", "metric", "baseline"]
+    missing_required = [field for field in required_fields if not has_research_signal(getattr(signal_view, field))]
+    if source_evidence is None or (contribution_type != "survey" and missing_required):
+        values = build_evidence_bounded_sight(
+            title=title,
+            source_evidence=source_evidence,
+            missing_required=missing_required,
+            contribution_type=contribution_type,
+        )
+    else:
+        values = build_signal_aware_sight_values(
+            title=title,
+            text=text,
+            direction=direction,
+            baseline_map=baseline_map,
+            baseline_reference=baseline_reference,
+            method_family=method_family,
+            contribution_type=contribution_type,
+            benchmark_risk=benchmark_risk,
+            signals=signal_view,
+        )
     critique_evidence = build_critique_evidence(values, evidence_profile, contribution_type)
 
     return ResearchSight(
@@ -83,6 +94,46 @@ def build_research_sight(
         evidence_pack=evidence_pack,
         critique_evidence=critique_evidence,
     )
+
+
+def build_evidence_bounded_sight(
+    title: str,
+    source_evidence,
+    missing_required: list[str],
+    contribution_type: str,
+) -> dict[str, str]:
+    if source_evidence is None:
+        evidence_note = "事实证据：无法找到 metadata.abstract 或 pdf.full_text 原文片段。"
+    else:
+        evidence_note = (
+            f"事实证据（{source_evidence.id}，{source_evidence.source}）："
+            f"{truncate_evidence(source_evidence.text)}"
+        )
+    missing = ", ".join(missing_required) if missing_required else "方法或评测细节"
+    unknown = f"无法判断：缺少 {missing} 的原文证据，不能把通用科研批判写成该论文结论。"
+    if contribution_type == "survey" and source_evidence is not None:
+        return {
+            "motivation_sharpness": f"{evidence_note} 推断：它可能用于组织文献，但分类价值仍需核验。",
+            "solution_elegance": "无法判断：没有足够原文说明其分类轴或纳入标准。",
+            "evaluation_integrity": "无法判断：survey 不应按方法论文的实验模板评价；需要原文覆盖范围与纳入规则。",
+            "paradigm_inspiration": "无法判断：需要原文证明它连接了哪些此前分离的路线。",
+            "why_good": "无法判断：当前不能从有限片段确认其文献图谱价值。",
+            "why_not_good": "无法判断：当前不能从有限片段确认其遗漏、选择偏差或覆盖缺口。",
+            "better_angle": "无法判断：先补充 survey 的分类轴、纳入规则与代表论文证据。",
+            "baseline_comparison": "无法判断：缺少可核验的 baseline map 证据。",
+            "next_step_proposal": "下一步：回到摘要或全文，抽取分类轴、纳入规则与代表论文，再做文献图谱核验。",
+        }
+    return {
+        "motivation_sharpness": f"{evidence_note} 推断：{unknown}",
+        "solution_elegance": unknown,
+        "evaluation_integrity": unknown,
+        "paradigm_inspiration": unknown,
+        "why_good": f"无法判断：{title} 的方法或 benchmark 价值缺少可闭环的原文证据。",
+        "why_not_good": f"无法判断：不能在缺少 {missing} 时断言它存在某种 benchmark 或机制缺陷。",
+        "better_angle": f"无法判断：先补齐 {missing}，再针对该论文的 claim 或 limitation 设计反例。",
+        "baseline_comparison": "无法判断：缺少具体 baseline 与比较协议的原文证据。",
+        "next_step_proposal": f"下一步：补充 {missing} 的摘要/PDF 原文片段；在此之前不提出该论文专属 follow-up。",
+    }
 
 
 def build_signal_aware_sight_values(
@@ -276,6 +327,7 @@ def normalize_signals(signals: PaperSignals | dict[str, Any] | None) -> PaperSig
             claim=normalize_space(signals.get("claim", "")),
             limitation=normalize_space(signals.get("limitation", "")),
             contribution_type=normalize_space(signals.get("contribution_type", "")),
+            contribution_evidence=normalize_space(signals.get("contribution_evidence", "")),
             missing_signals=list(signals.get("missing_signals", [])) if isinstance(signals.get("missing_signals"), list) else [],
         )
     return PaperSignals(
@@ -287,6 +339,7 @@ def normalize_signals(signals: PaperSignals | dict[str, Any] | None) -> PaperSig
         claim="",
         limitation="",
         contribution_type="",
+        contribution_evidence="",
         missing_signals=["method", "dataset", "metric", "baseline", "claim", "limitation"],
     )
 
@@ -306,6 +359,8 @@ def infer_contribution_type(text: str) -> str:
 def build_evidence_profile(evidence_pack: EvidencePack) -> dict[str, dict[str, str]]:
     profile: dict[str, dict[str, str]] = {}
     for snippet in evidence_pack.snippets:
+        if snippet.source not in {"metadata.abstract", "pdf.full_text"}:
+            continue
         profile.setdefault(
             snippet.kind,
             {
@@ -314,7 +369,10 @@ def build_evidence_profile(evidence_pack: EvidencePack) -> dict[str, dict[str, s
                 "source": snippet.source,
             },
         )
-    fallback = evidence_pack.snippets[0] if evidence_pack.snippets else None
+    fallback = next(
+        (snippet for snippet in evidence_pack.snippets if snippet.source in {"metadata.abstract", "pdf.full_text"}),
+        None,
+    )
     profile["default"] = {
         "id": fallback.id if fallback else "none",
         "confidence": fallback.confidence if fallback else evidence_pack.confidence or "low",
@@ -347,7 +405,12 @@ def build_critique_evidence(
                 field=field,
                 evidence_snippet_id=evidence["id"],
                 confidence=adjust_judgment_confidence(evidence["confidence"], contribution_type, field),
-                rationale=f"该判断主要锚定 `{evidence['source']}` 证据；如果缺少全文 PDF，应按证据边界复核。",
+                rationale=(
+                    f"该判断主要锚定 `{evidence['source']}` 证据；其中事实与推断需要区分，"
+                    "如果缺少全文 PDF，应按证据边界复核。"
+                    if evidence["id"] != "none"
+                    else "无法定位 metadata.abstract 或 pdf.full_text 原文片段；该字段只能标为无法判断。"
+                ),
             ),
         )
     return judgments
@@ -468,3 +531,24 @@ def normalize_title_key(title: str) -> str:
 
 def normalize_space(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def first_source_evidence(evidence_pack: EvidencePack):
+    return next(
+        (
+            snippet
+            for snippet in evidence_pack.snippets
+            if snippet.source in {"metadata.abstract", "pdf.full_text"} and normalize_space(snippet.text)
+        ),
+        None,
+    )
+
+
+def truncate_evidence(value: str, limit: int = 180) -> str:
+    normalized = normalize_space(value)
+    return normalized if len(normalized) <= limit else f"{normalized[:limit - 3]}..."
+
+
+def has_research_signal(value: str) -> bool:
+    normalized = normalize_space(value)
+    return bool(normalized) and not normalized.startswith("当前证据不足") and not normalized.startswith("未识别")

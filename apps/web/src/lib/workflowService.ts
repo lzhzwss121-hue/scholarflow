@@ -41,6 +41,7 @@ import {
   collectArtifactHydrationWarnings,
   hydrateWorkflowStateFromArtifacts,
   loadHydrationArtifacts,
+  preferPaperCard,
   resolvePaperCardForPaper,
   selectArtifactForView,
   toPaperRow,
@@ -386,7 +387,9 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       setMemoryResult(restored.memoryResult);
     }
     if (restored.paperCard) {
-      setLatestPaperCard(restored.paperCard);
+      // A refresh can hydrate an older abstract card for the same paper. Do not
+      // downgrade a verified uploaded-PDF card while project resources reload.
+      setLatestPaperCard((current) => preferPaperCard(current, restored.paperCard));
     }
     if (restored.researchDecision) {
       setResearchDecision(restored.researchDecision);
@@ -824,7 +827,13 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
         );
         return;
       }
-      setLatestPaperCard(extraction.card);
+      setLatestPaperCard({
+        ...extraction.card,
+        paper_id: extraction.card.paper_id || paperId,
+        paper_title: extraction.card.paper_title || paper.title,
+        evidence_level: "full_text",
+        full_text: extraction.full_text,
+      });
       setLastSavedArtifact(extraction.artifact);
       setPaperCardInput("");
       setApiMessage(
@@ -943,7 +952,11 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       setMemoryResult(result);
       setLastSavedArtifact(result.artifact);
       applyBackendWorkflowSteps(result.workflow_steps);
-      setApiMessage(`论文记忆回答已生成：命中 ${result.hits.length} 篇，memory bank 总量 ${result.total_memories}。`);
+      setApiMessage(
+        result.reliability_status === "no_reliable_hit"
+          ? "当前记忆没有可靠证据回答此问题。建议重新检索或补充 PDF。"
+          : `论文记忆回答已生成：命中 ${result.hits.length} 篇，memory bank 总量 ${result.total_memories}。`,
+      );
       await loadProjectResources(projectId, guard);
     } catch (error) {
       if (!isAbortError(error) && guard.isCurrent()) {

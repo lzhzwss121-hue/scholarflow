@@ -125,55 +125,14 @@ def generate_research_decisions(
         ", ".join(paper.get("title", "") for paper in gap_evidence_papers[:3] if paper.get("title"))
         or "当前没有 strong/medium 相关论文可作为 gap evidence（且非 survey-only）"
     )
-    weakest = first_nonempty([card.get("weakest_assumption", "") for card in paper_cards])
     anchor = select_experiment_anchor(gap_evidence_papers, paper_cards)
     unblock_suggestions = build_unblock_suggestions(gap_evidence_papers, paper_cards) if anchor is None else []
-    evidence_prefix = (
-        "证据充分度不足，以下 gap 只能作为保守候选，不能作为已证实结论。"
-        if decision_status != "complete"
-        else "来自 strong/medium paper table / paper card 的线索。"
+    grounded_evidence = collect_grounded_gap_evidence(gap_evidence_papers, paper_cards)
+    gaps = build_gap_decisions(
+        decision_status=decision_status,
+        top_papers=top_papers,
+        grounded_evidence=grounded_evidence,
     )
-
-    gaps = [
-        GapDecision(
-            id="gap_evidence_mismatch",
-            title="答案正确但证据链错误",
-            kind="true_gap",
-            evidence=f"{evidence_prefix} 论文线索：{top_papers}。{weakest or '多篇工作关注最终指标，但证据一致性仍缺少稳定诊断。'}",
-            weakness="只看最终答案或平均分，会把真实视觉理解、语言先验和 benchmark shortcut 混在一起。",
-            opportunity="构建 evidence-aware split，把 answer accuracy、evidence consistency、counterexample pass rate 分开评价。",
-            novelty_risk="medium",
-            feasibility="one-week",
-        ),
-        GapDecision(
-            id="gap_counterexample_naturalness",
-            title="反例不够自然，难以代表真实用户失败",
-            kind="engineering_gap",
-            evidence=(
-                "证据不足，暂不能断言该方向已有系统性缺口。"
-                if decision_status == "blocked"
-                else "现有 hallucination / grounding 评测常依赖人工构造负样本或模板化冲突样本。"
-            ),
-            weakness="如果反例痕迹过强，模型失败可能来自数据风格而不是真实视觉推理缺陷。",
-            opportunity="从真实图像和真实问题出发生成轻微属性冲突、遮挡和罕见物体组合，再人工复核。",
-            novelty_risk="low",
-            feasibility="one-week",
-        ),
-        GapDecision(
-            id="gap_benchmark_overclaim",
-            title="把 benchmark 分数提升误认为能力提升",
-            kind="pseudo_gap",
-            evidence=(
-                "上游证据不足时，任何 novelty claim 都应先降级为假设，不应直接写成研究结论。"
-                if decision_status != "complete"
-                else "如果一个 idea 只是在现有 benchmark 上换 prompt、换 backbone 或调指标名称，它很可能只是局部工程优化。"
-            ),
-            weakness="这类 gap 难以证明新科学问题，只能证明某个配置更适合某个测试集。",
-            opportunity="除非能定义新的失败模式和反例协议，否则不要把它作为核心研究贡献。",
-            novelty_risk="high",
-            feasibility="one-month",
-        ),
-    ]
 
     validation = build_idea_validation(focus, decision_status, warnings)
 
@@ -193,6 +152,110 @@ def generate_research_decisions(
         evidence_quality=evidence_quality,
         warnings=unique_preserve_order(warnings),
     )
+
+
+def build_gap_decisions(
+    decision_status: str,
+    top_papers: str,
+    grounded_evidence: list[dict[str, str]],
+) -> list[GapDecision]:
+    if decision_status != "complete" or not grounded_evidence:
+        reason = (
+            "无法判断：当前没有足够的 metadata.abstract 或 pdf.full_text 原文片段来证明一个方向级 gap。"
+            f" 候选论文：{top_papers}。"
+        )
+        return [
+            GapDecision(
+                id="gap_evidence_boundary",
+                title="证据不足：暂不认定确定科研缺口",
+                kind="pseudo_gap",
+                evidence=reason,
+                weakness="上游候选或 Paper Card 仍缺少可定位的 claim、limitation、dataset、metric 或 baseline 原文证据。",
+                opportunity="先补齐可追溯的 PDF/摘要证据，再比较不同论文是否报告了同一失败模式。",
+                novelty_risk="high",
+                feasibility="one-month",
+            ),
+            GapDecision(
+                id="gap_anchor_missing_fields",
+                title="证据字段尚未形成可复现实验 anchor",
+                kind="pseudo_gap",
+                evidence="无法判断：没有证据支持通用反例或 benchmark 批判是否适用于当前论文集合。",
+                weakness="缺少同一论文绑定的 claim + dataset + metric + baseline 时，任何一周实验计划都只是泛化建议。",
+                opportunity="为一篇非 survey 论文补充原文实验段，并把四个字段绑定到对应 paper_id。",
+                novelty_risk="high",
+                feasibility="one-month",
+            ),
+        ]
+
+    decisions: list[GapDecision] = []
+    for index, item in enumerate(grounded_evidence[:3], start=1):
+        title = item["title"]
+        limitation = item["limitation"] or "原文未给出显式 limitation，不能扩展成确定缺口。"
+        decisions.append(
+            GapDecision(
+                id=f"gap_source_{index}",
+                title=f"待验证的原文限制：{title}",
+                kind="engineering_gap",
+                evidence=(
+                    f"事实证据（{item['snippet_id']}，{item['source']}）：{item['snippet']} "
+                    f"原文限制信号：{limitation}"
+                ),
+                weakness="推断：该限制是否跨论文稳定出现仍需用相同任务和指标复核，不能仅凭单篇论文下结论。",
+                opportunity="只围绕这条原文限制补充对照实验或失败样本；若无法复现，则将其降级为单篇观察。",
+                novelty_risk="medium",
+                feasibility="one-month",
+            ),
+        )
+    return decisions
+
+
+def collect_grounded_gap_evidence(
+    papers: list[dict[str, Any]],
+    paper_cards: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    cards_by_paper_id = {str(card.get("paper_id") or ""): card for card in paper_cards if card.get("paper_id")}
+    grounded: list[dict[str, str]] = []
+    for paper in papers:
+        card = cards_by_paper_id.get(str(paper.get("id") or ""), {})
+        sight = parse_json_object(card.get("research_sight_json", "{}"))
+        pack = sight.get("evidence_pack") if isinstance(sight.get("evidence_pack"), dict) else {}
+        snippets = pack.get("snippets") if isinstance(pack.get("snippets"), list) else []
+        source_snippet = next(
+            (
+                snippet
+                for snippet in snippets
+                if isinstance(snippet, dict)
+                and snippet.get("source") in {"metadata.abstract", "pdf.full_text"}
+                and normalize_space(snippet.get("text", ""))
+            ),
+            None,
+        )
+        if not isinstance(source_snippet, dict):
+            continue
+        signals = card.get("signals") if isinstance(card.get("signals"), dict) else {}
+        limitation = normalize_space(signals.get("limitation", ""))
+        if limitation.startswith("当前证据不足"):
+            limitation = ""
+        grounded.append(
+            {
+                "title": normalize_space(paper.get("title", "")) or "Untitled paper",
+                "snippet_id": normalize_space(source_snippet.get("id", "")) or "source_snippet",
+                "source": normalize_space(source_snippet.get("source", "")),
+                "snippet": normalize_space(source_snippet.get("text", ""))[:280],
+                "limitation": limitation,
+            },
+        )
+    return grounded
+
+
+def parse_json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def build_idea_validation(focus: str, decision_status: str, warnings: list[str]) -> IdeaValidation:
@@ -259,7 +322,7 @@ def build_evidence_quality(
     evidence_level_counts = count_card_evidence_levels(paper_cards)
     if len(gap_evidence_papers) == 0:
         decision_status = "blocked"
-    elif len(gap_evidence_papers) < 5 or linked_card_count == 0:
+    elif len(gap_evidence_papers) < 5 or linked_card_count == 0 or evidence_level_counts["full_text"] == 0:
         decision_status = "partial"
     else:
         decision_status = "complete"
@@ -352,6 +415,8 @@ def is_real_paper_anchor(paper: dict[str, Any], card: dict[str, Any]) -> bool:
     if source in {"", "seed"} or venue == "demo" or code == "demo" or title.startswith("synthetic example:"):
         return False
     if not normalize_space(paper.get("url", "")):
+        return False
+    if normalize_space(card.get("evidence_level", "")).lower().replace("-", "_") != "full_text":
         return False
     return True
 
@@ -459,14 +524,33 @@ def build_unblock_suggestions(papers: list[dict[str, Any]], paper_cards: list[di
         return suggestions
 
     paper_by_id = {paper.get("id", ""): paper for paper in papers if paper.get("id")}
-    linked_real_cards = [
+    bound_cards = [
         card
         for card in paper_cards
+        if card.get("paper_id") and paper_by_id.get(card.get("paper_id", "") or "", {})
+    ]
+    if not bound_cards:
+        suggestions.append("当前 Paper Card 没有绑定真实检索论文；请先从 Paper Table 选择 arXiv/OpenAlex 论文生成 Paper Card。")
+        suggestions.append("手工粘贴 title/abstract 可用于阅读草稿，但不会作为 ready 实验计划的 anchor。")
+        return suggestions
+
+    linked_real_cards = [
+        card
+        for card in bound_cards
         if is_real_paper_anchor(paper_by_id.get(card.get("paper_id", "") or "", {}), card)
     ]
     if not linked_real_cards:
-        suggestions.append("当前 Paper Card 没有绑定真实检索论文；请先从 Paper Table 选择 arXiv/OpenAlex 论文生成 Paper Card。")
-        suggestions.append("手工粘贴 title/abstract 可用于阅读草稿，但不会作为 ready 实验计划的 anchor。")
+        titles = unique_preserve_order(
+            [
+                normalize_space(card.get("paper_title", ""))
+                or normalize_space(paper_by_id.get(card.get("paper_id", "") or "", {}).get("title", ""))
+                for card in bound_cards
+            ],
+        )
+        suggestions.append(
+            f"缺全文证据：{'; '.join(titles[:3]) or '当前绑定论文'} 仍是 metadata/abstract-only。"
+            "请上传或解析 PDF，再从全文抽取 claim、dataset、metric、baseline。"
+        )
         return suggestions
 
     usable_cards = [
@@ -478,10 +562,7 @@ def build_unblock_suggestions(papers: list[dict[str, Any]], paper_cards: list[di
         suggestions.append("当前 Paper Card 全部像 survey/review/overview；请补充一篇明确提出方法或 benchmark 的论文。")
         return suggestions
 
-    dataset_count = 0
-    baseline_count = 0
-    metric_count = 0
-    claim_count = 0
+    missing_by_field: dict[str, list[str]] = {"claim": [], "dataset": [], "baseline": [], "metric": []}
     for paper, card in usable_cards:
         minimal = normalize_space(card.get("minimal_reproduction", ""))
         combined = normalize_space(
@@ -496,23 +577,25 @@ def build_unblock_suggestions(papers: list[dict[str, Any]], paper_cards: list[di
                 ],
             ),
         )
-        if extract_anchor_claim(minimal, combined):
-            claim_count += 1
-        if extract_anchor_dataset(minimal, combined):
-            dataset_count += 1
-        if extract_anchor_baseline(minimal, combined):
-            baseline_count += 1
-        if extract_anchor_metrics(minimal, combined):
-            metric_count += 1
+        paper_title = normalize_space(paper.get("title", "")) or "未命名论文"
+        if not extract_anchor_claim(minimal, combined):
+            missing_by_field["claim"].append(paper_title)
+        if not extract_anchor_dataset(minimal, combined):
+            missing_by_field["dataset"].append(paper_title)
+        if not extract_anchor_baseline(minimal, combined):
+            missing_by_field["baseline"].append(paper_title)
+        if not extract_anchor_metrics(minimal, combined):
+            missing_by_field["metric"].append(paper_title)
 
-    if claim_count == 0:
-        suggestions.append("缺 claim：在 Paper Card 的 minimal_reproduction 中补充 `Claim: ...`，明确一周内要验证哪一个主张。")
-    if dataset_count == 0:
-        suggestions.append("缺 dataset：补充 `Dataset: ...` 或 `Minimal dataset/subset: ...`，至少给出可抽样的 benchmark/subset。")
-    if baseline_count == 0:
-        suggestions.append("缺 baseline：补充 `Baseline: ...`，至少包含一个公开强 baseline 和一个 simple/no-op baseline。")
-    if metric_count == 0:
-        suggestions.append("缺 metric：补充 `Metric: ...`，至少包含论文主指标和一个 failure/counterexample 指标。")
+    field_hints = {
+        "claim": "在 Paper Card 的 minimal_reproduction 中补充 `Claim: ...`，明确一周内要验证哪一个主张。",
+        "dataset": "补充 `Dataset: ...` 或 `Minimal dataset/subset: ...`，至少给出可抽样的 benchmark/subset。",
+        "baseline": "补充 `Baseline: ...`，至少包含一个公开强 baseline 和一个 simple/no-op baseline。",
+        "metric": "补充 `Metric: ...`，至少包含论文主指标和一个 failure/counterexample 指标。",
+    }
+    for field, titles in missing_by_field.items():
+        if titles:
+            suggestions.append(f"缺 {field}：来自 {'；'.join(unique_preserve_order(titles)[:3])}。{field_hints[field]}")
     if not suggestions:
         suggestions.append("字段基本存在但仍未形成 anchor：请检查 minimal_reproduction 是否被标记为需要补充 PDF/实验细节，或是否是 survey/review。")
     return suggestions

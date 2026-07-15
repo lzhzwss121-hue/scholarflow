@@ -4,12 +4,15 @@ import io
 import ipaddress
 import os
 import re
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from typing import Any
+
+import certifi
 
 
 # Direction Review fetches at most 10 papers. A 6-second per-file timeout with
@@ -170,7 +173,14 @@ def download_pdf_bytes(url: str) -> bytes:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=PDF_TIMEOUT_SECONDS) as response:
+        # Use certifi's CA bundle explicitly. Some Python builds on macOS do not
+        # discover the system trust store, which otherwise makes valid arXiv
+        # certificates look untrusted. SSL verification remains enabled.
+        with urllib.request.urlopen(
+            request,
+            timeout=PDF_TIMEOUT_SECONDS,
+            context=trusted_ssl_context(),
+        ) as response:
             final_url = response.geturl()
             validate_public_http_url(final_url)
             content_length = response.headers.get("Content-Length")
@@ -182,14 +192,24 @@ def download_pdf_bytes(url: str) -> bytes:
             payload = response.read(PDF_MAX_BYTES + 1)
     except FullTextFetchError:
         raise
+    except ssl.SSLCertVerificationError as error:
+        raise FullTextFetchError("download_failed", f"开放 PDF TLS 证书验证失败：{error}") from error
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError) as error:
-        raise FullTextFetchError("download_failed", f"开放 PDF 下载失败：{error}") from error
+        message = str(error)
+        if "CERTIFICATE_VERIFY_FAILED" in message.upper():
+            message = f"TLS 证书验证失败：{message}"
+        raise FullTextFetchError("download_failed", f"开放 PDF 下载失败：{message}") from error
 
     if len(payload) > PDF_MAX_BYTES:
         raise FullTextFetchError("download_failed", f"开放 PDF 超过下载上限 {PDF_MAX_BYTES} bytes。")
     if not payload.lstrip().startswith(b"%PDF-"):
         raise FullTextFetchError("download_failed", "下载内容不是 PDF 文件（缺少 %PDF 文件头）。")
     return payload
+
+
+def trusted_ssl_context() -> ssl.SSLContext:
+    """Create a verifying TLS context from the maintained certifi CA bundle."""
+    return ssl.create_default_context(cafile=certifi.where())
 
 
 def parse_pdf_bytes(payload: bytes, pdf_url: str = "", source: str = "user_uploaded_pdf") -> FullTextResult:

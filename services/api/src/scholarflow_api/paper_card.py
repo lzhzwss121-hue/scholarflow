@@ -26,6 +26,7 @@ class PaperSignals:
     claim: str
     limitation: str
     contribution_type: str
+    contribution_evidence: str
     missing_signals: list[str]
 
     def to_dict(self) -> dict[str, Any]:
@@ -350,7 +351,7 @@ def extract_paper_signals(title: str, abstract: str, paper_text: str = "", venue
     full_text = normalize_space(paper_text)
     combined = normalize_space(f"{title_text}. {abstract_text} {full_text}")
     evidence_text = full_text or abstract_text or combined
-    contribution_type = infer_contribution_type(title, combined, venue)
+    contribution_type, contribution_evidence = infer_contribution_type(title, abstract_text, full_text, venue)
     task = extract_task_signal(title, abstract, combined, contribution_type)
     method = extract_method_signal(evidence_text, contribution_type)
     dataset = extract_named_signal_priority(
@@ -375,6 +376,7 @@ def extract_paper_signals(title: str, abstract: str, paper_text: str = "", venue
         claim=claim,
         limitation=limitation,
         contribution_type=contribution_type,
+        contribution_evidence=contribution_evidence,
         missing_signals=[],
     )
     signals.missing_signals = [
@@ -385,17 +387,75 @@ def extract_paper_signals(title: str, abstract: str, paper_text: str = "", venue
     return signals
 
 
-def infer_contribution_type(title: str, text: str, venue: str) -> str:
-    lower = f"{title} {text} {venue}".lower()
-    if any(marker in lower for marker in ["survey", "review", "overview", "taxonomy"]):
-        return "survey"
-    if any(marker in lower for marker in ["benchmark", "dataset", "evaluation", "eval"]):
-        return "benchmark"
-    if any(marker in lower for marker in ["model", "architecture", "framework", "method", "algorithm", "training", "decoding"]):
-        return "method"
-    if any(marker in lower for marker in ["agent", "workflow", "system"]):
-        return "system"
-    return "unknown"
+def infer_contribution_type(title: str, abstract: str, paper_text: str, venue: str) -> tuple[str, str]:
+    """Classify the contribution from an explicit claim, not incidental citations.
+
+    Full papers routinely contain phrases such as "we review related work" or
+    cite survey papers. Those mentions must not turn an analysis or benchmark
+    paper into a survey. Survey classification therefore needs a title signal
+    or an explicit self-description near the abstract/introduction.
+    """
+    title_text = normalize_space(title)
+    abstract_text = normalize_space(abstract)
+    body_text = normalize_space(paper_text)
+    title_lower = title_text.lower()
+    survey_title_patterns = [
+        r"\b(?:a|an|the)?\s*(?:comprehensive\s+)?survey\b",
+        r"\b(?:a|an|the)?\s*(?:systematic\s+)?review\b",
+        r"\boverview\b",
+        r"\btaxonomy\b",
+    ]
+    for pattern in survey_title_patterns:
+        if re.search(pattern, title_lower):
+            return "survey", f"标题证据：{truncate_text(title_text)}"
+
+    survey_self_description_patterns = [
+        r"\b(?:this (?:paper|work)|we)\s+(?:present|provide|conduct|offer|develop|introduce)\s+(?:a|an|the)?\s*(?:comprehensive\s+|systematic\s+)?(?:survey|review|overview|taxonomy)\b",
+        r"\b(?:this (?:paper|work)|we)\s+(?:survey|review)\s+(?:the\s+)?(?:literature|field|research|studies)\b",
+        r"\b(?:a|an)\s+(?:comprehensive\s+|systematic\s+)?(?:survey|review)\s+of\b",
+    ]
+    for source_name, source_text in (("摘要", abstract_text), ("正文", body_text[:12000])):
+        for sentence in split_sentences(source_text):
+            if any(re.search(pattern, sentence, flags=re.IGNORECASE) for pattern in survey_self_description_patterns):
+                return "survey", f"{source_name}证据：{truncate_text(sentence)}"
+
+    # The abstract is the paper's concise self-description. Prefer it over a
+    # body-wide keyword hit, where related-work citations can otherwise look
+    # like the paper's own contribution.
+    evidence_sources = [abstract_text, body_text, title_text, normalize_space(venue)]
+    benchmark_evidence = find_first_evidence_sentence(
+        evidence_sources,
+        ["benchmark", "dataset", "evaluation protocol", "evaluation suite"],
+    )
+    if benchmark_evidence:
+        return "benchmark", benchmark_evidence
+
+    method_evidence = find_first_evidence_sentence(
+        evidence_sources,
+        ["we propose", "we introduce", "we present", "our method", "our framework", "architecture", "algorithm"],
+    )
+    if method_evidence:
+        return "method", method_evidence
+
+    analysis_evidence = find_first_evidence_sentence(
+        evidence_sources,
+        ["analysis", "analyze", "analyse", "investigate", "characterize", "study"],
+    )
+    if analysis_evidence:
+        return "analysis", analysis_evidence
+
+    system_evidence = find_first_evidence_sentence(evidence_sources, ["agent", "workflow", "system"])
+    if system_evidence:
+        return "system", system_evidence
+    return "unknown", "未发现可定位的贡献类型证据。"
+
+
+def find_first_evidence_sentence(texts: list[str], markers: list[str]) -> str:
+    for text in texts:
+        sentence = find_sentence(text, markers)
+        if sentence:
+            return f"贡献证据：{sentence}"
+    return ""
 
 
 def extract_task_signal(title: str, abstract: str, text: str, contribution_type: str) -> str:
@@ -522,7 +582,7 @@ def render_signal_summary(signals: PaperSignals) -> str:
     return (
         f"task={signals.task}; method={signals.method}; dataset={signals.dataset}; "
         f"metric={signals.metric}; baseline={signals.baseline}; claim={signals.claim}; limitation={signals.limitation}; "
-        f"type={signals.contribution_type}"
+        f"type={signals.contribution_type}; contribution_evidence={signals.contribution_evidence}"
     )
 
 
@@ -719,35 +779,28 @@ def unblock_hint_for_signal(field: str) -> str:
 
 
 def build_counterexample(signals: PaperSignals, focus: str) -> str:
-    if has_signal(signals.dataset) and has_signal(signals.metric):
+    if all(has_signal(getattr(signals, field)) for field in ["claim", "dataset", "metric"]):
         return (
-            f"围绕 `{signals.dataset}` 构造目标不变但分布、证据或模板被破坏的样本，再继续用 `{signals.metric}` 评估。"
-            "如果模型或方法在原设置中表现好，但在这些反例上崩溃，就能反驳论文 claim 的泛化假设。"
-        )
-    if "hallucination" in focus or "证据" in focus:
-        return (
-            "设计一个答案容易猜对但视觉证据被遮挡、冲突或替换的样本集。"
-            "如果模型仍然高置信输出正确答案，但 grounding 或证据解释错误，"
-            "就能反驳“最终答案分数足以代表真实视觉理解”的隐含假设。"
-        )
-    if "benchmark" in focus:
-        return (
-            "构造一组语义等价但模板、选项顺序、物体频率或上下文先验被打乱的样本。"
-            "如果模型分数大幅下降，说明 benchmark 可能测到捷径而非目标能力。"
+            f"原文信号表明待检验 claim 是 `{signals.claim}`。围绕 `{signals.dataset}` 构造目标不变但分布、证据或模板被破坏的样本，"
+            f"再继续用 `{signals.metric}` 评估。若反例失败，才能反驳该 claim 的泛化假设。"
         )
     return (
-        "把论文方法放到一个目标不变但输入分布、评价约束或用户需求发生变化的场景中。"
-        "如果方法无法保持核心 claim，就说明它依赖了未显式说明的分布假设。"
+        "无法判断：摘要/PDF 原文尚未同时给出可测试 claim、dataset 与 metric。"
+        "不能把通用的 counterexample-first 模板冒充成该论文的反例设计；请先补齐实验段原文。"
     )
 
 
 def build_follow_up_idea(signals: PaperSignals, focus: str) -> str:
-    limitation = signals.limitation if has_signal(signals.limitation) else infer_limitation(focus)
+    if not all(has_signal(getattr(signals, field)) for field in ["claim", "limitation", "dataset", "metric"]):
+        return (
+            "无法判断：没有同时定位该论文的 claim、limitation、dataset 与 metric 原文证据。"
+            "在这些字段缺失时，不提出论文专属 follow-up，避免把通用 benchmark 批判包装成新 idea。"
+        )
+    limitation = signals.limitation
     return (
-        f"Follow-up idea: 从 `{limitation}` 出发，建立一个“反例优先”的诊断协议：先生成能攻击核心假设的样本，"
-        f"再反向设计 `{signals.metric}` 或新的证据一致性指标，而不是先固定 benchmark 再报告平均分。"
-        "它不是简单增量，因为它改变了研究问题的入口：从优化已有指标，转向发现并形式化最脆弱失败模式。"
-        "潜在价值是让后续方法必须解释为什么能通过反例，而不只是为什么在标准数据上更高分。"
+        f"Follow-up idea（推断）：从原文 limitation `{limitation}` 出发，围绕 `{signals.dataset}` 中的 `{signals.claim}` "
+        f"设计一个能暴露该限制的评测切片，并继续用 `{signals.metric}` 检查它是否成立。"
+        "这是一条待验证推断，而不是论文已经证明的结论；下一步需要先在原文实验设置内验证该限制是否稳定出现。"
     )
 
 

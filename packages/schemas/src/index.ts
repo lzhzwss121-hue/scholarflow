@@ -169,6 +169,7 @@ export interface ApiPaperSignals {
   claim: string;
   limitation: string;
   contribution_type: string;
+  contribution_evidence?: string;
   missing_signals: string[];
 }
 
@@ -439,6 +440,8 @@ export interface ApiResearchMemoryQueryResponse {
   hits: ApiPaperMemoryHit[];
   direction_memory: ApiDirectionMemory | null;
   total_memories: number;
+  reliability_status?: "reliable" | "no_reliable_hit" | "no_memory";
+  reliability_reason?: string;
   artifact: ApiArtifact;
   warnings: string[];
   workflow_steps?: ApiWorkflowStepState[];

@@ -1491,6 +1491,8 @@ def query_project_research_memory(project_id: str, payload: ResearchMemoryQueryR
         hits=[to_paper_memory_hit(hit) for hit in answer.hits],
         direction_memory=to_direction_memory_response(answer.direction_memory) if answer.direction_memory else None,
         total_memories=answer.total_memories,
+        reliability_status=answer.reliability_status,
+        reliability_reason=answer.reliability_reason,
         artifact=Artifact.model_validate(artifact),
         warnings=answer.warnings,
         workflow_steps=[
@@ -1512,7 +1514,7 @@ def list_project_artifacts(project_id: str) -> list[Artifact]:
     ensure_project_exists(project_id)
     with get_connection() as connection:
         rows = connection.execute(
-            "SELECT * FROM artifacts WHERE project_id = ? ORDER BY updated_at DESC",
+            "SELECT * FROM artifacts WHERE project_id = ? ORDER BY updated_at DESC, rowid DESC",
             (project_id,),
         ).fetchall()
     return [Artifact.model_validate(dict(row)) for row in rows]
@@ -1541,7 +1543,7 @@ def list_project_artifact_summaries(project_id: str) -> list[ArtifactSummary]:
                 END AS json_schema_version
             FROM artifacts
             WHERE project_id = ?
-            ORDER BY updated_at DESC
+            ORDER BY updated_at DESC, rowid DESC
             """,
             (project_id,),
         ).fetchall()

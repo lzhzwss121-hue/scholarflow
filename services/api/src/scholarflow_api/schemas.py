@@ -161,6 +161,7 @@ class PaperSignals(BaseModel):
     claim: str = ""
     limitation: str = ""
     contribution_type: str = ""
+    contribution_evidence: str = ""
     missing_signals: list[str] = Field(default_factory=list)
 
 
@@ -417,6 +418,8 @@ class ResearchMemoryQueryResponse(BaseModel):
     hits: list[PaperMemoryHit]
     direction_memory: DirectionMemory | None
     total_memories: int
+    reliability_status: str = "reliable"
+    reliability_reason: str = ""
     artifact: Artifact
     warnings: list[str]
     workflow_steps: list[WorkflowStepState] = Field(default_factory=list)

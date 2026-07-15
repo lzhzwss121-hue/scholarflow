@@ -197,8 +197,8 @@ test("paper table uses structured relevance coverage and partial workflow status
   await page.goto("/#paper-table");
   await page.getByRole("button", { name: /重新检索/ }).click();
   await expect(page.getByText(paper.title, { exact: true })).toBeVisible();
-  await expect(page.locator(".metric-card", { hasText: "Off-topic Filtered" }).getByText("37")).toBeVisible();
-  await expect(page.locator(".metric-card", { hasText: "Weak Filtered" }).getByText("12")).toBeVisible();
+  await expect(page.locator('.metric-card[aria-label="离题已过滤：37"]')).toBeVisible();
+  await expect(page.locator('.metric-card[aria-label="弱相关已过滤：12"]')).toBeVisible();
   const paperTableStep = page.locator(".workflow-step", { hasText: "Paper Table" });
   await expect(paperTableStep.getByText("partial")).toBeVisible();
   await expect(paperTableStep.getByText("complete")).toHaveCount(0);
@@ -295,7 +295,7 @@ test("degraded retrieval with no returned papers is not shown as a normal empty 
   await page.goto("/#paper-table");
   await page.getByRole("button", { name: /重新检索/ }).click();
   await expect(page.getByText("外部检索源 degraded retrieval")).toBeVisible();
-  await expect(page.locator(".metric-card", { hasText: "Off-topic Filtered" }).getByText("37")).toBeVisible();
+  await expect(page.locator('.metric-card[aria-label="离题已过滤：37"]')).toBeVisible();
   await expect(page.locator(".workflow-step", { hasText: "Paper Table" }).getByText("partial")).toBeVisible();
 });
 
@@ -446,7 +446,7 @@ test("demo project is explicit and does not pollute real project paper table", a
   await expect(page.getByRole("heading", { name: realProject.title })).toBeVisible();
   await expect(page.getByText(demoPaper.title, { exact: true })).toHaveCount(0);
   await page.getByLabel("项目").selectOption(demoProject.id);
-  await expect(page.getByText(/Demo 项目仅用于界面预览/).first()).toBeVisible();
+  await expect(page.locator(".table-warning").getByText(/Demo 项目只用于预览/)).toBeVisible();
   await expect(page.getByText(demoPaper.title, { exact: true })).toHaveCount(0);
   await expect(page.getByText("本次没有可展示论文")).toBeVisible();
   await expect(page.getByRole("button", { name: /重新检索/ })).toBeDisabled();
@@ -681,10 +681,11 @@ test("agent execute refreshes timeline artifacts and keeps partial blocked workf
   await agentPanel.getByRole("button", { name: "确认执行", exact: true }).click();
 
   await expect(agentPanel.getByText("running: literature_search.")).toBeVisible();
-  await expect(agentPanel.getByText(/当前工具：literature_search/)).toBeVisible();
-  await expect(page.getByText("Agent Run partial: experiment blocked.")).toBeVisible();
+  await expect(agentPanel.getByTestId("agent-run-current-tool")).toContainText("当前工具：literature_search");
   await page.getByRole("button", { name: /研究轨迹/ }).click();
-  await expect(page.locator(".workflow-artifact-list").getByText("agent_run_e2e.md").first()).toBeVisible();
+  await expect(page.getByTestId("workflow-timeline")).toContainText("literature_search");
+  await expect(agentPanel.getByText("partial: 2 warning(s); latest artifact count=1.")).toBeVisible({ timeout: 5000 });
+  await expect(page.locator(".workflow-artifact-list").getByText("agent_run_e2e.md")).toBeVisible();
   await expect(page.locator(".workflow-step", { hasText: "Gap Board" }).locator(".workflow-status.partial")).toBeVisible();
   await expect(page.locator(".workflow-step", { hasText: "Experiment Plan" }).locator(".workflow-status.blocked")).toBeVisible();
   await expect(page.locator(".workflow-step", { hasText: "Experiment Plan" }).getByText("complete")).toHaveCount(0);
@@ -1189,7 +1190,7 @@ test("mocked research workflow smoke keeps a created project after refresh", asy
   });
 
   await page.goto("/");
-  await page.getByRole("button", { name: /新建项目/ }).first().click();
+  await page.locator(".workflow-header").getByRole("button", { name: /新建项目/ }).click();
   await expect(page).toHaveURL(/#new-project/);
 
   await page.getByPlaceholder("例如：多模态大模型在视觉问答证据真实性研究").fill(project.title);
@@ -1200,7 +1201,9 @@ test("mocked research workflow smoke keeps a created project after refresh", asy
   await expect(page.getByRole("heading", { name: /论文表格/ })).toBeVisible();
   await page.getByRole("button", { name: /重新检索/ }).click();
   await expect(page.getByText(paper.title, { exact: true })).toBeVisible();
-  await expect(page.getByText(/mock_api_e2e/).first()).toBeVisible();
+  const technicalDetails = page.locator(".table-warning-summary .research-warning-details");
+  await technicalDetails.locator("summary").click();
+  await expect(technicalDetails.getByText(/mock_api_e2e/)).toBeVisible();
   await expect(page.locator(".workflow-step", { hasText: "Paper Table" }).getByText("partial")).toBeVisible();
   expect(artifactSummaryReads).toBeGreaterThan(0);
 
@@ -1537,7 +1540,10 @@ test("hydrates real direction review and memory artifact shapes without blank vi
     exact: true,
   });
   await expect(directionPaperButton).toBeVisible();
-  await expect(page.getByText(/Artifact JSON 解析失败/).first()).toBeVisible();
+  await page.getByRole("button", { name: /研究轨迹/ }).click();
+  const visibleInspector = page.locator('aside[aria-label="workflow artifacts and warnings"]:not([hidden])');
+  await expect(visibleInspector.getByTestId("artifact-hydration-warning")).toBeVisible();
+  await visibleInspector.getByRole("button", { name: "关闭研究轨迹" }).click();
   await expect(page.getByRole("region", { name: "selected paper detail" })).toHaveCount(0);
   await directionPaperButton.click();
   await expect(page).toHaveURL(/#paper-reader\/paper_e2e_artifact_shape\?from=direction-review/);
@@ -1559,7 +1565,7 @@ test("hydrates real direction review and memory artifact shapes without blank vi
   await expect(directionPaperButton).toBeVisible();
   await directionPaperButton.click();
   await expect(page).toHaveURL(/#paper-reader\/paper_e2e_artifact_shape\?from=direction-review/);
-  await expect(page.getByText("研究问题与背景")).toBeVisible();
+  await expect(page.getByTestId("direction-paper-section-heading-1")).toHaveText("研究问题与背景");
   await page.reload();
   await expect(page.getByText("Selected Paper Detail")).toBeVisible();
   await expect(page.getByRole("heading", { name: paper.title, exact: true })).toBeVisible();
@@ -1570,15 +1576,18 @@ test("hydrates real direction review and memory artifact shapes without blank vi
 
   await page.goto("/#paper-reader");
   await expect(page.getByRole("heading", { name: "摘要级阅读 · Paper Card" })).toBeVisible();
-  await expect(page.getByText("研究问题与背景")).toBeVisible();
+  await expect(page.getByTestId("paper-reader-active-section-heading")).toHaveText("研究问题与背景");
   await expect(page.getByText("12/12 已生成")).toBeVisible();
-  await expect(page.getByText("来源：Direction Review artifact")).toBeVisible();
-  await expect(page.getByText("摘要级证据，不是全文结论", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("来源：Direction Review artifact", { exact: true })).toBeVisible();
+  await page.locator('details.reader-evidence-scope[aria-label="paper card evidence scope"] > summary').click();
+  await expect(
+    page.locator('details.reader-evidence-scope[aria-label="paper card evidence scope"]').getByText("摘要级证据，不是全文结论", { exact: true }),
+  ).toBeVisible();
   await expect(page.getByText("待生成 Paper Card")).toHaveCount(0);
 
   await page.goto("/#paper-memory");
   await expect(page.getByText("Memory-Grounded Answer")).toBeVisible();
-  await expect(page.getByText("摘要级证据，不是全文结论", { exact: true }).first()).toBeVisible();
+  await expect(page.locator('[aria-label="memory answer"]').getByText("摘要级证据，不是全文结论", { exact: true })).toBeVisible();
   await expect(page.locator("dd", { hasText: "构造同答案但视觉证据冲突的样本。" })).toBeVisible();
   expect(pageErrors).toEqual([]);
   expect(consoleWarnings.filter((message) => message.includes("Encountered two children with the same key"))).toEqual([]);
@@ -1770,10 +1779,10 @@ test("gap and experiment views show abstract-only evidence boundaries", async ({
   });
 
   await page.goto("/#gap-board");
-  await expect(page.getByText("摘要级证据，不是全文结论", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("摘要级证据，不是全文结论", { exact: true })).toBeVisible();
   await expect(page.getByText(/保守提示：当前不是确定科研结论。Only one abstract-level benchmark card supports this gap./)).toBeVisible();
 
   await page.goto("/#experiment-planner");
-  await expect(page.getByText("摘要级证据，不是全文结论", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("摘要级证据，不是全文结论", { exact: true })).toBeVisible();
   await expect(page.getByRole("listitem").filter({ hasText: "补充 PDF 或正文方法/实验部分。" })).toBeVisible();
 });

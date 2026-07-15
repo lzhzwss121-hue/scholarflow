@@ -70,13 +70,83 @@ DOMAIN_MISMATCH_PATTERNS: dict[str, list[str]] = {
         "medical image segmentation",
         "segmentation challenge",
     ],
+    "medical_domain": [
+        "medical hallucination",
+        "medical large vision language model",
+        "clinical",
+        "patient",
+        "radiology",
+        "diagnosis",
+        "healthcare",
+        "biomedical",
+        "medicine",
+        "医学",
+        "临床",
+        "患者",
+    ],
+    "document_ocr": [
+        "ocr",
+        "optical character recognition",
+        "document understanding",
+        "document image",
+        "text recognition",
+        "scene text",
+        "文档理解",
+        "文字识别",
+    ],
+    "humanities_domain": [
+        "ancient greek",
+        "classical greek",
+        "philology",
+        "classics",
+        "manuscript studies",
+        "历史文献",
+        "古希腊",
+        "古典学",
+    ],
 }
 
 DOMAIN_QUERY_ALLOWLIST: dict[str, list[str]] = {
     "education": ["education", "classroom", "school", "student", "teacher", "教育", "课堂", "教学"],
     "clinical_meta": ["clinical", "medical", "patient", "healthcare", "prisma", "systematic review", "医学", "临床"],
     "medical_segmentation": ["medical", "segmentation", "brats", "mri", "brain tumor", "医学", "分割", "肿瘤"],
+    "medical_domain": ["medical", "clinical", "patient", "healthcare", "biomedical", "medicine", "医学", "临床", "患者"],
+    "document_ocr": ["ocr", "document", "text recognition", "文档", "文字识别", "光学字符"],
+    "humanities_domain": ["ancient greek", "classics", "philology", "古希腊", "古典学", "历史文献"],
 }
+
+OBJECT_HALLUCINATION_DIRECTION_MARKERS = {
+    "object hallucination",
+    "object hallucinations",
+    "对象幻觉",
+    "物体幻觉",
+    "pope",
+    "object probing",
+}
+OBJECT_HALLUCINATION_FOCUS_PATTERNS = (
+    "object hallucination",
+    "object hallucinations",
+    "pope",
+    "object probing",
+    "visual grounding",
+    "grounded object",
+)
+OBJECT_HALLUCINATION_CONTEXT_PATTERNS = (
+    "vision language",
+    "vision-language",
+    "large vision language",
+    "vlm",
+    "lvlm",
+    "multimodal",
+    "visual question",
+    "vqa",
+    "evaluation",
+    "benchmark",
+    "assess",
+    "detect",
+    "measure",
+    "probe",
+)
 
 
 @dataclass
@@ -899,9 +969,17 @@ def score_candidate(candidate: PaperCandidate, query_terms: set[str] | QueryInte
     required_intent_match = satisfies_required_intent(intent, matched_object_groups, matched_problem_groups, core_group_count)
     support_only_match = bool(matched_support_groups) and not matched_object_groups and not matched_problem_groups
     has_specific_match = bool(specific_overlap.matched_terms or title_specific_overlap.matched_terms)
+    strict_object_hallucination = requires_object_hallucination_focus(intent)
+    object_hallucination_match = matches_object_hallucination_focus(candidate)
     if domain_mismatch:
         quality = "off_topic"
         score = min(score, 0.2)
+    elif strict_object_hallucination and not object_hallucination_match:
+        # A generic "hallucination" or "vision-language" match is not enough for
+        # an object-hallucination evaluation direction. It is a useful recall hint,
+        # but not evidence that the paper belongs in the default reading set.
+        quality = "weak" if required_intent_match else "off_topic"
+        score = min(score, 0.5 if required_intent_match else 0.25)
     elif support_only_match:
         quality = "off_topic"
         score = min(score, 0.3)
@@ -935,6 +1013,11 @@ def score_candidate(candidate: PaperCandidate, query_terms: set[str] | QueryInte
         reason = (
             f"离题过滤：候选论文领域与 query 意图不一致；matched={', '.join(matched_terms[:6]) or 'support-only'}；"
             f"来源 {candidate.source}，年份 {candidate.year or 'unknown'}。"
+        )
+    elif strict_object_hallucination and not object_hallucination_match:
+        reason = (
+            "弱匹配，未达到对象幻觉评估核心主题门槛：候选只命中泛化的 hallucination/VLM 词，"
+            "没有 object hallucination、POPE 或 visual grounding 等直接证据。"
         )
     elif support_only_match:
         reason = (
@@ -1020,6 +1103,23 @@ def detect_domain_mismatch(candidate: PaperCandidate, intent: QueryIntent) -> bo
             continue
         return True
     return False
+
+
+def requires_object_hallucination_focus(intent: QueryIntent) -> bool:
+    query = intent.query_text
+    return any(marker in query for marker in OBJECT_HALLUCINATION_DIRECTION_MARKERS)
+
+
+def matches_object_hallucination_focus(candidate: PaperCandidate) -> bool:
+    text = normalize_space(f"{candidate.title} {candidate.abstract}").lower()
+    focus_match = any(pattern in text for pattern in OBJECT_HALLUCINATION_FOCUS_PATTERNS)
+    if not focus_match:
+        return False
+    # Visual grounding is broad. In an object-hallucination review it needs a
+    # VLM/VQA/evaluation context before it can be treated as a direct match.
+    if "visual grounding" in text and not any(pattern in text for pattern in OBJECT_HALLUCINATION_CONTEXT_PATTERNS):
+        return False
+    return True
 
 
 def significant_terms(query: str) -> set[str]:

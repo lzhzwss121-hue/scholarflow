@@ -100,6 +100,7 @@ def fetch_project_paper_card_dicts(connection, project_id: str) -> list[dict]:
         """
         SELECT
             pc.*,
+            pc.rowid AS paper_card_rowid,
             p.title AS paper_title,
             p.authors AS paper_authors,
             p.abstract AS paper_abstract,
@@ -125,7 +126,8 @@ def fetch_project_paper_card_dicts(connection, project_id: str) -> list[dict]:
         """,
         (project_id,),
     ).fetchall()
-    return [enrich_paper_card_row(dict(row)) for row in rows]
+    enriched_rows = [enrich_paper_card_row(dict(row)) for row in rows]
+    return select_best_paper_cards(enriched_rows)
 
 
 def enrich_paper_card_row(row: dict) -> dict:
@@ -139,8 +141,44 @@ def enrich_paper_card_row(row: dict) -> dict:
     if isinstance(sections, list) and sections:
         row["sections_json"] = json.dumps(sections, ensure_ascii=False)
     row["evidence_level"] = normalize_card_evidence_level(card_payload.get("evidence_level") or payload.get("evidence_level"))
+    full_text = payload.get("full_text") if isinstance(payload.get("full_text"), dict) else card_payload.get("full_text")
+    row["full_text"] = full_text if isinstance(full_text, dict) else {}
     row["artifact_id"] = row.get("artifact_id") or payload.get("artifact_id") or ""
     return row
+
+
+def select_best_paper_cards(rows: list[dict]) -> list[dict]:
+    """Keep one evidence-best card per bound paper for downstream decisions.
+
+    The artifacts remain append-only for auditability. This projection prevents
+    an older or failed abstract-only card from downgrading a verified full-text
+    card for the same paper_id.
+    """
+    selected: dict[str, dict] = {}
+    unbound: list[dict] = []
+    for row in rows:
+        paper_id = str(row.get("paper_id") or "").strip()
+        if not paper_id:
+            unbound.append(row)
+            continue
+        current = selected.get(paper_id)
+        if current is None or paper_card_sort_key(row) > paper_card_sort_key(current):
+            selected[paper_id] = row
+    combined = [*selected.values(), *unbound]
+    return sorted(combined, key=paper_card_sort_key, reverse=True)
+
+
+def paper_card_sort_key(row: dict) -> tuple[int, int, str, int]:
+    evidence_level = normalize_card_evidence_level(row.get("evidence_level"))
+    full_text = row.get("full_text") if isinstance(row.get("full_text"), dict) else {}
+    verified_full_text = evidence_level == "full_text" and full_text.get("status") == "extracted"
+    evidence_rank = {"metadata_only": 0, "abstract_only": 1, "full_text": 2}.get(evidence_level, 0)
+    return (
+        evidence_rank,
+        1 if verified_full_text else 0,
+        str(row.get("created_at") or ""),
+        int(row.get("paper_card_rowid") or 0),
+    )
 
 
 def parse_json_object(value: str) -> dict:

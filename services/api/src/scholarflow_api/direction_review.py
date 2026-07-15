@@ -10,9 +10,12 @@ from scholarflow_api.baseline_map import BaselineMap, render_baseline_map_markdo
 from scholarflow_api.full_text import FullTextResult, resolve_open_full_texts
 from scholarflow_api.literature import (
     PaperCandidate,
+    build_query_intent,
     expand_queries,
     format_relevance_coverage,
     merge_candidate_access,
+    priority_from_score,
+    score_candidate,
     search_literature,
     significant_terms as literature_significant_terms,
 )
@@ -193,11 +196,22 @@ def select_top_direction_papers(
     min_year = current_year - 2
     previous_keys = {normalize_title_key(title) for title in previously_read_titles}
     deduped: dict[str, PaperCandidate] = {}
+    direction_intent = build_query_intent(direction)
 
     for candidate in candidates:
         key = normalize_title_key(candidate.title)
         if not key or key in previous_keys:
             continue
+        # Candidates are retrieved through several expanded subqueries. Re-score
+        # every one against the user's original direction before it can enter the
+        # reading set; otherwise a broad expansion can promote cross-domain work.
+        relevance = score_candidate(candidate, direction_intent)
+        candidate.relevance_score = relevance.score
+        candidate.relevance_quality = relevance.quality
+        candidate.priority = priority_from_score(relevance.score, relevance.quality)
+        candidate.relation = relevance.reason
+        candidate.matched_terms = relevance.matched_terms
+        candidate.review_required = relevance.review_required
         if not is_relevant_candidate(candidate):
             continue
         year = parse_year(candidate.year)
@@ -256,27 +270,42 @@ def build_full_text_evidence_paper(paper: dict[str, Any], result: FullTextResult
 
 
 def enforce_research_sight_diversity(readings: list[DirectionPaperReading]) -> None:
-    fingerprints: list[set[str]] = []
+    fields = ("why_good", "why_not_good", "better_angle", "next_step_proposal")
+    fingerprints: dict[str, list[set[str]]] = {field: [] for field in fields}
+    follow_up_fingerprints: list[set[str]] = []
     for reading in readings:
-        current = sight_fingerprint(reading.research_sight.why_good)
-        if any(jaccard_similarity(current, previous) >= 0.72 for previous in fingerprints):
-            reading.research_sight.why_good = build_specific_why_good(reading)
-            upsert_critique_evidence_rationale(
-                reading.research_sight,
-                "why_good",
-                "同轮 why_good 重复度过高，已用 PaperSignals 重新生成更具体的亮点评价。",
+        for field in fields:
+            current = sight_fingerprint(str(getattr(reading.research_sight, field, "")))
+            if any(jaccard_similarity(current, previous) >= 0.72 for previous in fingerprints[field]):
+                setattr(
+                    reading.research_sight,
+                    field,
+                    bounded_duplicate_judgment(reading, field),
+                )
+                upsert_critique_evidence_rationale(
+                    reading.research_sight,
+                    field,
+                    f"同轮 {field} 与其他论文重复度过高；未复用模板，已降级为需要该论文原文证据的判断。",
+                )
+                current = sight_fingerprint(str(getattr(reading.research_sight, field, "")))
+            fingerprints[field].append(current)
+
+        follow_up = sight_fingerprint(reading.card.follow_up_idea)
+        if any(jaccard_similarity(follow_up, previous) >= 0.72 for previous in follow_up_fingerprints):
+            reading.card.follow_up_idea = (
+                f"无法提出独立 follow-up：`{reading.paper.get('title', '该论文')}` 的 limitation/claim/evaluation 原文证据"
+                "不足以支持与同轮其他论文不同的研究设想。请先补充 PDF 后再判断。"
             )
-            current = sight_fingerprint(reading.research_sight.why_good)
-        fingerprints.append(current)
+            follow_up = sight_fingerprint(reading.card.follow_up_idea)
+        follow_up_fingerprints.append(follow_up)
 
 
-def build_specific_why_good(reading: DirectionPaperReading) -> str:
-    signals = reading.card.signals
+def bounded_duplicate_judgment(reading: DirectionPaperReading, field: str) -> str:
+    title = reading.paper.get("title", "该论文")
+    evidence = reading.card.signals.contribution_evidence or "未定位贡献类型原文证据"
     return (
-        f"好的地方：这篇论文的亮点具体落在 `{signals.contribution_type or 'unknown'}` 类型贡献上。"
-        f"它围绕 `{signals.task}`，用方法信号 `{signals.method}`，"
-        f"尝试在 `{signals.dataset}` 上通过 `{signals.metric}` 支撑 `{signals.claim}`。"
-        "这比通用地说“定义了失败模式”更可检查，也更容易被后续实验反驳。"
+        f"无法判断：`{title}` 的 {field} 与同轮论文出现模板化重复。"
+        f"当前只能保留其自身的贡献证据线索：{evidence}；需要补充该论文的摘要/PDF 原文后再作独立判断。"
     )
 
 
@@ -385,11 +414,11 @@ def determine_review_status(
 ) -> str:
     if relevant_read_count <= 0:
         return "blocked"
-    if relevant_read_count < 5:
+    # A direction round has a ten-paper target. Do not turn a smaller but clean
+    # set into a completed review merely because it passed the five-paper minimum.
+    if relevant_read_count < target_paper_count:
         return "partial"
-    if relevant_read_count < target_paper_count and off_topic_count > relevant_read_count:
-        return "partial"
-    if low_relevance_count + off_topic_count > relevant_read_count * 2 and relevant_read_count < target_paper_count:
+    if low_relevance_count + off_topic_count > relevant_read_count * 2:
         return "partial"
     return "complete"
 
@@ -412,7 +441,7 @@ def build_direction_summary(
         status_label = "Blocked Direction Review" if review_status == "blocked" else "Partial Direction Review"
         return (
             f"{status_label}：本轮仅完成 {len(readings)}/{target_paper_count} 篇强/中相关候选论文的证据边界阅读，"
-            "低于可信方向级阅读的最低阈值 5 篇，因此不能声称已完成 10 篇方向综述。"
+            "未达到 10 篇方向级阅读目标，因此不能声称已完成一轮十篇论文综述。"
             f"{evidence_note}"
             f"当前累计已读 {total_read_count} 篇，ScholarFlow 只能给出临时判断："
             f"`{direction}` 暂时应围绕 {focus_terms or '任务定义、评价方式和失败模式'} 继续补充候选论文。"
@@ -540,16 +569,28 @@ def is_relevant_paper_dict(paper: dict[str, Any]) -> bool:
 
 
 def score_direction_paper_dict(paper: dict[str, Any], direction: str) -> float:
-    text = f"{paper.get('title', '')} {paper.get('abstract', '')} {paper.get('venue', '')}".lower()
-    terms = significant_terms(direction)
-    term_score = sum(0.22 for term in terms if term in text)
-    title_score = sum(0.18 for term in terms if term in str(paper.get("title", "")).lower())
+    title = str(paper.get("title", "")).lower()
+    abstract = str(paper.get("abstract", "")).lower()
+    text = f"{title} {abstract} {paper.get('venue', '')}".lower()
+    matched_terms = candidate_matched_terms(paper)
+    direct_focus_terms = [
+        term
+        for term in matched_terms
+        if term in {"object hallucination", "pope", "visual grounding", "evidence grounding", "faithfulness", "visual question answering"}
+    ]
+    # Relevance already passed the hard gate. This second ranking only decides
+    # which papers are recommended for self-reading, so it favours direct title
+    # or abstract evidence before recency and venue prestige.
+    title_direct = sum(0.8 for term in direct_focus_terms if term in title)
+    abstract_direct = sum(0.45 for term in direct_focus_terms if term in abstract)
+    direct_evidence = 0.75 if normalize_space(abstract) else 0.0
+    matched_coverage = min(1.2, 0.22 * len(matched_terms))
     year = parse_year(str(paper.get("year", "")))
     current_year = datetime.now(timezone.utc).year
-    recency = 0.3 if year and year >= current_year - 2 else 0.0
+    recency = 0.3 if year and year >= current_year - 2 else 0.08 if year else 0.0
     venue = 0.35 if is_top_venue(str(paper.get("venue", ""))) else 0.08
     base = float(paper.get("relevance_score") or 0.0)
-    return base + term_score + title_score + recency + venue
+    return base + title_direct + abstract_direct + direct_evidence + matched_coverage + recency + venue
 
 
 def empty_relevance_coverage() -> dict[str, int]:
@@ -573,14 +614,26 @@ def merge_relevance_coverage(left: dict[str, int], right: dict[str, int]) -> dic
 
 
 def build_selection_reason(paper: dict[str, Any], direction: str) -> str:
-    terms = safe_json_list(paper.get("matched_terms_json", "[]")) or [
+    terms = candidate_matched_terms(paper) or [
         term for term in significant_terms(direction) if term in f"{paper.get('title', '')} {paper.get('abstract', '')}".lower()
     ]
     venue = detect_venue_signal(str(paper.get("venue", "")))
     quality = normalize_space(str(paper.get("relevance_quality", ""))) or "medium"
     if terms:
-        return f"相关性 {quality}；匹配方向关键词：{', '.join(terms[:5])}；{venue}；近三年候选论文。"
+        direct_source = "标题/摘要直接证据" if normalize_space(paper.get("abstract", "")) else "仅标题/元数据证据"
+        return (
+            f"相关性 {quality}；核心匹配词：{', '.join(terms[:5])}；"
+            f"证据质量：{direct_source}；{venue}；年份 {paper.get('year') or 'unknown'}。"
+        )
     return f"与方向存在弱相关，需要人工复核；{venue}；用于补全方法或评测背景。"
+
+
+def candidate_matched_terms(paper: dict[str, Any]) -> list[str]:
+    direct = paper.get("matched_terms")
+    if isinstance(direct, list):
+        values = [normalize_space(item) for item in direct]
+        return [value for value in values if value]
+    return safe_json_list(paper.get("matched_terms_json", "[]"))
 
 
 def translate_abstract_to_chinese(paper: dict[str, Any]) -> str:

@@ -5,7 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from scholarflow_api import full_text, literature
 from scholarflow_api.baseline_map import build_baseline_map
@@ -13,6 +13,27 @@ from scholarflow_api.direction_review import build_direction_readings
 
 
 class FullTextEvidenceContractTest(unittest.TestCase):
+    def test_open_pdf_download_uses_certifi_ca_context_without_disabling_tls_verification(self) -> None:
+        pdf_url = "https://arxiv.org/pdf/2601.00003.pdf"
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.geturl.return_value = pdf_url
+        response.headers.get.return_value = str(len(b"%PDF-1.7 fixture"))
+        response.read.return_value = b"%PDF-1.7 fixture"
+        context = object()
+
+        with patch.object(full_text.certifi, "where", return_value="/private/tmp/ca-certificates.pem") as certifi_where, patch.object(
+            full_text.ssl,
+            "create_default_context",
+            return_value=context,
+        ) as create_context, patch.object(full_text.urllib.request, "urlopen", return_value=response) as urlopen:
+            payload = full_text.download_pdf_bytes(pdf_url)
+
+        self.assertEqual(payload, b"%PDF-1.7 fixture")
+        certifi_where.assert_called_once_with()
+        create_context.assert_called_once_with(cafile="/private/tmp/ca-certificates.pem")
+        self.assertIs(urlopen.call_args.kwargs["context"], context)
+
     def test_arxiv_and_openalex_results_preserve_open_pdf_urls(self) -> None:
         arxiv_atom = """
         <feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
@@ -166,6 +187,28 @@ class FullTextEvidenceContractTest(unittest.TestCase):
         self.assertEqual(result.source, "user_provided")
         self.assertTrue(result.is_extracted)
         self.assertEqual(result.pdf_url, "")
+
+    def test_component_analysis_paper_is_not_misclassified_as_survey_from_incidental_review_words(self) -> None:
+        from scholarflow_api.paper_card import extract_paper_signals
+
+        signals = extract_paper_signals(
+            title="A Comprehensive Analysis for Visual Object Hallucination in Large Vision-Language Models",
+            abstract=(
+                "We analyze component-level causes of visual object hallucination in large vision-language models, "
+                "introduce a mitigation method, and develop a benchmark for evaluating hallucination."
+            ),
+            paper_text=(
+                "Related work may review earlier hallucination benchmarks. "
+                "Our method reduces hallucination through component-aware intervention. "
+                "We introduce the VOH benchmark and evaluate against LLaVA baselines."
+            ),
+            venue="CVPR",
+        )
+
+        self.assertNotEqual(signals.contribution_type, "survey")
+        self.assertIn(signals.contribution_type, {"analysis", "method", "benchmark"})
+        self.assertTrue(signals.contribution_evidence)
+        self.assertNotIn("Related work may review", signals.contribution_evidence)
 
     def test_direction_reading_promotes_only_verified_extracted_text(self) -> None:
         paper = {
@@ -375,6 +418,12 @@ class FullTextEvidenceContractTest(unittest.TestCase):
                         persisted_paper.id,
                         b"%PDF-1.7 upload fixture",
                     )
+                from scholarflow_api.api_helpers import fetch_project_paper_card_dicts
+                from scholarflow_api.database import get_connection
+
+                with get_connection() as connection:
+                    active_cards = fetch_project_paper_card_dicts(connection, project.id)
+                artifact_summaries = main_module.list_project_artifact_summaries(project.id)
 
         self.assertEqual(resolve.call_count, 2)
         for call in resolve.call_args_list:
@@ -403,6 +452,12 @@ class FullTextEvidenceContractTest(unittest.TestCase):
         self.assertEqual(upload_response.card.full_text.source, "user_uploaded_pdf")
         upload_artifact = json.loads(upload_response.artifact.content_json)
         self.assertEqual(upload_artifact["full_text"]["source"], "user_uploaded_pdf")
+        self.assertEqual(upload_artifact["paper"]["id"], persisted_paper.id)
+        bound_cards = [card for card in active_cards if card.get("paper_id") == persisted_paper.id]
+        self.assertEqual(len(bound_cards), 1)
+        self.assertEqual(bound_cards[0]["evidence_level"], "full_text")
+        self.assertEqual(bound_cards[0]["full_text"]["source"], "user_uploaded_pdf")
+        self.assertEqual(artifact_summaries[0].id, upload_response.artifact.id)
 
 
 if __name__ == "__main__":

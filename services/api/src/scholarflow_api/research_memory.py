@@ -9,6 +9,7 @@ from typing import Any
 from scholarflow_api.text_utils import extract_terms, normalize_space, normalize_terms, score_term_overlap
 
 RESEARCH_MEMORY_SCHEMA_VERSION = "research_memory_answer.v2"
+MIN_RELIABLE_MEMORY_SCORE = 0.28
 
 
 @dataclass
@@ -102,6 +103,8 @@ class ResearchMemoryAnswer:
     hits: list[PaperMemoryHit]
     direction_memory: DirectionMemorySnapshot | None
     total_memories: int
+    reliability_status: str
+    reliability_reason: str
     warnings: list[str]
 
     def to_dict(self) -> dict[str, Any]:
@@ -113,6 +116,8 @@ class ResearchMemoryAnswer:
             "hits": [hit.to_dict() for hit in self.hits],
             "direction_memory": self.direction_memory.to_dict() if self.direction_memory else None,
             "total_memories": self.total_memories,
+            "reliability_status": self.reliability_status,
+            "reliability_reason": self.reliability_reason,
             "warnings": self.warnings,
         }
 
@@ -426,22 +431,36 @@ def query_research_memory(
 ) -> ResearchMemoryAnswer:
     backfill_project_research_memory(connection, project_id, now)
     records = fetch_memory_records(connection, project_id, direction)
-    hits = search_memory_records(records, question, top_k)
+    ranked_hits = search_memory_records(records, question, top_k)
     snapshot = fetch_direction_memory_snapshot(connection, project_id, direction)
     warnings: list[str] = []
+    reliability_status = "reliable"
+    reliability_reason = "命中至少一篇具有问题词项证据的 paper memory。"
     if not records:
         warnings.append("当前项目还没有 paper memory。请先执行方向精读，或生成 paper cards。")
-    if records and not hits:
-        warnings.append("没有找到强相关论文，回答只能基于当前 memory bank 的弱匹配。")
-        hits = search_memory_records(records, question, min(top_k, len(records)), allow_weak=True)
+        reliability_status = "no_memory"
+        reliability_reason = "当前项目没有可检索的 paper memory。"
+    reliable_hits = [hit for hit in ranked_hits if is_reliable_memory_hit(hit, question)]
+    if records and not reliable_hits:
+        reliability_status = "no_reliable_hit"
+        reliability_reason = (
+            "检索候选没有达到可靠命中门槛：需要至少一个来自标题、关键词或原始 memory 文本的问题词项证据，"
+            f"且总分不低于 {MIN_RELIABLE_MEMORY_SCORE:.2f}。"
+        )
+        warnings.append(
+            "当前记忆没有可靠证据回答此问题；未把零分或弱相关论文包装成最相关命中。"
+        )
+        warnings.append("建议先重新检索该方向，或上传/解析相关 PDF 后再生成 Paper Card 与 Memory。")
 
     return ResearchMemoryAnswer(
         question=question,
         top_k=top_k,
-        answer=build_memory_answer(question, hits, snapshot),
-        hits=hits,
+        answer=build_memory_answer(question, reliable_hits, snapshot, reliability_status),
+        hits=reliable_hits,
         direction_memory=snapshot,
         total_memories=len(records),
+        reliability_status=reliability_status,
+        reliability_reason=reliability_reason,
         warnings=warnings,
     )
 
@@ -531,6 +550,23 @@ def search_memory_records(
             )
     scored.sort(key=lambda hit: hit.score, reverse=True)
     return scored[:top_k]
+
+
+def is_reliable_memory_hit(hit: PaperMemoryHit, question: str) -> bool:
+    if hit.score < MIN_RELIABLE_MEMORY_SCORE:
+        return False
+    terms = set(extract_terms(question, limit=16))
+    if not terms:
+        return False
+    direct_text = " ".join(
+        [
+            str(hit.memory.get("title", "")),
+            " ".join(safe_json_list(hit.memory.get("keywords_json", "[]"))),
+            str(hit.memory.get("memory_text", "")),
+        ],
+    )
+    direct_match = score_term_overlap(direct_text, terms, weight=0.1, max_score=1.0)
+    return bool(direct_match.matched_terms)
 
 
 def score_memory_record(record: dict[str, Any], terms: set[str], question: str) -> PaperMemoryScore:
@@ -623,8 +659,14 @@ def build_memory_answer(
     question: str,
     hits: list[PaperMemoryHit],
     snapshot: DirectionMemorySnapshot | None,
+    reliability_status: str = "reliable",
 ) -> str:
     if not hits:
+        if reliability_status == "no_reliable_hit":
+            return (
+                "当前记忆没有可靠证据回答此问题。系统没有把零分或弱相关论文当作“最相关论文”。"
+                "请先用更具体的方向词重新检索，或上传相关 PDF 以补齐 claim、dataset、metric、baseline 与原文片段。"
+            )
         return (
             "当前项目的 Paper Memory Bank 还没有可用命中。请先执行方向精读，让系统至少读取一轮 10 篇论文，"
             "再用该问题检索记忆。"
@@ -679,6 +721,8 @@ def render_research_memory_answer_markdown(answer: ResearchMemoryAnswer) -> str:
             "# Research Memory Answer",
             f"Question: {answer.question}",
             f"Top K: {answer.top_k}",
+            f"Reliability: {answer.reliability_status}",
+            f"Reliability reason: {answer.reliability_reason}",
             "## Direction Memory",
             direction,
             "## Answer",
