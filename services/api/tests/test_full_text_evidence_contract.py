@@ -2,14 +2,43 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from scholarflow_api import full_text, literature
 from scholarflow_api.baseline_map import build_baseline_map
 from scholarflow_api.direction_review import build_direction_readings
+
+
+def build_minimal_text_pdf() -> bytes:
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612, height=792)
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    page[NameObject("/Resources")] = DictionaryObject(
+        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)})}
+    )
+    text = (
+        "Method experiment dataset POPE metric accuracy baseline LLaVA benchmark analysis mitigation. " * 30
+    )
+    stream = DecodedStreamObject()
+    stream.set_data(f"BT /F1 10 Tf 20 700 Td ({text}) Tj ET".encode("latin-1"))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
 
 
 class FullTextEvidenceContractTest(unittest.TestCase):
@@ -33,6 +62,12 @@ class FullTextEvidenceContractTest(unittest.TestCase):
         certifi_where.assert_called_once_with()
         create_context.assert_called_once_with(cafile="/private/tmp/ca-certificates.pem")
         self.assertIs(urlopen.call_args.kwargs["context"], context)
+
+    def test_trusted_ssl_context_keeps_hostname_and_certificate_verification_enabled(self) -> None:
+        context = full_text.trusted_ssl_context()
+
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
 
     def test_arxiv_and_openalex_results_preserve_open_pdf_urls(self) -> None:
         arxiv_atom = """
@@ -160,6 +195,9 @@ class FullTextEvidenceContractTest(unittest.TestCase):
         self.assertFalse(result.is_extracted)
         self.assertEqual(result.character_count, 0)
         self.assertIn("network timeout", result.error)
+        self.assertEqual(result.pdf_url, pdf_url)
+        self.assertEqual(result.failure_stage, "download")
+        self.assertTrue(result.recovery_hint)
 
     def test_short_or_missing_pdf_text_layer_is_parse_failed_not_full_text(self) -> None:
         short_text = "abstract-like text only"
@@ -405,25 +443,19 @@ class FullTextEvidenceContractTest(unittest.TestCase):
                         project.id,
                         PaperCardCreateRequest(paper_id=persisted_paper.id),
                     )
-                uploaded = full_text.FullTextResult(
-                    status="extracted",
-                    source="user_uploaded_pdf",
-                    page_count=12,
-                    character_count=len(extracted_text),
-                    text=extracted_text,
+                upload_payload = build_minimal_text_pdf()
+                upload_response = main_module.extract_project_paper_full_text(
+                    project.id,
+                    persisted_paper.id,
+                    upload_payload,
                 )
-                with patch.object(main_module, "parse_pdf_bytes", return_value=uploaded) as parse_upload:
-                    upload_response = main_module.extract_project_paper_full_text(
-                        project.id,
-                        persisted_paper.id,
-                        b"%PDF-1.7 upload fixture",
-                    )
                 from scholarflow_api.api_helpers import fetch_project_paper_card_dicts
                 from scholarflow_api.database import get_connection
 
                 with get_connection() as connection:
                     active_cards = fetch_project_paper_card_dicts(connection, project.id)
                 artifact_summaries = main_module.list_project_artifact_summaries(project.id)
+                listed_cards = main_module.list_project_paper_cards(project.id)
 
         self.assertEqual(resolve.call_count, 2)
         for call in resolve.call_args_list:
@@ -441,11 +473,16 @@ class FullTextEvidenceContractTest(unittest.TestCase):
         failed_artifact = json.loads(failed_response.artifact.content_json)
         self.assertEqual(failed_artifact["full_text"]["status"], "download_failed")
         self.assertNotEqual(failed_artifact["evidence_level"], "full_text")
-        parse_upload.assert_called_once_with(b"%PDF-1.7 upload fixture", source="user_uploaded_pdf")
         self.assertEqual(upload_response.paper_id, persisted_paper.id)
+        self.assertEqual(upload_response.evidence_level, "full_text")
+        self.assertEqual(upload_response.evidence_quality, "full_text")
+        self.assertEqual(upload_response.source, "user_uploaded_pdf")
+        self.assertEqual(upload_response.page_count, 1)
+        self.assertGreaterEqual(upload_response.char_count, full_text.PDF_MIN_TEXT_CHARS)
+        self.assertTrue(upload_response.updated_at)
         self.assertEqual(upload_response.full_text.status, "extracted")
         self.assertEqual(upload_response.full_text.source, "user_uploaded_pdf")
-        self.assertEqual(upload_response.text, extracted_text)
+        self.assertIn("Method experiment dataset POPE", upload_response.text)
         self.assertIsNotNone(upload_response.card)
         self.assertIsNotNone(upload_response.artifact)
         self.assertEqual(upload_response.card.evidence_level, "full_text")
@@ -458,6 +495,10 @@ class FullTextEvidenceContractTest(unittest.TestCase):
         self.assertEqual(bound_cards[0]["evidence_level"], "full_text")
         self.assertEqual(bound_cards[0]["full_text"]["source"], "user_uploaded_pdf")
         self.assertEqual(artifact_summaries[0].id, upload_response.artifact.id)
+        self.assertEqual(len([card for card in listed_cards if card.paper_id == persisted_paper.id]), 1)
+        self.assertEqual(listed_cards[0].paper_id, persisted_paper.id)
+        self.assertEqual(listed_cards[0].evidence_level, "full_text")
+        self.assertEqual(listed_cards[0].full_text.source, "user_uploaded_pdf")
 
 
 if __name__ == "__main__":

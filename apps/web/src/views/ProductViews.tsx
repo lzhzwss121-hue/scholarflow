@@ -134,11 +134,27 @@ export function WorkflowShell({
     typeof window === "undefined" ? true : window.innerWidth > 860,
   );
   const [inspectorOpen, setInspectorOpen] = useState(false);
-  const latestNotice = viewModel.warnings[0] ?? null;
+  const verifiedReaderCard =
+    activeView === "paper-reader" &&
+    viewModel.latestPaperCard?.evidence_level === "full_text" &&
+    viewModel.latestPaperCard.full_text?.status === "extracted";
+  const historicalNotices = verifiedReaderCard
+    ? viewModel.warnings.filter((notice) => isSupersededFullTextNotice(notice.message))
+    : [];
+  const currentNotices = verifiedReaderCard
+    ? viewModel.warnings.filter((notice) => !isSupersededFullTextNotice(notice.message))
+    : viewModel.warnings;
+  const latestRawNotice = currentNotices[0] ?? null;
+  const latestNotice = latestRawNotice
+    ? { ...latestRawNotice, message: summarizeWorkflowNotice(latestRawNotice.message) }
+    : null;
   const activeStep = viewModel.workflowSteps.find((step) => step.id === activeView);
   const completedStepCount = viewModel.workflowSteps.filter((step) => step.status === "complete").length;
   const partialStepCount = viewModel.workflowSteps.filter((step) => step.status === "partial").length;
   const progressValue = completedStepCount + partialStepCount * 0.5;
+  const returnedCount = viewModel.literatureCoverage.returned_count ?? viewModel.paperRows.length;
+  const directionReadCount =
+    viewModel.directionReview?.relevant_read_count ?? viewModel.directionReview?.round_read_count ?? 0;
 
   useEffect(() => {
     function handleResize() {
@@ -229,6 +245,7 @@ export function WorkflowShell({
                 data-status={step.status}
                 aria-current={isActive ? "page" : undefined}
                 key={step.id}
+                title={`${step.label}：${step.summary}`}
                 type="button"
                 onClick={() => selectView(step.id)}
               >
@@ -271,7 +288,9 @@ export function WorkflowShell({
             <p className="section-kicker">
               Workspace <span aria-hidden="true">/</span> {activeStep?.label ?? "Project overview"}
             </p>
-            <h1>{viewModel.activeProject?.title ?? "创建真实项目开始"}</h1>
+            <h1 title={viewModel.activeProject?.title ?? "创建真实项目开始"}>
+              {viewModel.activeProject?.title ?? "创建真实项目开始"}
+            </h1>
             <span className="workflow-header-description">
               {viewModel.activeProject
                 ? isDemoProject(viewModel.activeProject)
@@ -282,8 +301,14 @@ export function WorkflowShell({
           </div>
           <div className="workflow-header-meta">
             <span className={`api-chip ${viewModel.apiStatus}`}>{viewModel.apiStatus}</span>
-            <span title="已保存、去重后的当前项目论文数；它不等于本轮检索返回数。">
-              已保存 {viewModel.paperRows.length} 篇
+            <span data-testid="project-saved-paper-count" title="项目已保存论文：当前项目中已持久化并去重的论文总数。">
+              项目已保存 {viewModel.paperRows.length}
+            </span>
+            <span data-testid="current-search-returned-count" title="当前检索返回：最近一轮 Literature Search 通过相关性门槛后返回的论文数。">
+              当前检索返回 {returnedCount}
+            </span>
+            <span data-testid="current-direction-read-count" title="当前方向已读：最近一轮 Direction Review 已生成结构化阅读记录的强/中相关论文数。">
+              当前方向已读 {directionReadCount}
             </span>
             <span title="保存在当前项目 SQLite 工作区中的 artifact 数。">{viewModel.artifactCount} 个产物</span>
             <button
@@ -353,7 +378,14 @@ export function WorkflowShell({
             <X size={16} />
           </button>
         </header>
-        <WorkflowNoticeList notices={viewModel.warnings} />
+        <WorkflowNoticeList notices={currentNotices} />
+        {historicalNotices.length ? (
+          <details className="workflow-history-notices">
+            <summary>历史尝试 · {historicalNotices.length}</summary>
+            <p>当前论文已有更高等级的全文证据，以下旧下载失败仅保留用于追溯。</p>
+            <WorkflowNoticeList notices={historicalNotices} />
+          </details>
+        ) : null}
         <WorkflowArtifactPanel
           activeArtifact={viewModel.activeArtifact}
           artifacts={viewModel.artifactSummaries}
@@ -1037,6 +1069,7 @@ export function ActiveView({
             isQuerying={memoryBusy}
             onQuestionChange={onMemoryQuestionChange}
             onQuery={onQueryResearchMemory}
+            onSelectView={onSelectView}
             onTopKChange={onMemoryTopKChange}
             question={memoryQuestion}
             result={memoryResult}
@@ -1447,6 +1480,7 @@ export function ProductPaperTableView({
   query: string;
 }) {
   const [highOnly, setHighOnly] = useState(false);
+  const [expandedReasons, setExpandedReasons] = useState<Set<string>>(() => new Set());
   const displayPapers = highOnly ? papers.filter((paper) => paper.priority === "High") : papers;
   const relevanceCoverage = derivePaperTableCoverage(papers, structuredRelevanceCoverage);
   const strongCount = relevanceCoverage.strong_match_count;
@@ -1458,6 +1492,7 @@ export function ProductPaperTableView({
   const isPartialPaperTable = offTopicCount > 0 || weakCount > 0 || retrievalWarnings.length > 0;
   const isDemo = isDemoProject(activeProject);
   const tableRows = displayPapers.map((paper) => ({
+    id: paper.id,
     title: paper.title,
     authors: paper.authors,
     year: paper.year,
@@ -1634,7 +1669,7 @@ export function ProductPaperTableView({
             </thead>
             <tbody>
               {tableRows.map((paper, index) => (
-                <tr key={`${paper.title}-${index}`}>
+                <tr key={paper.id || `${paper.title}-${index}`}>
                   <td className="paper-title-cell" title={paper.title}>
                     <strong>{paper.title}</strong>
                     <small>{paper.authors}</small>
@@ -1648,9 +1683,32 @@ export function ProductPaperTableView({
                     <span className={`priority ${paper.priority.toLowerCase()}`}>{paper.priority}</span>
                     <small>{paper.relevanceQuality ?? "medium"}</small>
                   </td>
-                  <td className="paper-relation-cell" title={paper.relation}>
-                    <p>{paper.relation}</p>
+                  <td className="paper-relation-cell">
+                    <p className={expandedReasons.has(paper.id) ? "expanded" : ""} id={`paper-relevance-${paper.id}`}>
+                      {paper.relation}
+                    </p>
                     {paper.matchedTerms?.length ? <small>匹配词：{paper.matchedTerms.slice(0, 5).join(", ")}</small> : null}
+                    {paper.relation.trim().length > 80 ? (
+                      <button
+                        aria-controls={`paper-relevance-${paper.id}`}
+                        aria-expanded={expandedReasons.has(paper.id)}
+                        className="paper-relation-toggle"
+                        type="button"
+                        onClick={() => {
+                          setExpandedReasons((current) => {
+                            const next = new Set(current);
+                            if (next.has(paper.id)) {
+                              next.delete(paper.id);
+                            } else {
+                              next.add(paper.id);
+                            }
+                            return next;
+                          });
+                        }}
+                      >
+                        {expandedReasons.has(paper.id) ? "收起理由" : "展开理由"}
+                      </button>
+                    ) : null}
                   </td>
                 </tr>
               ))}
@@ -1713,13 +1771,13 @@ function derivePaperTableCoverage(papers: PaperRow[], coverage: Record<string, n
 
 function formatEvidenceLevel(level: string): string {
   if (level === "full_text") {
-    return "全文级深读";
+    return "全文已验证";
   }
   if (level === "abstract_only") {
-    return "标题/摘要级阅读";
+    return "摘要级证据";
   }
   if (level === "metadata_only") {
-    return "标题/元数据级提纲";
+    return "元数据级证据";
   }
   return level || "未知证据等级";
 }
@@ -1974,28 +2032,27 @@ export function ProductPaperReaderView({
                   {displayCard.full_text.page_count} 页 / {displayCard.full_text.character_count.toLocaleString("zh-CN")} 字符
                 </span>
               ) : null}
+              {displayCard?.updated_at || displayCard?.created_at ? (
+                <span>更新：{formatArtifactDate(displayCard.updated_at || displayCard.created_at)}</span>
+              ) : null}
             </div>
+            {evidenceBoundary ? <LimitedEvidenceSummary boundary={evidenceBoundary} /> : null}
             <FullTextProvenanceStatus
               onOpenEvidenceInput={openSupplementalEvidenceInput}
               provenance={displayCard?.full_text}
+              updatedAt={displayCard?.updated_at || displayCard?.created_at}
             />
 
-            {displayCard && (evidenceBoundary || missingEvidence.length) ? (
+            {displayCard && missingEvidence.length ? (
               <details className="reader-evidence-scope" aria-label="paper card evidence scope">
                 <summary>
                   <span>
                     <ShieldCheck size={17} />
-                    <strong>证据范围</strong>
+                    <strong>待补证据与核验清单</strong>
                   </span>
                   <span>{formatEvidenceLevel(evidenceLevel)}</span>
                 </summary>
                 <div className="reader-evidence-scope-content">
-                  {evidenceBoundary ? (
-                    <div>
-                      <strong>{evidenceBoundary.title}</strong>
-                      <p>{evidenceBoundary.message}</p>
-                    </div>
-                  ) : null}
                   {missingEvidence.length ? (
                     <div>
                       <strong>待补证据</strong>
@@ -2410,6 +2467,7 @@ function mergeDirectionReadingWithPaperCard(
     artifact_title: card.source_artifact_title ?? reading.artifact_title,
     evidence_level: card.evidence_level ?? reading.evidence_level,
     full_text: card.full_text ?? reading.full_text,
+    updated_at: card.updated_at || card.created_at || reading.updated_at,
     signals: card.signals ?? reading.signals,
     sections: card.sections.length ? card.sections : reading.sections,
     weakest_assumption: card.weakest_assumption || reading.weakest_assumption,
@@ -2469,9 +2527,11 @@ function fullTextFailureReason(provenance: ApiFullTextProvenance): string {
 function FullTextProvenanceStatus({
   onOpenEvidenceInput,
   provenance,
+  updatedAt,
 }: {
   onOpenEvidenceInput?: () => void;
   provenance: ApiFullTextProvenance | undefined;
+  updatedAt?: string;
 }) {
   if (!provenance) {
     return null;
@@ -2502,6 +2562,8 @@ function FullTextProvenanceStatus({
             </>
           ) : null}
         </p>
+        {updatedAt ? <small className="full-text-updated-at">更新时间：{formatArtifactDate(updatedAt)}</small> : null}
+        {!extracted && provenance.recovery_hint ? <small>建议：{provenance.recovery_hint}</small> : null}
       </div>
       {!extracted && onOpenEvidenceInput ? (
         <button type="button" onClick={onOpenEvidenceInput}>
@@ -2555,20 +2617,53 @@ function PdfUploadControl({
   );
 }
 
-function buildEvidenceBoundary(evidenceLevel: string | undefined): { title: string; message: string } | null {
+type EvidenceBoundary = {
+  title: string;
+  message: string;
+  confirmed: string;
+  cannotConfirm: string;
+  nextAction: string;
+};
+
+function buildEvidenceBoundary(evidenceLevel: string | undefined): EvidenceBoundary | null {
   if (evidenceLevel === "metadata_only") {
     return {
       title: "元数据级证据，不是全文结论",
       message: "当前只基于标题、年份、来源等元数据生成阅读提纲。方法、实验、claim 和反例都需要补充 abstract 或 PDF 后才能确认。",
+      confirmed: "论文标题、年份、来源与检索方向的表面关联。",
+      cannotConfirm: "研究方法、实验设置、claim、局限和复现条件。",
+      nextAction: "先补充摘要；需要做科研判断时上传可复制文本的 PDF。",
     };
   }
   if (evidenceLevel === "abstract_only") {
     return {
       title: "摘要级证据，不是全文结论",
       message: "当前只基于摘要和候选元数据生成结构化阅读。它适合决定是否精读，但不能替代完整 PDF 的方法和实验核验。",
+      confirmed: "摘要明确陈述的研究对象、核心任务和作者公开 claim。",
+      cannotConfirm: "方法细节、完整 baseline、消融、失败样本与统计可靠性。",
+      nextAction: "上传本地 PDF，系统会重新绑定当前论文并升级为全文已验证。",
     };
   }
   return null;
+}
+
+function LimitedEvidenceSummary({ boundary }: { boundary: EvidenceBoundary }) {
+  return (
+    <section className="limited-evidence-summary" aria-label="limited evidence summary">
+      <div>
+        <strong>能确认什么</strong>
+        <p>{boundary.confirmed}</p>
+      </div>
+      <div>
+        <strong>不能确认什么</strong>
+        <p>{boundary.cannotConfirm}</p>
+      </div>
+      <div>
+        <strong>如何获得全文</strong>
+        <p>{boundary.nextAction}</p>
+      </div>
+    </section>
+  );
 }
 
 function buildMemoryEvidenceBoundary(
@@ -2587,6 +2682,11 @@ function buildMemoryEvidenceBoundary(
     };
   }
   return null;
+}
+
+function buildMemoryRewriteSuggestion(direction: string, question: string): string {
+  const topic = direction.trim() || question.trim() || "当前研究方向";
+  return `${topic}：具体研究对象、失败模式、数据集、指标与 baseline 分别是什么？`;
 }
 
 function buildDecisionEvidenceBoundary(
@@ -3462,7 +3562,9 @@ export function DirectionReviewView({
                     </div>
                     <div className="direction-paper-row-status" id={`direction-paper-status-${index}`}>
                       {reading.self_read_priority ? <strong>推荐精读</strong> : null}
-                      <span>{formatEvidenceLevel(reading.evidence_level ?? "metadata_only")}</span>
+                      <span className={`evidence-badge ${reading.evidence_level ?? "metadata_only"}`}>
+                        {formatEvidenceLevel(reading.evidence_level ?? "metadata_only")}
+                      </span>
                     </div>
                     <ArrowRight size={17} />
                   </button>
@@ -3713,7 +3815,9 @@ function DirectionPaperDetail({
               {reading.full_text.page_count} 页 / {reading.full_text.character_count.toLocaleString("zh-CN")} 字符
             </span>
           ) : null}
+          {reading.updated_at ? <span>更新：{formatArtifactDate(reading.updated_at)}</span> : null}
         </div>
+        {evidenceBoundary ? <LimitedEvidenceSummary boundary={evidenceBoundary} /> : null}
         {missingEvidence.length ? <small>待补证据：{missingEvidence.join("；")}</small> : null}
       </section>
 
@@ -3726,6 +3830,7 @@ function DirectionPaperDetail({
       <FullTextProvenanceStatus
         onOpenEvidenceInput={onOpenEvidenceInput}
         provenance={reading.full_text}
+        updatedAt={reading.updated_at}
       />
 
       {reading.full_text?.status !== "extracted" ? (
@@ -3923,6 +4028,7 @@ export function ResearchMemoryView({
   isQuerying,
   onQuestionChange,
   onQuery,
+  onSelectView,
   onTopKChange,
   question,
   result,
@@ -3934,6 +4040,7 @@ export function ResearchMemoryView({
   isQuerying: boolean;
   onQuestionChange: (question: string) => void;
   onQuery: () => void;
+  onSelectView: (view: ViewId) => void;
   onTopKChange: (topK: number) => void;
   question: string;
   result: ApiResearchMemoryQueryResponse | null;
@@ -3998,6 +4105,21 @@ export function ResearchMemoryView({
               <li>重新检索包含任务对象和失败模式的更具体方向词。</li>
               <li>为关键论文上传 PDF，补齐 claim、dataset、metric、baseline 与原文片段。</li>
             </ul>
+            <div className="memory-empty-actions">
+              <button
+                className="secondary-command"
+                type="button"
+                onClick={() => onQuestionChange(buildMemoryRewriteSuggestion(direction, question))}
+              >
+                <Sparkles size={15} />
+                改写查询
+              </button>
+              <button className="secondary-command" type="button" onClick={() => onSelectView("paper-table")}>
+                <Search size={15} />
+                返回 Literature Search
+              </button>
+            </div>
+            <ResearchWarningPanel title="拒答依据" warnings={result.warnings} />
           </div>
         </section>
       ) : null}
@@ -4323,6 +4445,10 @@ export function GapBoardView({
         </section>
       ) : null}
 
+      {decision?.warnings?.length ? (
+        <ResearchWarningPanel title="Gap Board 证据状态" warnings={decision.warnings} />
+      ) : null}
+
       {!decision ? (
         <section className="empty-state">
           <h2>尚未生成 Gap Board</h2>
@@ -4346,6 +4472,9 @@ export function GapBoardView({
                 <span className={`risk ${gap.novelty_risk}`}>{gap.novelty_risk}</span>
               </div>
               <div className={`gap-kind ${gap.kind}`}>{gap.kind}</div>
+              {isConservative ? (
+                <p className="gap-conservative-note">保守候选：先补齐原文证据并复核相邻工作，再决定是否投入实验。</p>
+              ) : null}
               <dl>
                 <div>
                   <dt>Evidence</dt>
@@ -4435,9 +4564,28 @@ export function ExperimentPlannerView({
         </section>
       ) : null}
 
+      {decision?.warnings?.length ? (
+        <ResearchWarningPanel title="Experiment Plan 证据状态" warnings={decision.warnings} />
+      ) : null}
+
+      {plan && isBlocked ? (
+        <section className="experiment-blocked-banner" role="status" aria-label="experiment blocked reason">
+          <AlertTriangle size={18} />
+          <div>
+            <strong>实验计划已阻塞，不会生成伪计划</strong>
+            <p>
+              {plan.anchor_paper_title
+                ? `锚点论文：${plan.anchor_paper_title}。`
+                : "当前没有满足 claim + dataset + metric + baseline 的可验证锚点论文。"}
+              {plan.unblock_suggestions[0] ? ` 下一步：${plan.unblock_suggestions[0]}` : " 下一步：上传关键论文 PDF 并重新生成 Paper Card。"}
+            </p>
+          </div>
+        </section>
+      ) : null}
+
       {plan ? (
         <section className={`experiment-detail ${isBlocked ? "blocked" : "ready"}`}>
-          <h2>{plan.claim}</h2>
+          <h2>{plan.claim || (isBlocked ? "当前证据不足，无法形成可执行 claim" : "实验 claim 待补充")}</h2>
           <dl>
             <div>
               <dt>Status</dt>
@@ -4546,8 +4694,9 @@ function ResearchWarningPanel({
   warnings: string[];
 }) {
   const { actionable, technical } = classifyResearchWarnings(warnings);
+  const details = [...actionable.slice(1), ...technical];
   const summary = actionable.length
-    ? actionable.join(" ")
+    ? `${actionable[0]}${actionable.length > 1 ? ` 另有 ${actionable.length - 1} 条可行动提示已归入详情。` : ""}`
     : technical.length
       ? "当前步骤返回了技术诊断；请查看详情，并在必要时重试或补充本地 PDF。"
       : fallback;
@@ -4563,11 +4712,11 @@ function ResearchWarningPanel({
       <div>
         <strong>{title}</strong>
         {summary ? <p>{summary}</p> : null}
-        {technical.length ? (
+        {details.length ? (
           <details className="research-warning-details">
             <summary>查看技术详情</summary>
             <ul>
-              {technical.map((warning, index) => (
+              {details.map((warning, index) => (
                 <li key={`${warning}-${index}`}>{warning}</li>
               ))}
             </ul>
@@ -4593,9 +4742,34 @@ function classifyResearchWarnings(warnings: string[]): { actionable: string[]; t
       technical.push(warning);
       continue;
     }
-    if (lower.includes("arxiv:") || lower.includes("openalex:") || lower.includes("cached") || lower.includes("query_relaxed")) {
+    if (lower.includes("relevance_coverage")) {
+      actionable.push("系统已过滤弱相关和离题候选；请结合覆盖指标核对当前结果。");
+      technical.push(warning);
+      continue;
+    }
+    if (lower.includes("arxiv") || lower.includes("openalex") || lower.includes("cached") || lower.includes("query_relaxed")) {
       actionable.push("检索使用了降级、缓存或放宽后的候选；请优先核验结果相关性。");
       technical.push(warning);
+      continue;
+    }
+    if (lower.includes("gap evidence")) {
+      actionable.push("Gap 证据不足，当前结论保持保守；请先补充强/中相关且非综述的论文。");
+      technical.push(warning);
+      continue;
+    }
+    if (lower.includes("缺少绑定真实论文")) {
+      actionable.push("缺少绑定真实论文的 Paper Card；请先生成卡片或上传全文证据。");
+      technical.push(warning);
+      continue;
+    }
+    if (
+      lower.startsWith("先运行") ||
+      lower.startsWith("先为") ||
+      lower.startsWith("缺 dataset") ||
+      lower.startsWith("缺 baseline") ||
+      lower.startsWith("缺 metric")
+    ) {
+      actionable.push(warning);
       continue;
     }
     if (lower.includes("partial") || lower.includes("blocked") || lower.includes("low_recall")) {
@@ -4608,6 +4782,31 @@ function classifyResearchWarnings(warnings: string[]): { actionable: string[]; t
     actionable: [...new Set(actionable)],
     technical,
   };
+}
+
+function summarizeWorkflowNotice(message: string): string {
+  const { actionable, technical } = classifyResearchWarnings([message]);
+  if (actionable.length) {
+    return actionable[0];
+  }
+  if (technical.length) {
+    return "当前步骤包含技术诊断；请在页面内展开详情后决定是否重试。";
+  }
+  return message;
+}
+
+function isSupersededFullTextNotice(message: string): boolean {
+  const normalized = message.toLowerCase();
+  const mentionsPdfAcquisition =
+    normalized.includes("pdf") ||
+    normalized.includes("certificate_verify_failed") ||
+    normalized.includes("ssl");
+  const mentionsFailure =
+    normalized.includes("失败") ||
+    normalized.includes("failed") ||
+    normalized.includes("download") ||
+    normalized.includes("not_available");
+  return mentionsPdfAcquisition && mentionsFailure;
 }
 
 function escapeCsvCell(value: string | number | null | undefined) {

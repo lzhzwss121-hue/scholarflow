@@ -6,6 +6,7 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from scholarflow_api.literature import build_query_intent
 from scholarflow_api.text_utils import extract_terms, normalize_space, normalize_terms, score_term_overlap
 
 RESEARCH_MEMORY_SCHEMA_VERSION = "research_memory_answer.v2"
@@ -24,6 +25,7 @@ class PaperMemoryHit:
 
     def to_dict(self) -> dict[str, Any]:
         paper = memory_record_to_paper(self.memory, self.score)
+        evidence_refs = memory_evidence_refs(self.memory)
         return {
             "paper": paper,
             "direction": self.memory.get("direction", ""),
@@ -34,6 +36,8 @@ class PaperMemoryHit:
             "section_score": self.section_score,
             "priority_score": self.priority_score,
             "snippets": self.snippets,
+            "evidence_quality": memory_evidence_quality(self.memory),
+            "evidence_refs": evidence_refs,
             "abstract_translation": self.memory.get("abstract_translation", ""),
             "weakest_assumption": self.memory.get("weakest_assumption", ""),
             "minimal_reproduction": self.memory.get("minimal_reproduction", ""),
@@ -441,21 +445,26 @@ def query_research_memory(
         reliability_status = "no_memory"
         reliability_reason = "当前项目没有可检索的 paper memory。"
     reliable_hits = [hit for hit in ranked_hits if is_reliable_memory_hit(hit, question)]
+    missing_terms: list[str] = []
     if records and not reliable_hits:
+        missing_terms = missing_memory_query_terms(records, question)
         reliability_status = "no_reliable_hit"
         reliability_reason = (
-            "检索候选没有达到可靠命中门槛：需要至少一个来自标题、关键词或原始 memory 文本的问题词项证据，"
+            "检索候选没有达到可靠命中门槛：需要至少一个来自标题、metadata.abstract 或 pdf.full_text 的问题词项证据，"
             f"且总分不低于 {MIN_RELIABLE_MEMORY_SCORE:.2f}。"
         )
         warnings.append(
             "当前记忆没有可靠证据回答此问题；未把零分或弱相关论文包装成最相关命中。"
         )
         warnings.append("建议先重新检索该方向，或上传/解析相关 PDF 后再生成 Paper Card 与 Memory。")
+        if missing_terms:
+            warnings.append(f"当前原文证据未覆盖主题词：{', '.join(missing_terms[:5])}。")
+            warnings.append(f"可尝试改写为：{' '.join(missing_terms[:3])} + 具体任务/数据集/指标，或重新运行 Literature Search。")
 
     return ResearchMemoryAnswer(
         question=question,
         top_k=top_k,
-        answer=build_memory_answer(question, reliable_hits, snapshot, reliability_status),
+        answer=build_memory_answer(question, reliable_hits, snapshot, reliability_status, missing_terms),
         hits=reliable_hits,
         direction_memory=snapshot,
         total_memories=len(records),
@@ -532,7 +541,7 @@ def search_memory_records(
     top_k: int,
     allow_weak: bool = False,
 ) -> list[PaperMemoryHit]:
-    terms = set(extract_terms(question, limit=16))
+    terms = memory_query_terms(question)
     scored: list[PaperMemoryHit] = []
     for record in records:
         breakdown = score_memory_record(record, terms, question)
@@ -555,14 +564,13 @@ def search_memory_records(
 def is_reliable_memory_hit(hit: PaperMemoryHit, question: str) -> bool:
     if hit.score < MIN_RELIABLE_MEMORY_SCORE:
         return False
-    terms = set(extract_terms(question, limit=16))
+    terms = memory_query_terms(question)
     if not terms:
         return False
     direct_text = " ".join(
         [
             str(hit.memory.get("title", "")),
-            " ".join(safe_json_list(hit.memory.get("keywords_json", "[]"))),
-            str(hit.memory.get("memory_text", "")),
+            *[reference.get("text", "") for reference in memory_evidence_refs(hit.memory)],
         ],
     )
     direct_match = score_term_overlap(direct_text, terms, weight=0.1, max_score=1.0)
@@ -640,18 +648,18 @@ def memory_field_text(record: dict[str, Any], field: str) -> str:
 
 
 def build_memory_snippets(record: dict[str, Any], terms: set[str]) -> list[str]:
-    text = normalize_space(record.get("memory_text", ""))
-    sentences = re.split(r"(?<=[。！？.!?])\s+", text)
     snippets: list[str] = []
-    for sentence in sentences:
-        if terms and not score_term_overlap(sentence, terms, weight=0.1, max_score=1.0).matched_terms:
+    for reference in memory_evidence_refs(record):
+        text = normalize_space(reference.get("text", ""))
+        if terms and not score_term_overlap(text, terms, weight=0.1, max_score=1.0).matched_terms:
             continue
-        snippets.append(sentence[:260])
+        snippets.append(f"[{reference.get('id', 'source')}|{reference.get('source', 'unknown')}] {text[:260]}")
         if len(snippets) >= 3:
             break
     if not snippets:
-        fallback = record.get("why_selected") or record.get("abstract_translation") or record.get("weakest_assumption") or text
-        snippets.append(normalize_space(fallback)[:260])
+        title = normalize_space(record.get("title", ""))
+        if title:
+            snippets.append(f"[title|metadata.title] {title[:260]}")
     return snippets
 
 
@@ -660,36 +668,111 @@ def build_memory_answer(
     hits: list[PaperMemoryHit],
     snapshot: DirectionMemorySnapshot | None,
     reliability_status: str = "reliable",
+    missing_terms: list[str] | None = None,
 ) -> str:
     if not hits:
         if reliability_status == "no_reliable_hit":
+            missing_note = f" 当前缺失主题词：{', '.join((missing_terms or [])[:5])}。" if missing_terms else ""
             return (
-                "当前记忆没有可靠证据回答此问题。系统没有把零分或弱相关论文当作“最相关论文”。"
-                "请先用更具体的方向词重新检索，或上传相关 PDF 以补齐 claim、dataset、metric、baseline 与原文片段。"
+                "当前记忆没有可靠证据回答此问题。系统没有把零分或弱相关论文当作可靠命中。"
+                f"{missing_note}"
+                "请先用更具体的任务对象、失败模式、数据集或指标改写问题并重新检索，"
+                "或上传相关 PDF 以补齐 claim、dataset、metric、baseline 与原文片段。"
             )
         return (
             "当前项目的 Paper Memory Bank 还没有可用命中。请先执行方向精读，让系统至少读取一轮 10 篇论文，"
             "再用该问题检索记忆。"
         )
 
-    titles = [hit.memory.get("title", "") for hit in hits[:3]]
-    weakest = first_nonempty(hit.memory.get("weakest_assumption", "") for hit in hits)
-    minimal = first_nonempty(hit.memory.get("minimal_reproduction", "") for hit in hits)
-    counterexample = first_nonempty(hit.memory.get("counterexample", "") for hit in hits)
-    why_not_good = first_research_sight_value(hits, "why_not_good")
-    better_angle = first_research_sight_value(hits, "better_angle")
-    direction_prefix = f"在 `{snapshot.direction}` 的方向记忆中，" if snapshot else ""
+    direction_prefix = f"方向 `{snapshot.direction}`；" if snapshot else ""
+    evidence_lines: list[str] = []
+    for hit in hits[:3]:
+        paper_id = normalize_space(hit.memory.get("paper_id", "")) or normalize_space(hit.memory.get("id", ""))
+        quality = memory_evidence_quality(hit.memory)
+        reference = best_memory_evidence_ref(hit.memory, question)
+        if reference is None:
+            continue
+        evidence_lines.append(
+            f"[paper_id={paper_id}; evidence_quality={quality}; snippet={reference.get('id', 'source')}] "
+            f"{hit.memory.get('title', 'Untitled')}: {reference.get('text', '')}"
+        )
+    if not evidence_lines:
+        return "当前命中分数达到阈值，但没有 title/abstract/full_text 原文片段可用于回答；请补充 PDF 后重试。"
     return (
-        f"{direction_prefix}针对问题 `{question}`，ScholarFlow 从 Paper Memory Bank 中检索到 {len(hits)} 篇相关论文。"
-        f"最相关的证据来自：{'; '.join(titles)}。"
-        "综合这些论文，当前更可靠的回答方式是先看它们共同暴露的失败模式，而不是直接平均所有论文结论。"
-        f" 关键脆弱点：{weakest or '当前命中没有明确记录最脆弱假设'}"
-        f" 审美批判：{why_not_good or '当前命中没有明确 ResearchSight 批判字段'}"
-        f" 更好角度：{better_angle or '当前命中没有明确 ResearchSight 破局视角'}"
-        f" 可执行验证：{minimal or '当前命中没有明确记录最小复现实验'}"
-        f" 反例方向：{counterexample or '当前命中没有明确记录反例设计'}"
-        " 这份回答只基于已保存的 paper memory，不等同于全文证据；正式写作前仍应回到原论文核对。"
+        f"{direction_prefix}问题 `{question}` 命中 {len(hits)} 篇具有原文证据的 paper memory。"
+        "当前只返回可追溯证据摘要，不把多篇摘要自动拼成方向级定论：\n"
+        + "\n".join(f"- {line}" for line in evidence_lines)
+        + "\n需要形成综合结论时，应逐条回到以上 paper_id 对应原文核对；abstract_only 不等同于全文结论。"
     )
+
+
+def memory_query_terms(question: str) -> set[str]:
+    intent = build_query_intent(question)
+    return set(extract_terms(question, limit=16)) | set(intent.core_terms) | set(intent.direction_specific_terms)
+
+
+def memory_evidence_refs(record: dict[str, Any]) -> list[dict[str, str]]:
+    sight = safe_json_dict(record.get("research_sight_json", "{}"))
+    pack = sight.get("evidence_pack") if isinstance(sight.get("evidence_pack"), dict) else {}
+    raw_snippets = pack.get("snippets") if isinstance(pack.get("snippets"), list) else []
+    references: list[dict[str, str]] = []
+    for snippet in raw_snippets:
+        if not isinstance(snippet, dict):
+            continue
+        source = normalize_space(snippet.get("source", ""))
+        text = normalize_space(snippet.get("text", ""))
+        if source not in {"metadata.abstract", "pdf.full_text"} or not text:
+            continue
+        references.append(
+            {
+                "id": normalize_space(snippet.get("id", "source")) or "source",
+                "source": source,
+                "text": text,
+                "confidence": normalize_space(snippet.get("confidence", "low")) or "low",
+            },
+        )
+    if references:
+        return references
+    title = normalize_space(record.get("title", ""))
+    return [{"id": "title", "source": "metadata.title", "text": title, "confidence": "low"}] if title else []
+
+
+def memory_evidence_quality(record: dict[str, Any]) -> str:
+    sight = safe_json_dict(record.get("research_sight_json", "{}"))
+    pack = sight.get("evidence_pack") if isinstance(sight.get("evidence_pack"), dict) else {}
+    level = normalize_space(pack.get("evidence_level", "")).lower().replace("-", "_")
+    if level in {"metadata_only", "abstract_only", "full_text"}:
+        return level
+    sources = {reference.get("source") for reference in memory_evidence_refs(record)}
+    if "pdf.full_text" in sources:
+        return "full_text"
+    if "metadata.abstract" in sources:
+        return "abstract_only"
+    return "metadata_only"
+
+
+def best_memory_evidence_ref(record: dict[str, Any], question: str) -> dict[str, str] | None:
+    references = memory_evidence_refs(record)
+    terms = memory_query_terms(question)
+    return next(
+        (
+            reference
+            for reference in references
+            if score_term_overlap(reference.get("text", ""), terms, weight=0.1, max_score=1.0).matched_terms
+        ),
+        references[0] if references else None,
+    )
+
+
+def missing_memory_query_terms(records: list[dict[str, Any]], question: str) -> list[str]:
+    terms = memory_query_terms(question)
+    evidence_text = " ".join(
+        reference.get("text", "")
+        for record in records
+        for reference in memory_evidence_refs(record)
+    ).lower()
+    missing = [term for term in terms if term and term not in evidence_text]
+    return sorted(missing, key=lambda term: (-len(term), term))[:8]
 
 
 def render_research_memory_answer_markdown(answer: ResearchMemoryAnswer) -> str:

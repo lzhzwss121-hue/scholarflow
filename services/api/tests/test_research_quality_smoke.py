@@ -372,6 +372,93 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertEqual(determine_review_status(len(selected), 0, 3, 10), "partial")
         self.assertTrue(selected[0].matched_terms)
 
+    def test_object_hallucination_top_three_is_direct_for_chinese_and_english_queries(self) -> None:
+        direct_candidates = [
+            literature.PaperCandidate(
+                title="POPE: Polling-based Object Probing Evaluation for Object Hallucination",
+                year="2026",
+                authors="A",
+                abstract="We evaluate object hallucination in large vision-language models with the POPE benchmark.",
+                type="Benchmark",
+                venue="CVPR",
+                source="arxiv",
+                url="https://arxiv.org/abs/direct1",
+                relation="",
+                priority="Medium",
+            ),
+            literature.PaperCandidate(
+                title="Evaluating Visual Object Hallucination in Large Vision-Language Models",
+                year="2025",
+                authors="B",
+                abstract="This evaluation measures visual object hallucination and object grounding in LVLMs.",
+                type="Analysis",
+                venue="ICCV",
+                source="arxiv",
+                url="https://arxiv.org/abs/direct2",
+                relation="",
+                priority="Medium",
+            ),
+            literature.PaperCandidate(
+                title="Object Grounding Benchmark for Hallucination Detection in VLMs",
+                year="2025",
+                authors="C",
+                abstract="A benchmark probes object grounding failures and hallucination in VLM answers.",
+                type="Benchmark",
+                venue="ACL",
+                source="arxiv",
+                url="https://arxiv.org/abs/direct3",
+                relation="",
+                priority="Medium",
+            ),
+            literature.PaperCandidate(
+                title="A Diagnostic Study of Object Hallucination in LVLMs",
+                year="2024",
+                authors="D",
+                abstract="We analyze object hallucination and evaluate component-level causes in LVLMs.",
+                type="Analysis",
+                venue="arXiv cs.CV",
+                source="arxiv",
+                url="https://arxiv.org/abs/direct4",
+                relation="",
+                priority="Medium",
+            ),
+        ]
+        cross_domain = [
+            literature.PaperCandidate(
+                title="Detecting and Evaluating Medical Hallucinations in Large Vision Language Models",
+                year="2026",
+                authors="M",
+                abstract="We evaluate medical hallucination in clinical VLMs.",
+                type="Method",
+                venue="Medical AI",
+                source="openalex",
+                url="https://openalex.org/medical-hallucination",
+                relation="",
+                priority="Medium",
+            ),
+            literature.PaperCandidate(
+                title="OCR Hallucination Benchmark for Document Understanding",
+                year="2026",
+                authors="O",
+                abstract="We detect OCR hallucination in document recognition systems.",
+                type="Benchmark",
+                venue="Document AI",
+                source="openalex",
+                url="https://openalex.org/ocr-hallucination",
+                relation="",
+                priority="Medium",
+            ),
+        ]
+
+        for query in ["多模态大模型对象幻觉评估", "visual object hallucination evaluation benchmark POPE"]:
+            selected = select_top_direction_papers([*direct_candidates, *cross_domain], query, [], limit=10)
+            top_three_titles = [paper.title for paper in selected[:3]]
+            self.assertEqual(len(top_three_titles), 3, query)
+            self.assertFalse(any("Medical" in title or "OCR" in title for title in top_three_titles), query)
+            self.assertTrue(all(paper.relevance_quality in {"strong", "medium"} for paper in selected), query)
+            self.assertTrue(all("直接证据" in paper.relation for paper in selected[:3]), query)
+            self.assertEqual(determine_review_status(len(selected), 0, len(cross_domain), 10), "partial")
+
     def test_memory_query_returns_no_reliable_hit_for_zero_score_records(self) -> None:
         record = {
             "title": "Unrelated Language Modeling Survey",
@@ -395,7 +482,62 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertEqual(answer.reliability_status, "no_reliable_hit")
         self.assertEqual(answer.hits, [])
         self.assertIn("没有可靠证据", answer.answer)
+        self.assertNotIn("最相关的证据来自", answer.answer)
         self.assertTrue(any("未把零分" in warning for warning in answer.warnings))
+        self.assertTrue(any("主题词" in warning for warning in answer.warnings))
+
+    def test_memory_reliable_answer_binds_paper_id_and_evidence_quality(self) -> None:
+        record = {
+            "id": "memory_grounded",
+            "paper_id": "paper_grounded",
+            "project_id": "project_memory",
+            "direction": "对象幻觉评估",
+            "round_index": 1,
+            "title": "POPE Object Hallucination Evaluation",
+            "authors": "A",
+            "year": "2026",
+            "venue": "CVPR",
+            "source": "arxiv",
+            "url": "https://arxiv.org/abs/grounded",
+            "keywords_json": json.dumps(["object hallucination", "POPE"]),
+            "memory_text": "generated memory text must not be the reliability source",
+            "research_sight_json": json.dumps(
+                {
+                    "evidence_pack": {
+                        "evidence_level": "abstract_only",
+                        "snippets": [
+                            {
+                                "id": "abstract_1",
+                                "source": "metadata.abstract",
+                                "kind": "evaluation",
+                                "text": "We evaluate object hallucination in LVLMs with the POPE benchmark.",
+                                "confidence": "medium",
+                            },
+                        ],
+                    },
+                },
+            ),
+            "self_read_priority": 1,
+            "created_at": "now",
+        }
+        with patch.object(research_memory_module, "backfill_project_research_memory", return_value=0), patch.object(
+            research_memory_module,
+            "fetch_memory_records",
+            return_value=[record],
+        ), patch.object(research_memory_module, "fetch_direction_memory_snapshot", return_value=None):
+            answer = query_research_memory(
+                connection=None,
+                project_id="project_memory",
+                question="如何评估多模态大模型对象幻觉？",
+                top_k=5,
+                now="2026-07-15T00:00:00Z",
+            )
+
+        self.assertEqual(answer.reliability_status, "reliable")
+        self.assertEqual(len(answer.hits), 1)
+        self.assertIn("paper_id=paper_grounded", answer.answer)
+        self.assertIn("evidence_quality=abstract_only", answer.answer)
+        self.assertIn("snippet=abstract_1", answer.answer)
 
     def test_research_sight_without_source_text_does_not_invent_claim_metric_or_dataset(self) -> None:
         paper = {
@@ -458,6 +600,45 @@ class ResearchQualitySmokeTest(unittest.TestCase):
 
         self.assertNotEqual(readings[0].card.follow_up_idea, readings[1].card.follow_up_idea)
         self.assertIn("无法提出独立 follow-up", readings[1].card.follow_up_idea)
+
+    def test_two_metadata_only_cards_do_not_emit_long_repeated_research_templates(self) -> None:
+        cards = [
+            generate_deep_paper_card({"title": "Metadata-only Object Hallucination Paper A"}),
+            generate_deep_paper_card({"title": "Metadata-only Object Hallucination Paper B"}),
+        ]
+
+        for card in cards:
+            self.assertEqual(card.evidence_level, "metadata_only")
+            self.assertTrue(all(len(section.content) < 180 for section in card.sections))
+            self.assertNotIn("counterexample-first", " ".join(section.content for section in card.sections))
+            self.assertIn("无法判断", card.weakest_assumption)
+        self.assertNotEqual(cards[0].sections[0].content, cards[1].sections[0].content)
+
+    def test_abstract_without_dataset_metric_claim_keeps_research_sight_bounded(self) -> None:
+        paper = {
+            "title": "Understanding Object Hallucination in Vision-Language Models",
+            "abstract": "This paper discusses object hallucination in large vision-language models.",
+            "year": "2026",
+            "venue": "arXiv",
+            "source": "arxiv",
+            "url": "https://arxiv.org/abs/abstract-only",
+        }
+        card = generate_deep_paper_card(paper)
+        sight = build_research_sight(
+            paper,
+            [section.to_dict() for section in card.sections],
+            build_baseline_map("对象幻觉评估", [], []),
+            "对象幻觉评估",
+            card.signals,
+        )
+
+        self.assertEqual(card.evidence_level, "abstract_only")
+        self.assertIn("当前证据不足", card.signals.dataset)
+        self.assertIn("当前证据不足", card.signals.metric)
+        self.assertIn("当前证据不足", card.signals.claim)
+        self.assertIn("无法判断", sight.why_not_good)
+        self.assertIn("无法判断", sight.better_angle)
+        self.assertNotIn("counterexample-first", sight.better_angle)
 
     def test_request_text_uses_in_memory_cache(self) -> None:
         literature.REQUEST_CACHE.clear()

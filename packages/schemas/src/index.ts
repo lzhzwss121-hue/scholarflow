@@ -180,6 +180,8 @@ export type ApiFullTextStatus =
   | "parse_failed"
   | "disabled";
 
+export type ApiEvidenceLevel = "metadata_only" | "abstract_only" | "full_text";
+
 export interface ApiFullTextProvenance {
   status: ApiFullTextStatus;
   pdf_url: string;
@@ -187,6 +189,8 @@ export interface ApiFullTextProvenance {
   page_count: number;
   character_count: number;
   error: string;
+  failure_stage?: string;
+  recovery_hint?: string;
 }
 
 export interface ApiEvidenceSnippet {
@@ -264,13 +268,14 @@ export interface ApiPaperCard {
   artifact_id: string | null;
   source_artifact_title?: string;
   card_source?: "paper_table" | "direction_review_artifact" | "manual_unbound";
-  evidence_level?: "metadata_only" | "abstract_only" | "full_text";
+  evidence_level?: ApiEvidenceLevel;
   full_text?: ApiFullTextProvenance;
   signals?: ApiPaperSignals;
   sections: ApiPaperCardSection[];
   weakest_assumption: string;
   minimal_reproduction: string;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface ApiPaperCardResponse {
@@ -281,6 +286,12 @@ export interface ApiPaperCardResponse {
 export interface ApiPaperFullTextExtractResponse {
   paper_id: string;
   text: string;
+  evidence_level: ApiEvidenceLevel;
+  evidence_quality: ApiEvidenceLevel;
+  source: string;
+  page_count: number;
+  char_count: number;
+  updated_at: string;
   full_text: ApiFullTextProvenance;
   card: ApiPaperCard | null;
   artifact: ApiArtifact | null;
@@ -307,8 +318,9 @@ export interface ApiDirectionPaperReading {
   paper_title?: string;
   artifact_id?: string | null;
   artifact_title?: string;
+  updated_at?: string;
   abstract_translation: string;
-  evidence_level?: "metadata_only" | "abstract_only" | "full_text";
+  evidence_level?: ApiEvidenceLevel;
   full_text?: ApiFullTextProvenance;
   signals?: ApiPaperSignals;
   sections: ApiPaperCardSection[];
@@ -412,6 +424,13 @@ export interface ApiPaperMemoryHit {
   section_score: number;
   priority_score: number;
   snippets: string[];
+  evidence_quality?: ApiEvidenceLevel;
+  evidence_refs?: Array<{
+    id: string;
+    source: string;
+    text: string;
+    confidence: string;
+  }>;
   abstract_translation: string;
   weakest_assumption: string;
   minimal_reproduction: string;

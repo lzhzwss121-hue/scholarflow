@@ -128,13 +128,19 @@ def generate_research_decisions(
     anchor = select_experiment_anchor(gap_evidence_papers, paper_cards)
     unblock_suggestions = build_unblock_suggestions(gap_evidence_papers, paper_cards) if anchor is None else []
     grounded_evidence = collect_grounded_gap_evidence(gap_evidence_papers, paper_cards)
+    if decision_status == "complete" and not grounded_evidence:
+        decision_status = "partial"
+        evidence_quality["decision_status"] = decision_status
+        warnings.append(
+            "未找到同时绑定原文 snippet 与 limitation 的 Gap evidence；Research Decision 降级为 partial。"
+        )
     gaps = build_gap_decisions(
         decision_status=decision_status,
         top_papers=top_papers,
         grounded_evidence=grounded_evidence,
     )
 
-    validation = build_idea_validation(focus, decision_status, warnings)
+    validation = build_idea_validation(focus, decision_status, warnings, grounded_evidence)
 
     experiment = build_experiment_plan_from_anchor(anchor, focus, unblock_suggestions)
 
@@ -236,6 +242,8 @@ def collect_grounded_gap_evidence(
         limitation = normalize_space(signals.get("limitation", ""))
         if limitation.startswith("当前证据不足"):
             limitation = ""
+        if not limitation:
+            continue
         grounded.append(
             {
                 "title": normalize_space(paper.get("title", "")) or "Untitled paper",
@@ -258,7 +266,12 @@ def parse_json_object(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def build_idea_validation(focus: str, decision_status: str, warnings: list[str]) -> IdeaValidation:
+def build_idea_validation(
+    focus: str,
+    decision_status: str,
+    warnings: list[str],
+    grounded_evidence: list[dict[str, str]],
+) -> IdeaValidation:
     if decision_status != "complete":
         return IdeaValidation(
             idea=(
@@ -279,23 +292,27 @@ def build_idea_validation(focus: str, decision_status: str, warnings: list[str])
                 "缺少非 survey 的方法或 benchmark paper，无法支撑可实验 gap。",
             ],
         )
+    anchor = grounded_evidence[0]
+    evidence_label = f"{anchor['title']} / {anchor['snippet_id']} / {anchor['source']}"
     return IdeaValidation(
         idea=(
-            f"围绕 `{focus}` 建立 evidence-aware counterexample evaluation："
-            "先定义最脆弱失败模式，再设计能攻击该假设的样本和指标。"
+            f"推断性 idea：围绕 `{focus}` 复核 `{anchor['limitation']}` 是否稳定存在。"
+            f"证据锚点：{evidence_label}；原文片段：{anchor['snippet']}"
         ),
         why_not_incremental=(
-            "它不是只换模型、加模块或换数据集，而是改变研究入口：从优化平均分转为验证模型是否能通过针对性反例。"
+            "只有当同一限制能在至少一个强 baseline 和同一数据/指标协议下复现时，"
+            "才有资格进一步判断它是否构成非增量研究入口。"
         ),
         difference_from_existing_work=(
-            "区别在于同时要求答案、视觉证据和反例鲁棒性三者一致；现有工作通常只覆盖其中一到两个层面。"
+            f"当前无法声称优于已有工作；可验证差异仅是把 `{anchor['limitation']}` 作为待复核对象，"
+            "后续必须补充明确 baseline、dataset 与 metric 对照。"
         ),
-        novelty_risk="medium",
-        feasibility="one-week",
+        novelty_risk="high",
+        feasibility="one-month",
         key_risks=[
-            "人工证据标签可能主观，需双人复核或明确标注规则。",
-            "反例生成可能引入模板痕迹，需要自然性检查。",
-            "如果 baseline 本身无法回答原任务，实验会退化成能力筛选而不是证据诊断。",
+            f"当前 idea 只锚定单篇原文证据 {evidence_label}，不能外推为方向共识。",
+            "需要第二篇独立论文报告同类 limitation，或用统一协议复现实证。",
+            "如果 baseline、dataset、metric 不能固定，差异可能只是实验设置变化。",
         ],
     )
 

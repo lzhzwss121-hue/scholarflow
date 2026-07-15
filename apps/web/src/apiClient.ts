@@ -13,6 +13,7 @@ import type {
   ApiLiteratureSearchRequest,
   ApiLiteratureSearchResponse,
   ApiPaper,
+  ApiPaperCard,
   ApiPaperCardCreateRequest,
   ApiPaperCardResponse,
   ApiPaperFullTextExtractResponse,
@@ -264,6 +265,10 @@ export function createProjectPaperCard(projectId: string, payload: ApiPaperCardC
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export function listProjectPaperCards(projectId: string, options?: RequestInit) {
+  return request<ApiPaperCard[]>(`/projects/${projectId}/paper-cards`, options);
 }
 
 export function extractProjectPaperFullText(

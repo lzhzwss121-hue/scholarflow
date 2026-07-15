@@ -210,6 +210,7 @@ export function normalizeDirectionReading(
     paper_title: explicitPaperTitle || paper.title,
     artifact_id: artifactId || null,
     artifact_title: artifactTitle,
+    updated_at: firstString(reading.updated_at, card.updated_at, artifactCreatedAt),
     abstract_translation: asString(reading.abstract_translation),
     evidence_level: (normalizeEvidenceLevel(firstString(reading.evidence_level, card.evidence_level)) || "metadata_only") as ApiDirectionPaperReading["evidence_level"],
     full_text: normalizeFullTextProvenance(reading.full_text ?? card.full_text),
@@ -592,6 +593,7 @@ function hydratePaperCardArtifact(artifactDetail: ApiArtifact, payload: Record<s
     weakest_assumption: typeof card.weakest_assumption === "string" ? card.weakest_assumption : "",
     minimal_reproduction: typeof card.minimal_reproduction === "string" ? card.minimal_reproduction : "",
     created_at: artifact.artifact.created_at,
+    updated_at: artifact.artifact.updated_at,
   };
 }
 
@@ -607,7 +609,9 @@ export function preferPaperCard(current: ApiPaperCard | null, incoming: ApiPaper
   if (incomingRank !== currentRank) {
     return incomingRank > currentRank ? incoming : current;
   }
-  return compareIsoTimestamp(incoming.created_at, current.created_at) >= 0 ? incoming : current;
+  const incomingTimestamp = incoming.updated_at || incoming.created_at;
+  const currentTimestamp = current.updated_at || current.created_at;
+  return compareIsoTimestamp(incomingTimestamp, currentTimestamp) >= 0 ? incoming : current;
 }
 
 function paperCardEvidenceRank(card: ApiPaperCard): number {
@@ -814,29 +818,43 @@ function directionReadingEvidenceRank(reading: ApiDirectionPaperReading): number
 }
 
 export function resolvePaperCardForPaper(
-  latestPaperCard: ApiPaperCard | null,
+  paperCards: ApiPaperCard | ApiPaperCard[] | null,
   directionReview: ApiDirectionReviewResponse | null,
   paper: PaperRow | undefined,
 ): PaperCardMatch | null {
+  const standaloneCards = Array.isArray(paperCards) ? paperCards : paperCards ? [paperCards] : [];
   if (!paper) {
-    if (!latestPaperCard) {
+    const bestCard = standaloneCards.reduce<ApiPaperCard | null>((best, card) => preferPaperCard(best, card), null);
+    if (!bestCard) {
       return null;
     }
     return {
-      card: latestPaperCard,
+      card: bestCard,
       matchedBy: "manual_unbound",
-      source: latestPaperCard.card_source ?? "manual_unbound",
+      source: bestCard.card_source ?? "manual_unbound",
     };
   }
-  const directMatch = matchStandalonePaperCard(latestPaperCard, paper);
-  if (directMatch) {
-    return directMatch;
-  }
+  const matches = standaloneCards.flatMap((card) => {
+    const match = matchStandalonePaperCard(card, paper);
+    return match ? [match] : [];
+  });
   const directionMatch = findDirectionPaperCardMatch(directionReview, paper);
   if (directionMatch) {
-    return directionMatch;
+    matches.push(directionMatch);
   }
-  return null;
+  return matches.reduce<PaperCardMatch | null>((best, match) => preferPaperCardMatch(best, match), null);
+}
+
+function preferPaperCardMatch(current: PaperCardMatch | null, incoming: PaperCardMatch): PaperCardMatch {
+  if (!current) {
+    return incoming;
+  }
+  const matchRank = { paper_id: 3, title: 2, artifact_slug: 1, manual_unbound: 0 } as const;
+  if (matchRank[incoming.matchedBy] !== matchRank[current.matchedBy]) {
+    return matchRank[incoming.matchedBy] > matchRank[current.matchedBy] ? incoming : current;
+  }
+  const preferred = preferPaperCard(current.card, incoming.card);
+  return preferred === incoming.card ? incoming : current;
 }
 
 function matchStandalonePaperCard(card: ApiPaperCard | null, paper: PaperRow): PaperCardMatch | null {
@@ -911,6 +929,7 @@ function directionReadingToPaperCard(reading: ApiDirectionPaperReading): ApiPape
     weakest_assumption: reading.weakest_assumption,
     minimal_reproduction: reading.minimal_reproduction,
     created_at: reading.paper.created_at,
+    updated_at: reading.updated_at || reading.paper.created_at,
   };
 }
 

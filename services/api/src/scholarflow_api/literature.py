@@ -123,15 +123,16 @@ OBJECT_HALLUCINATION_DIRECTION_MARKERS = {
     "pope",
     "object probing",
 }
-OBJECT_HALLUCINATION_FOCUS_PATTERNS = (
+OBJECT_HALLUCINATION_PRIMARY_PATTERNS = (
     "object hallucination",
     "object hallucinations",
+    "visual object hallucination",
     "pope",
     "object probing",
-    "visual grounding",
+    "object grounding",
     "grounded object",
 )
-OBJECT_HALLUCINATION_CONTEXT_PATTERNS = (
+OBJECT_HALLUCINATION_VISUAL_CONTEXT_PATTERNS = (
     "vision language",
     "vision-language",
     "large vision language",
@@ -140,6 +141,8 @@ OBJECT_HALLUCINATION_CONTEXT_PATTERNS = (
     "multimodal",
     "visual question",
     "vqa",
+)
+OBJECT_HALLUCINATION_EVALUATION_PATTERNS = (
     "evaluation",
     "benchmark",
     "assess",
@@ -971,6 +974,7 @@ def score_candidate(candidate: PaperCandidate, query_terms: set[str] | QueryInte
     has_specific_match = bool(specific_overlap.matched_terms or title_specific_overlap.matched_terms)
     strict_object_hallucination = requires_object_hallucination_focus(intent)
     object_hallucination_match = matches_object_hallucination_focus(candidate)
+    relevance_evidence = build_relevance_evidence_snippet(candidate, matched_terms)
     if domain_mismatch:
         quality = "off_topic"
         score = min(score, 0.2)
@@ -1036,7 +1040,8 @@ def score_candidate(candidate: PaperCandidate, query_terms: set[str] | QueryInte
     else:
         reason = (
             f"相关性 {quality}：命中 {', '.join(matched_terms[:8]) or '核心意图'}；"
-            f"coverage={group_coverage:.2f}；年份 {candidate.year or 'unknown'}；来源 {candidate.source}。"
+            f"直接证据：{relevance_evidence}；coverage={group_coverage:.2f}；"
+            f"年份 {candidate.year or 'unknown'}；来源 {candidate.source}。"
         )
     return CandidateRelevance(
         score=round(score, 4),
@@ -1112,14 +1117,35 @@ def requires_object_hallucination_focus(intent: QueryIntent) -> bool:
 
 def matches_object_hallucination_focus(candidate: PaperCandidate) -> bool:
     text = normalize_space(f"{candidate.title} {candidate.abstract}").lower()
-    focus_match = any(pattern in text for pattern in OBJECT_HALLUCINATION_FOCUS_PATTERNS)
-    if not focus_match:
+    if any(pattern in text for pattern in OBJECT_HALLUCINATION_PRIMARY_PATTERNS):
+        return True
+    if "visual grounding" not in text:
         return False
-    # Visual grounding is broad. In an object-hallucination review it needs a
-    # VLM/VQA/evaluation context before it can be treated as a direct match.
-    if "visual grounding" in text and not any(pattern in text for pattern in OBJECT_HALLUCINATION_CONTEXT_PATTERNS):
-        return False
-    return True
+    # Visual grounding by itself spans robotics, autonomous driving, OCR and
+    # detection. Treat it as direct object-hallucination evidence only when the
+    # paper also names both a VLM/VQA object and an evaluation operation.
+    has_visual_model_context = any(pattern in text for pattern in OBJECT_HALLUCINATION_VISUAL_CONTEXT_PATTERNS)
+    has_evaluation_context = any(pattern in text for pattern in OBJECT_HALLUCINATION_EVALUATION_PATTERNS)
+    return has_visual_model_context and has_evaluation_context
+
+
+def build_relevance_evidence_snippet(candidate: PaperCandidate, matched_terms: list[str]) -> str:
+    title = normalize_space(candidate.title)
+    abstract = normalize_space(candidate.abstract)
+    for source, text in (("title", title), ("abstract", abstract)):
+        if not text:
+            continue
+        sentences = [normalize_space(item) for item in re.split(r"(?<=[.!?。！？])\s+", text) if normalize_space(item)]
+        matching = next(
+            (
+                sentence
+                for sentence in sentences
+                if any(term and term in sentence.lower() for term in matched_terms)
+            ),
+            sentences[0] if sentences else text,
+        )
+        return f"{source}=`{truncate(matching, 180)}`"
+    return "metadata 中没有可引用的 title/abstract 片段"
 
 
 def significant_terms(query: str) -> set[str]:

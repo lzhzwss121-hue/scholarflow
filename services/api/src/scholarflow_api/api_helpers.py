@@ -117,6 +117,8 @@ def fetch_project_paper_card_dicts(connection, project_id: str) -> list[dict]:
             p.relevance_quality AS paper_relevance_quality,
             p.matched_terms_json AS paper_matched_terms_json,
             p.review_required AS paper_review_required,
+            a.title AS artifact_title,
+            a.updated_at AS artifact_updated_at,
             a.content_json AS artifact_content_json
         FROM paper_cards pc
         LEFT JOIN papers p ON p.id = pc.paper_id
@@ -133,6 +135,7 @@ def fetch_project_paper_card_dicts(connection, project_id: str) -> list[dict]:
 def enrich_paper_card_row(row: dict) -> dict:
     payload = parse_json_object(row.pop("artifact_content_json", "") or "")
     card_payload = payload.get("card") if isinstance(payload.get("card"), dict) else payload
+    paper_payload = payload.get("paper") if isinstance(payload.get("paper"), dict) else {}
     signals = card_payload.get("signals") if isinstance(card_payload.get("signals"), dict) else payload.get("signals")
     sections = card_payload.get("sections") if isinstance(card_payload.get("sections"), list) else payload.get("sections")
     if isinstance(signals, dict):
@@ -144,6 +147,8 @@ def enrich_paper_card_row(row: dict) -> dict:
     full_text = payload.get("full_text") if isinstance(payload.get("full_text"), dict) else card_payload.get("full_text")
     row["full_text"] = full_text if isinstance(full_text, dict) else {}
     row["artifact_id"] = row.get("artifact_id") or payload.get("artifact_id") or ""
+    row["paper_title"] = row.get("paper_title") or paper_payload.get("title") or card_payload.get("paper_title") or ""
+    row["updated_at"] = row.get("artifact_updated_at") or row.get("created_at") or ""
     return row
 
 
@@ -214,6 +219,7 @@ def fetch_read_paper_titles(connection, project_id: str) -> list[str]:
 
 def to_paper_memory_hit(hit) -> PaperMemoryHit:
     memory = hit.memory
+    serialized_hit = hit.to_dict()
     paper = Paper(
         id=memory.get("paper_id") or memory.get("id"),
         project_id=memory.get("project_id", ""),
@@ -241,6 +247,8 @@ def to_paper_memory_hit(hit) -> PaperMemoryHit:
         section_score=float(getattr(hit, "section_score", 0.0)),
         priority_score=float(getattr(hit, "priority_score", 0.0)),
         snippets=hit.snippets,
+        evidence_quality=serialized_hit.get("evidence_quality", "metadata_only"),
+        evidence_refs=serialized_hit.get("evidence_refs", []),
         abstract_translation=memory.get("abstract_translation", ""),
         weakest_assumption=memory.get("weakest_assumption", ""),
         minimal_reproduction=memory.get("minimal_reproduction", ""),

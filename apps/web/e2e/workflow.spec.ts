@@ -103,7 +103,7 @@ test("paper table uses structured relevance coverage and partial workflow status
     venue: "arXiv cs.CV",
     source: "arxiv",
     url: "https://arxiv.org/abs/2601.00005",
-    relation: "相关性 strong：命中 visual question answering 与 evidence faithfulness。",
+    relation: "相关性 strong：标题和摘要同时命中 visual question answering、evidence faithfulness 与 visual grounding，属于当前方向的直接评估证据，而不是仅命中 evaluation 泛词。",
     priority: "High",
     code: "unknown",
     relevance_score: 1.6,
@@ -197,8 +197,34 @@ test("paper table uses structured relevance coverage and partial workflow status
   await page.goto("/#paper-table");
   await page.getByRole("button", { name: /重新检索/ }).click();
   await expect(page.getByText(paper.title, { exact: true })).toBeVisible();
+  const latestNotice = page.locator(".workflow-latest-notice");
+  await expect(latestNotice).toContainText("检索使用了降级、缓存或放宽后的候选");
+  await expect(latestNotice).not.toContainText("openalex_cooldown");
+  const warningDetails = page.locator(".table-warning-summary details");
+  await expect(warningDetails.getByText("查看技术详情", { exact: true })).toBeVisible();
+  await warningDetails.getByText("查看技术详情", { exact: true }).click();
+  await expect(warningDetails.getByText("openalex_cooldown:mock: mocked retrieval degradation", { exact: true })).toBeVisible();
   await expect(page.locator('.metric-card[aria-label="离题已过滤：37"]')).toBeVisible();
   await expect(page.locator('.metric-card[aria-label="弱相关已过滤：12"]')).toBeVisible();
+  await expect(page.getByTestId("project-saved-paper-count")).toHaveText("项目已保存 1");
+  await expect(page.getByTestId("current-search-returned-count")).toHaveText("当前检索返回 1");
+  await expect(page.getByTestId("current-direction-read-count")).toHaveText("当前方向已读 0");
+  const relationCell = page.locator(".paper-relation-cell", { hasText: "相关性 strong" });
+  await expect(relationCell.locator("p")).toHaveCSS("-webkit-line-clamp", "2");
+  await relationCell.getByRole("button", { name: "展开理由" }).click();
+  await expect(relationCell.locator("p")).toHaveClass(/expanded/);
+  await expect(relationCell.getByRole("button", { name: "收起理由" })).toBeVisible();
+  const titleLayout = await page.locator(".paper-title-cell strong").evaluate((element) => {
+    const style = window.getComputedStyle(element);
+    return {
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      wordBreak: style.wordBreak,
+    };
+  });
+  expect(titleLayout.wordBreak).toBe("normal");
+  expect(titleLayout.scrollWidth).toBeLessThanOrEqual(titleLayout.clientWidth + 1);
+  await expect(page.locator(".paper-type")).toHaveCSS("white-space", "nowrap");
   const paperTableStep = page.locator(".workflow-step", { hasText: "Paper Table" });
   await expect(paperTableStep.getByText("partial")).toBeVisible();
   await expect(paperTableStep.getByText("complete")).toHaveCount(0);
@@ -1080,12 +1106,137 @@ test("project switch ignores stale resource responses", async ({ page }) => {
   await expect(page.getByText(paperA.title, { exact: true })).toHaveCount(0);
 });
 
-test("mocked research workflow smoke keeps a created project after refresh", async ({ page }) => {
+test("project switch clears project-specific retrieval state", async ({ page }) => {
+  const projectA = {
+    id: "project_e2e_retrieval_state_a",
+    title: "检索状态项目 A",
+    description: "project-specific retrieval state",
+    keyword: "object hallucination evaluation",
+    field: "Artificial Intelligence",
+    language: "zh-CN",
+    workflow: "survey-to-experiment",
+    stage: "api",
+    active_session_id: "session_e2e_retrieval_state_a",
+    created_at: "2026-07-02T00:00:00+00:00",
+    updated_at: "2026-07-03T00:00:00+00:00",
+  };
+  const projectB = {
+    ...projectA,
+    id: "project_e2e_retrieval_state_b",
+    title: "空白项目 B",
+    keyword: "unsearched direction",
+    active_session_id: "session_e2e_retrieval_state_b",
+    created_at: "2026-07-01T00:00:00+00:00",
+    updated_at: "2026-07-01T00:00:00+00:00",
+  };
+  const paper = {
+    id: "paper_e2e_retrieval_state_a",
+    project_id: projectA.id,
+    title: "Object Hallucination Evaluation Benchmark",
+    authors: "A. Researcher",
+    abstract: "A direct object hallucination evaluation benchmark.",
+    year: "2026",
+    type: "Benchmark",
+    venue: "arXiv cs.CV",
+    source: "arxiv",
+    url: "",
+    relation: "direct object hallucination match",
+    priority: "High",
+    code: "unknown",
+    relevance_score: 1.5,
+    relevance_quality: "strong",
+    matched_terms: ["object hallucination", "evaluation"],
+    created_at: projectA.created_at,
+  };
+  const artifact = {
+    id: "artifact_e2e_retrieval_state_a",
+    project_id: projectA.id,
+    title: "paper_table_retrieval_state.md",
+    kind: "markdown",
+    content_markdown: "# Paper Table",
+    content_json: JSON.stringify({ papers: [paper] }),
+    diff: "+ retrieval state",
+    created_at: projectA.created_at,
+    updated_at: projectA.updated_at,
+  };
+  let projectAPapers: typeof paper[] = [];
+  const projectWarning = "openalex_cooldown:mock: project A degraded retrieval";
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
+  });
+  await page.route("**/projects", async (route) => {
+    await route.fulfill({ json: [projectA, projectB] });
+  });
+  await page.route(`**/projects/${projectA.id}/papers`, async (route) => {
+    await route.fulfill({ json: projectAPapers });
+  });
+  await page.route(`**/projects/${projectB.id}/papers`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  for (const project of [projectA, projectB]) {
+    await page.route(`**/projects/${project.id}/timeline`, async (route) => {
+      await route.fulfill({ json: [] });
+    });
+    await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
+      await route.fulfill({ json: [] });
+    });
+  }
+  await page.route(`**/projects/${projectA.id}/literature/search`, async (route) => {
+    projectAPapers = [paper];
+    await route.fulfill({
+      status: 201,
+      json: {
+        query: projectA.keyword,
+        expanded_queries: [projectA.keyword],
+        papers: projectAPapers,
+        artifact,
+        errors: [projectWarning],
+        relevance_coverage: {
+          candidate_count: 20,
+          returned_count: 1,
+          strong_match_count: 1,
+          medium_match_count: 0,
+          weak_match_count: 4,
+          off_topic_count: 15,
+          filtered_count: 19,
+        },
+        workflow_steps: [
+          {
+            step_id: "paper-table",
+            status: "partial",
+            label: "Paper Table",
+            summary: "20 candidates / 1 returned",
+            warnings: [projectWarning],
+            errors: [],
+            artifact_refs: [],
+            updated_at: artifact.updated_at,
+          },
+        ],
+      },
+    });
+  });
+
+  await page.goto("/#paper-table");
+  await page.getByRole("button", { name: /重新检索/ }).click();
+  await expect(page.getByTestId("current-search-returned-count")).toHaveText("当前检索返回 1");
+  const projectWarningPanel = page.locator(".table-warning-summary");
+  await projectWarningPanel.getByText("查看技术详情", { exact: true }).click();
+  await expect(projectWarningPanel.getByText(projectWarning, { exact: true })).toBeVisible();
+
+  await page.getByLabel("项目").selectOption(projectB.id);
+  await expect(page.getByTestId("project-saved-paper-count")).toHaveText("项目已保存 0");
+  await expect(page.getByTestId("current-search-returned-count")).toHaveText("当前检索返回 0");
+  await expect(page.getByText(projectWarning, { exact: true })).toHaveCount(0);
+  await expect(page.getByText("本次没有可展示论文")).toBeVisible();
+});
+
+test("created Chinese research workflow keeps uploaded full text after refresh and refuses unreliable memory", async ({ page }) => {
   const project = {
     id: "project_e2e_smoke",
     title: "证据忠实性评估",
     description: "E2E smoke project",
-    keyword: "evidence faithfulness benchmark",
+    keyword: "多模态大模型对象幻觉评估",
     field: "Artificial Intelligence",
     language: "zh-CN",
     workflow: "survey-to-experiment",
@@ -1109,6 +1260,8 @@ test("mocked research workflow smoke keeps a created project after refresh", asy
     priority: "High",
     code: "unknown",
     relevance_score: 1.4,
+    relevance_quality: "strong",
+    matched_terms: ["object hallucination", "POPE", "evaluation"],
     created_at: "2026-07-02T00:00:00+00:00",
   };
   const artifact = {
@@ -1122,10 +1275,188 @@ test("mocked research workflow smoke keeps a created project after refresh", asy
     created_at: "2026-07-02T00:00:00+00:00",
     updated_at: "2026-07-02T00:00:00+00:00",
   };
+  const readingSections = Array.from({ length: 12 }, (_, index) => ({
+    id: `smoke_section_${index + 1}`,
+    title: index === 0 ? "研究问题与背景" : `Section ${index + 1}`,
+    content: `摘要级阅读提纲 ${index + 1}。证据缺口：需要 PDF 核验。`,
+  }));
+  const abstractFullText = {
+    status: "download_failed",
+    pdf_url: "https://arxiv.org/pdf/2601.00002",
+    source: "arxiv_pdf",
+    page_count: 0,
+    character_count: 0,
+    error: "certificate verify failed",
+    failure_stage: "download",
+    recovery_hint: "上传本地 PDF。",
+  };
+  const signals = {
+    task: "visual object hallucination evaluation",
+    method: "benchmark evaluation",
+    dataset: "POPE",
+    metric: "accuracy",
+    baseline: "LLaVA",
+    claim: "the benchmark exposes object hallucination",
+    limitation: "abstract does not report all failure cases",
+    contribution_type: "benchmark",
+    missing_signals: ["full-text ablation"],
+  };
+  const researchSight = {
+    motivation_sharpness: "摘要支持该任务与对象幻觉评估直接相关。",
+    solution_elegance: "摘要证据不足，无法判断。",
+    evaluation_integrity: "需要 PDF 核验完整实验设置。",
+    paradigm_inspiration: "摘要证据不足，无法判断。",
+    why_good: "摘要明确提出对象幻觉评估任务。",
+    why_not_good: "摘要未提供完整失败样本。",
+    better_angle: "摘要证据不足，无法判断。",
+    baseline_comparison: "摘要提及 LLaVA。",
+    next_step_proposal: "先核验 PDF 中的 POPE 设置。",
+    evidence_pack: {
+      evidence_level: "abstract_only",
+      confidence: "medium",
+      snippets: [],
+      missing_evidence: ["full_pdf"],
+      grounding_summary: "Only title and abstract are available.",
+    },
+    critique_evidence: [],
+  };
+  const directionReading = {
+    paper,
+    paper_id: paper.id,
+    paper_title: paper.title,
+    abstract_translation: "本文评估视觉问答中的对象幻觉。",
+    evidence_level: "abstract_only",
+    full_text: abstractFullText,
+    signals,
+    sections: readingSections,
+    research_sight: researchSight,
+    weakest_assumption: "摘要未提供足够证据，无法判断。",
+    minimal_reproduction: "Status: blocked; missing full-text evidence.",
+    counterexample: "摘要未提供足够证据，无法判断。",
+    follow_up_idea: "摘要未提供足够证据，无法判断。",
+    why_selected: "匹配 object hallucination、POPE 与 evaluation。",
+    venue_signal: "arXiv cs.CV",
+    self_read_priority: true,
+  };
+  const directionPayload = {
+    schema_version: "direction_review.v2",
+    direction: project.keyword,
+    round: 1,
+    review_status: "partial",
+    target_paper_count: 10,
+    round_read_count: 1,
+    relevant_read_count: 1,
+    low_relevance_count: 0,
+    off_topic_count: 0,
+    relevance_coverage: {
+      candidate_count: 1,
+      returned_count: 1,
+      strong_match_count: 1,
+      medium_match_count: 0,
+      weak_match_count: 0,
+      off_topic_count: 0,
+      filtered_count: 0,
+    },
+    total_read_count: 1,
+    recommended_paper_ids: [paper.id],
+    direction_summary: "当前只有 1 篇直接相关摘要级论文，因此保持 partial。",
+    artifact_refs: [] as Array<{ id: string; title: string; kind: string; created_at: string }>,
+    errors: ["pdf download failed: certificate verify failed"],
+    papers: [directionReading],
+    workflow_steps: [],
+  };
+  const directionArtifact = {
+    id: "artifact_e2e_direction_review",
+    project_id: project.id,
+    title: "direction_review_round_1.md",
+    kind: "markdown",
+    content_markdown: "# Direction Review\n\npartial 1/10",
+    content_json: "",
+    diff: "+ direction review",
+    created_at: "2026-07-03T00:00:00+00:00",
+    updated_at: "2026-07-03T00:00:00+00:00",
+  };
+  directionPayload.artifact_refs = [
+    {
+      id: directionArtifact.id,
+      title: directionArtifact.title,
+      kind: directionArtifact.kind,
+      created_at: directionArtifact.created_at,
+    },
+  ];
+  directionArtifact.content_json = JSON.stringify(directionPayload);
+  const uploadedFullText = {
+    status: "extracted",
+    pdf_url: "",
+    source: "user_uploaded_pdf",
+    page_count: 2,
+    character_count: 3200,
+    error: "",
+    failure_stage: "",
+    recovery_hint: "",
+  };
+  const uploadedCard = {
+    id: "paper_card_e2e_workflow_full_text",
+    project_id: project.id,
+    paper_id: paper.id,
+    paper_title: paper.title,
+    artifact_id: "artifact_e2e_workflow_full_text",
+    source_artifact_title: "paper_card_object-hallucination-full-text.md",
+    card_source: "paper_table",
+    evidence_level: "full_text",
+    full_text: uploadedFullText,
+    signals: { ...signals, missing_signals: [] },
+    sections: readingSections.map((section) => ({ ...section, content: `全文核验内容：${section.content}` })),
+    weakest_assumption: "POPE coverage may not represent deployment failures.",
+    minimal_reproduction: "Run POPE accuracy against LLaVA.",
+    created_at: "2026-07-04T00:00:00+00:00",
+    updated_at: "2026-07-04T00:00:00+00:00",
+  };
+  const fullTextArtifact = {
+    id: "artifact_e2e_workflow_full_text",
+    project_id: project.id,
+    title: "paper_card_object-hallucination-full-text.md",
+    kind: "markdown",
+    content_markdown: "# Full-text Paper Card",
+    content_json: JSON.stringify({
+      schema_version: "paper_card.v2",
+      paper,
+      paper_id: paper.id,
+      evidence_level: "full_text",
+      full_text: uploadedFullText,
+      card: uploadedCard,
+    }),
+    diff: "+ verified full text",
+    created_at: uploadedCard.created_at,
+    updated_at: uploadedCard.updated_at,
+  };
+  const memoryArtifact = {
+    id: "artifact_e2e_workflow_no_memory_hit",
+    project_id: project.id,
+    title: "research_memory_answer_no_reliable_hit.md",
+    kind: "markdown",
+    content_markdown: "# Memory\n\nNo reliable hit",
+    content_json: JSON.stringify({
+      schema_version: "research_memory_answer.v2",
+      question: "医学幻觉如何评估？",
+      top_k: 5,
+      answer: "当前记忆没有可靠证据回答此问题。",
+      hits: [],
+      direction_memory: null,
+      total_memories: 1,
+      reliability_status: "no_reliable_hit",
+      reliability_reason: "当前对象幻觉记忆不支持医学幻觉问题。",
+      warnings: ["当前记忆没有可靠证据回答此问题。"],
+    }),
+    diff: "+ no reliable hit",
+    created_at: "2026-07-05T00:00:00+00:00",
+    updated_at: "2026-07-05T00:00:00+00:00",
+  };
 
   let projects: typeof project[] = [];
   let papers: typeof paper[] = [];
   let artifacts: typeof artifact[] = [];
+  let paperCards: typeof uploadedCard[] = [];
   let artifactSummaryReads = 0;
 
   await page.route("**/health", async (route) => {
@@ -1141,6 +1472,9 @@ test("mocked research workflow smoke keeps a created project after refresh", asy
   });
   await page.route(`**/projects/${project.id}/papers`, async (route) => {
     await route.fulfill({ json: papers });
+  });
+  await page.route(`**/projects/${project.id}/paper-cards`, async (route) => {
+    await route.fulfill({ json: paperCards });
   });
   await page.route(`**/projects/${project.id}/timeline`, async (route) => {
     await route.fulfill({ json: [] });
@@ -1185,8 +1519,62 @@ test("mocked research workflow smoke keeps a created project after refresh", asy
       },
     });
   });
-  await page.route(`**/artifacts/${artifact.id}`, async (route) => {
-    await route.fulfill({ json: artifact });
+  await page.route(`**/projects/${project.id}/direction-reviews`, async (route) => {
+    artifacts = [artifact, directionArtifact];
+    await route.fulfill({ status: 201, json: directionPayload });
+  });
+  await page.route(`**/projects/${project.id}/papers/${paper.id}/full-text`, async (route) => {
+    paperCards = [uploadedCard];
+    artifacts = [artifact, directionArtifact, fullTextArtifact];
+    await route.fulfill({
+      status: 201,
+      json: {
+        paper_id: paper.id,
+        text: "verified full text fixture",
+        evidence_level: "full_text",
+        evidence_quality: "full_text",
+        source: "user_uploaded_pdf",
+        page_count: uploadedFullText.page_count,
+        char_count: uploadedFullText.character_count,
+        updated_at: uploadedCard.updated_at,
+        full_text: uploadedFullText,
+        card: uploadedCard,
+        artifact: fullTextArtifact,
+      },
+    });
+  });
+  await page.route(`**/projects/${project.id}/research-memory/query`, async (route) => {
+    artifacts = [artifact, directionArtifact, fullTextArtifact, memoryArtifact];
+    await route.fulfill({
+      status: 201,
+      json: {
+        question: "医学幻觉如何评估？",
+        top_k: 5,
+        answer: "当前记忆没有可靠证据回答此问题。",
+        hits: [],
+        direction_memory: null,
+        total_memories: 1,
+        reliability_status: "no_reliable_hit",
+        reliability_reason: "当前对象幻觉记忆不支持医学幻觉问题。",
+        artifact: memoryArtifact,
+        warnings: ["当前记忆没有可靠证据回答此问题。"],
+        workflow_steps: [],
+      },
+    });
+  });
+  await page.route("**/artifacts/*", async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (!pathname.startsWith("/artifacts/")) {
+      await route.fallback();
+      return;
+    }
+    const artifactId = decodeURIComponent(pathname.split("/").pop() ?? "");
+    const item = artifacts.find((candidate) => candidate.id === artifactId);
+    if (!item) {
+      await route.fulfill({ status: 404, json: { detail: "artifact not found" } });
+      return;
+    }
+    await route.fulfill({ json: item });
   });
 
   await page.goto("/");
@@ -1210,6 +1598,33 @@ test("mocked research workflow smoke keeps a created project after refresh", asy
   await page.reload();
   await expect(page).toHaveURL(/#paper-table/);
   await expect(page.getByText(paper.title, { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "生成 Direction Review" }).click();
+  await expect(page).toHaveURL(/#direction-review/);
+  await page.getByRole("button", { name: "生成第 1 轮" }).click();
+  await expect(page.getByRole("heading", { name: project.keyword })).toBeVisible();
+  await expect(page.locator('[aria-label="direction review metrics"]')).toContainText("1/10");
+
+  await page.getByRole("button", { name: `打开 Paper Card：${paper.title}`, exact: true }).click();
+  await expect(page).toHaveURL(/#paper-reader\//);
+  await expect(page.getByRole("heading", { name: paper.title })).toBeVisible();
+  await page.locator('.pdf-upload-control[aria-label="upload paper PDF"] input[type="file"]').setInputFiles({
+    name: "object-hallucination.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from("%PDF-1.7 workflow fixture"),
+  });
+  await expect(page.locator('.reader-evidence-level.full_text').getByText("全文已验证", { exact: true })).toBeVisible();
+  await expect(page.getByText("已解析 2 页 / 3,200 字符", { exact: true })).toBeVisible();
+
+  await page.reload();
+  await expect(page.locator('.reader-evidence-level.full_text').getByText("全文已验证", { exact: true })).toBeVisible();
+
+  await page.locator(".workflow-step", { hasText: "Paper Memory" }).click();
+  await page.getByLabel("用户问题").fill("医学幻觉如何评估？");
+  await page.getByRole("button", { name: "检索记忆并回答" }).click();
+  await expect(page.getByRole("heading", { name: "当前记忆没有可靠证据回答此问题" })).toBeVisible();
+  await expect(page.getByText("当前对象幻觉记忆不支持医学幻觉问题。")).toBeVisible();
+  await expect(page.locator('[aria-label="memory answer"]')).toHaveCount(0);
 });
 
 test("hydrates real direction review and memory artifact shapes without blank views", async ({ page }) => {
@@ -1579,10 +1994,10 @@ test("hydrates real direction review and memory artifact shapes without blank vi
   await expect(page.getByTestId("paper-reader-active-section-heading")).toHaveText("研究问题与背景");
   await expect(page.getByText("12/12 已生成")).toBeVisible();
   await expect(page.getByText("来源：Direction Review artifact", { exact: true })).toBeVisible();
-  await page.locator('details.reader-evidence-scope[aria-label="paper card evidence scope"] > summary').click();
-  await expect(
-    page.locator('details.reader-evidence-scope[aria-label="paper card evidence scope"]').getByText("摘要级证据，不是全文结论", { exact: true }),
-  ).toBeVisible();
+  const limitedEvidence = page.getByRole("region", { name: "limited evidence summary" });
+  await expect(limitedEvidence.getByText("能确认什么", { exact: true })).toBeVisible();
+  await expect(limitedEvidence.getByText("不能确认什么", { exact: true })).toBeVisible();
+  await expect(limitedEvidence.getByText("如何获得全文", { exact: true })).toBeVisible();
   await expect(page.getByText("待生成 Paper Card")).toHaveCount(0);
 
   await page.goto("/#paper-memory");

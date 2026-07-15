@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from scholarflow_api.baseline_map import BaselineMap
-from scholarflow_api.evidence import EvidencePack, build_paper_evidence_pack
+from scholarflow_api.evidence import EvidencePack, EvidenceSnippet, build_paper_evidence_pack
 from scholarflow_api.paper_card import PaperSignals
 
 
@@ -56,10 +56,17 @@ def build_research_sight(
     contribution_type = signal_view.contribution_type or infer_contribution_type(text)
     benchmark_risk = baseline_map.evaluation_risks[0] if baseline_map.evaluation_risks else "当前评估风险需要继续补充。"
     evidence_pack = build_paper_evidence_pack(paper, sections, direction)
+    supported_signal_fields = append_signal_evidence_snippets(evidence_pack, paper, signal_view)
     evidence_profile = build_evidence_profile(evidence_pack)
     source_evidence = first_source_evidence(evidence_pack)
-    required_fields = ["claim", "dataset", "metric", "baseline"]
-    missing_required = [field for field in required_fields if not has_research_signal(getattr(signal_view, field))]
+    required_fields = ["claim", "dataset", "metric", "baseline", "limitation"]
+    if contribution_type == "method":
+        required_fields.append("method")
+    missing_required = [
+        field
+        for field in required_fields
+        if not has_research_signal(getattr(signal_view, field)) or field not in supported_signal_fields
+    ]
     if source_evidence is None or (contribution_type != "survey" and missing_required):
         values = build_evidence_bounded_sight(
             title=title,
@@ -134,6 +141,78 @@ def build_evidence_bounded_sight(
         "baseline_comparison": "无法判断：缺少具体 baseline 与比较协议的原文证据。",
         "next_step_proposal": f"下一步：补充 {missing} 的摘要/PDF 原文片段；在此之前不提出该论文专属 follow-up。",
     }
+
+
+def append_signal_evidence_snippets(
+    evidence_pack: EvidencePack,
+    paper: dict[str, Any],
+    signals: PaperSignals,
+) -> set[str]:
+    supported: set[str] = set()
+    source_texts = [
+        ("pdf.full_text", normalize_space(paper.get("full_text", "")), "high"),
+        ("metadata.abstract", normalize_space(paper.get("abstract", "")), "medium"),
+    ]
+    kind_by_field = {
+        "method": "method",
+        "claim": "evaluation",
+        "dataset": "evaluation",
+        "metric": "evaluation",
+        "baseline": "evaluation",
+        "limitation": "risk",
+    }
+    existing_ids = {snippet.id for snippet in evidence_pack.snippets}
+    for field, kind in kind_by_field.items():
+        signal = normalize_space(getattr(signals, field, ""))
+        if not has_research_signal(signal):
+            continue
+        match_terms = signal_match_terms(signal)
+        for source, source_text, confidence in source_texts:
+            sentence = find_signal_source_sentence(source_text, match_terms)
+            if not sentence:
+                continue
+            supported.add(field)
+            snippet_id = f"signal_{field}_{'pdf' if source == 'pdf.full_text' else 'abstract'}"
+            if snippet_id not in existing_ids:
+                evidence_pack.snippets.append(
+                    EvidenceSnippet(
+                        id=snippet_id,
+                        source=source,
+                        kind=kind,
+                        text=sentence[:360],
+                        note=f"该原文片段用于验证 PaperSignals.{field}，不支持超出片段的结论。",
+                        confidence=confidence,
+                    ),
+                )
+                existing_ids.add(snippet_id)
+            break
+    return supported
+
+
+def signal_match_terms(signal: str) -> list[str]:
+    normalized = re.sub(
+        r"^(方法证据|评测/benchmark 构造方法|核心 claim 证据|显式或隐含不足|Baseline evidence|贡献证据)\s*[：:]\s*",
+        "",
+        normalize_space(signal),
+        flags=re.IGNORECASE,
+    )
+    phrases = [normalize_space(item).lower() for item in re.split(r"[,;/]", normalized) if normalize_space(item)]
+    if normalized:
+        phrases.append(normalized.lower())
+    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9_.-]{2,}|[\u4e00-\u9fff]{2,}", normalized.lower())
+    stop_words = {"the", "and", "with", "from", "that", "this", "evidence", "claim", "method", "baseline"}
+    return list(dict.fromkeys([*phrases, *[token for token in tokens if token not in stop_words]]))[:12]
+
+
+def find_signal_source_sentence(source_text: str, match_terms: list[str]) -> str:
+    if not source_text or not match_terms:
+        return ""
+    sentences = [normalize_space(item) for item in re.split(r"(?<=[.!?。！？])\s+", source_text) if normalize_space(item)]
+    for sentence in sentences:
+        lower = sentence.lower()
+        if any(term in lower for term in match_terms):
+            return sentence
+    return ""
 
 
 def build_signal_aware_sight_values(

@@ -28,6 +28,7 @@ import {
   isAbortError,
   isRetrievalWarning,
   listProjectArtifactSummaries,
+  listProjectPaperCards,
   listProjectPapers,
   listProjects,
   normalizeApiError,
@@ -137,6 +138,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
   const [paperCardInput, setPaperCardInput] = useState("");
   const [paperCardBusy, setPaperCardBusy] = useState(false);
   const [latestPaperCard, setLatestPaperCard] = useState<ApiPaperCard | null>(null);
+  const [paperCards, setPaperCards] = useState<ApiPaperCard[]>([]);
   const [decisionGoal, setDecisionGoal] = useState(
     "基于当前 paper table 和 paper card，找出最值得做的一周最小实验方向。",
   );
@@ -188,6 +190,13 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       setSelectedPaperId(paperRows[0].id);
     }
   }, [paperRows, selectedPaperId]);
+
+  const selectedPaper = paperRows.find((paper) => paper.id === selectedPaperId) ?? paperRows[0];
+  const effectivePaperCard = useMemo(() => {
+    const candidates = latestPaperCard ? [latestPaperCard, ...paperCards] : paperCards;
+    const match = resolvePaperCardForPaper(candidates, directionReview, selectedPaper);
+    return match?.card ?? (!selectedPaper ? latestPaperCard : null);
+  }, [directionReview, latestPaperCard, paperCards, selectedPaper]);
 
   useEffect(() => {
     const cachedArtifact = selectArtifactForView(projectArtifacts, activeView);
@@ -246,7 +255,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
         directionBusy,
         directionReview,
         paperCardBusy,
-        latestPaperCard,
+        latestPaperCard: effectivePaperCard,
         selectedPaperId,
         memoryBusy,
         memoryResult,
@@ -261,7 +270,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       decisionBusy,
       directionBusy,
       directionReview,
-      latestPaperCard,
+      effectivePaperCard,
       selectedPaperId,
       literatureCoverage,
       literatureBusy,
@@ -331,10 +340,16 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
   async function loadProjectResources(projectId: string, outerGuard?: RequestGuard) {
     const guard = outerGuard ?? beginRequest("resources");
     try {
-      const [apiPapers, apiTimeline, artifactSummaries] = await Promise.all([
+      const [apiPapers, apiTimeline, artifactSummaries, apiPaperCards] = await Promise.all([
         listProjectPapers(projectId, { signal: guard.signal }),
         getProjectTimeline(projectId, { signal: guard.signal }),
         listProjectArtifactSummaries(projectId, { signal: guard.signal }),
+        listProjectPaperCards(projectId, { signal: guard.signal }).catch((error) => {
+          if (isAbortError(error)) {
+            throw error;
+          }
+          return [];
+        }),
       ]);
 
       if (!guard.isCurrent() || activeProjectIdRef.current !== projectId) {
@@ -346,7 +361,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
         return;
       }
 
-      applyProjectResources(projectId, apiPapers, apiTimeline, artifactSummaries, apiArtifacts);
+      applyProjectResources(projectId, apiPapers, apiTimeline, artifactSummaries, apiArtifacts, apiPaperCards);
     } catch (error) {
       if (!guard.isCurrent() || isAbortError(error)) {
         return;
@@ -365,6 +380,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     apiTimeline: Awaited<ReturnType<typeof getProjectTimeline>>,
     artifactSummaries: ApiArtifactSummary[],
     apiArtifacts: ApiArtifact[],
+    apiPaperCards: ApiPaperCard[] = [],
   ) {
     if (activeProjectIdRef.current !== projectId) {
       return;
@@ -374,6 +390,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     setPersistedArtifactCount(artifactSummaries.length);
     setProjectArtifactSummaries(artifactSummaries);
     setProjectArtifacts(apiArtifacts);
+    setPaperCards(apiPaperCards);
     setLastSavedArtifact(selectArtifactForView(apiArtifacts, activeView));
     setHydrationWarnings(collectArtifactHydrationWarnings(apiArtifacts));
     const restored = hydrateWorkflowStateFromArtifacts(apiArtifacts);
@@ -390,6 +407,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       // A refresh can hydrate an older abstract card for the same paper. Do not
       // downgrade a verified uploaded-PDF card while project resources reload.
       setLatestPaperCard((current) => preferPaperCard(current, restored.paperCard));
+      setPaperCards((current) => upsertPaperCard(current, restored.paperCard as ApiPaperCard));
     }
     if (restored.researchDecision) {
       setResearchDecision(restored.researchDecision);
@@ -397,11 +415,24 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
   }
 
   function resetWorkflowState() {
+    stopAgentPolling();
+    setAgentPlan(null);
+    setAgentRunStatus(null);
+    setAgentRunWarnings([]);
+    setAgentBusy(false);
+    setLiteratureBusy(false);
+    setLiteratureErrors([]);
     setDirectionReview(null);
     setSelectedDirectionPaperId("");
+    setDirectionBusy(false);
     setMemoryResult(null);
+    setMemoryBusy(false);
     setResearchDecision(null);
+    setDecisionBusy(false);
     setLatestPaperCard(null);
+    setPaperCards([]);
+    setSelectedPaperId("");
+    setPaperCardBusy(false);
     setHydrationWarnings([]);
     setBackendWorkflowSteps([]);
     setLiteratureCoverage({});
@@ -771,6 +802,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
         return;
       }
       setLatestPaperCard(result.card);
+      setPaperCards((current) => upsertPaperCard(current, result.card));
       setLastSavedArtifact(result.artifact);
       setApiMessage(`Deep Paper Card 已生成，artifact: ${result.artifact.id}`);
       await loadProjectResources(projectId, guard);
@@ -827,13 +859,25 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
         );
         return;
       }
+      const uploadedCard = extraction.card;
       setLatestPaperCard({
-        ...extraction.card,
-        paper_id: extraction.card.paper_id || paperId,
-        paper_title: extraction.card.paper_title || paper.title,
+        ...uploadedCard,
+        paper_id: uploadedCard.paper_id || paperId,
+        paper_title: uploadedCard.paper_title || paper.title,
         evidence_level: "full_text",
         full_text: extraction.full_text,
+        updated_at: extraction.updated_at || uploadedCard.updated_at || uploadedCard.created_at,
       });
+      setPaperCards((current) =>
+        upsertPaperCard(current, {
+          ...uploadedCard,
+          paper_id: uploadedCard.paper_id || paperId,
+          paper_title: uploadedCard.paper_title || paper.title,
+          evidence_level: extraction.evidence_level || "full_text",
+          full_text: extraction.full_text,
+          updated_at: extraction.updated_at || uploadedCard.created_at,
+        } as ApiPaperCard),
+      );
       setLastSavedArtifact(extraction.artifact);
       setPaperCardInput("");
       setApiMessage(
@@ -1098,16 +1142,17 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       return;
     }
     try {
-      const [apiPapers, apiTimeline, artifactSummaries] = await Promise.all([
+      const [apiPapers, apiTimeline, artifactSummaries, apiPaperCards] = await Promise.all([
         listProjectPapers(projectId),
         getProjectTimeline(projectId),
         listProjectArtifactSummaries(projectId),
+        listProjectPaperCards(projectId).catch(() => []),
       ]);
       if (activeProjectIdRef.current !== projectId) {
         return;
       }
       const apiArtifacts = await loadHydrationArtifacts(artifactSummaries);
-      applyProjectResources(projectId, apiPapers, apiTimeline, artifactSummaries, apiArtifacts);
+      applyProjectResources(projectId, apiPapers, apiTimeline, artifactSummaries, apiArtifacts, apiPaperCards);
     } catch (error) {
       if (!isAbortError(error)) {
         setApiMessage(formatApiFailure(error, "刷新 Agent Run 进度失败，请查看 API 日志。"));
@@ -1184,7 +1229,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     directionInput,
     directionReview,
     directionRound,
-    latestPaperCard,
+    latestPaperCard: effectivePaperCard,
     lastSavedArtifact,
     literatureErrors,
     literatureCoverage,
@@ -1485,6 +1530,31 @@ function isDecisionEvidencePartial(decision: ApiResearchDecisionResponse | null)
     (Number.isFinite(gapEvidenceCount) && Number.isFinite(threshold) && gapEvidenceCount < threshold) ||
     (Number.isFinite(limitedEvidenceCount) && limitedEvidenceCount > 0 && (!Number.isFinite(fullTextCount) || fullTextCount === 0))
   );
+}
+
+function upsertPaperCard(cards: ApiPaperCard[], incoming: ApiPaperCard): ApiPaperCard[] {
+  const exactIndex = incoming.paper_id
+    ? cards.findIndex((card) => Boolean(card.paper_id) && card.paper_id === incoming.paper_id)
+    : -1;
+  if (exactIndex >= 0) {
+    const next = [...cards];
+    next[exactIndex] = preferPaperCard(cards[exactIndex], incoming) as ApiPaperCard;
+    return next;
+  }
+  const incomingTitle = (incoming.paper_title ?? "").toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/gi, "");
+  const titleIndex = incomingTitle
+    ? cards.findIndex(
+        (card) =>
+          !card.paper_id &&
+          (card.paper_title ?? "").toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/gi, "") === incomingTitle,
+      )
+    : -1;
+  if (titleIndex >= 0) {
+    const next = [...cards];
+    next[titleIndex] = preferPaperCard(cards[titleIndex], incoming) as ApiPaperCard;
+    return next;
+  }
+  return [incoming, ...cards];
 }
 
 function toWorkflowStepView(input: {

@@ -174,6 +174,36 @@ async function mockReaderProject(page: Page, artifacts = [artifact]) {
   await page.route(`**/projects/${project.id}/papers`, async (route) => {
     await route.fulfill({ json: [paper] });
   });
+  await page.route(`**/projects/${project.id}/paper-cards`, async (route) => {
+    const cards = artifacts.flatMap((item) => {
+      if (!item.title.toLowerCase().includes("paper_card")) {
+        return [];
+      }
+      const payload = JSON.parse(item.content_json) as Record<string, unknown>;
+      const card = (payload.card ?? payload) as Record<string, unknown>;
+      if (!Array.isArray(card.sections)) {
+        return [];
+      }
+      const fullText = (payload.full_text ?? card.full_text ?? {}) as Record<string, unknown>;
+      return [
+        {
+          ...card,
+          id: item.id,
+          project_id: item.project_id,
+          paper_id: (payload.paper_id as string) || paper.id,
+          paper_title: (card.paper_title as string) || paper.title,
+          artifact_id: item.id,
+          source_artifact_title: item.title,
+          card_source: "paper_table",
+          evidence_level: (payload.evidence_level as string) || card.evidence_level || "metadata_only",
+          full_text: fullText,
+          created_at: item.created_at,
+          updated_at: item.updated_at,
+        },
+      ];
+    });
+    await route.fulfill({ json: cards });
+  });
   await page.route(`**/projects/${project.id}/timeline`, async (route) => {
     await route.fulfill({ json: [] });
   });
@@ -290,6 +320,15 @@ test("legacy repeated evidence boilerplate is centralized and the mobile reader 
     scrollWidth: document.documentElement.scrollWidth,
   }));
   expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 1);
+
+  await page.getByRole("button", { name: "展开工作流侧栏" }).click();
+  const readerStep = page.locator(".workflow-step", { hasText: "Deep Paper Card" });
+  await expect(readerStep).toHaveAttribute("title", /Deep Paper Card/);
+  const readerStepLayout = await readerStep.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+  }));
+  expect(readerStepLayout.scrollWidth).toBeLessThanOrEqual(readerStepLayout.clientWidth + 1);
 });
 
 test("uploaded PDF immediately replaces a stale abstract card for the same paper", async ({ page }) => {
@@ -327,6 +366,12 @@ test("uploaded PDF immediately replaces a stale abstract card for the same paper
       json: {
         paper_id: paper.id,
         text: "full text fixture",
+        evidence_level: "full_text",
+        evidence_quality: "full_text",
+        source: "user_uploaded_pdf",
+        page_count: 14,
+        char_count: 50000,
+        updated_at: uploadedArtifact.updated_at,
         full_text: uploadedPayload.full_text,
         card: {
           id: "paper_card_e2e_uploaded_full_text",
@@ -356,15 +401,18 @@ test("uploaded PDF immediately replaces a stale abstract card for the same paper
   });
 
   await expect(page.getByRole("heading", { name: "全文级深读 · Paper Card" })).toBeVisible();
+  await expect(page.locator('.reader-evidence-level.full_text').getByText("全文已验证", { exact: true })).toBeVisible();
   const provenance = page.getByTestId("paper-card-provenance");
   await expect(provenance.getByText("已解析 14 页 / 50,000 字符", { exact: true })).toBeVisible();
   await expect(provenance.getByText("来源：用户上传 PDF", { exact: true })).toBeVisible();
+  await expect(provenance.getByText(/更新时间：07\/12/)).toBeVisible();
   await expect(page.getByText("CERTIFICATE_VERIFY_FAILED")).toHaveCount(0);
   await expect(page.getByText("12/12 已生成")).toBeVisible();
 });
 
 test("refresh keeps a verified full-text direction card ahead of an old abstract review", async ({ page }) => {
   const staleReviewPayload = JSON.parse(JSON.stringify(directionPayload)) as typeof directionPayload;
+  staleReviewPayload.errors = ["pdf download failed: CERTIFICATE_VERIFY_FAILED"];
   staleReviewPayload.papers[0].full_text = {
     status: "download_failed",
     pdf_url: "https://arxiv.org/pdf/fixture.pdf",
@@ -374,15 +422,44 @@ test("refresh keeps a verified full-text direction card ahead of an old abstract
     error: "CERTIFICATE_VERIFY_FAILED",
   };
   const staleReview = { ...artifact, content_json: JSON.stringify(staleReviewPayload) };
+  const staleStandalone = {
+    ...artifact,
+    id: "artifact_e2e_refresh_stale_abstract",
+    title: "paper_card_grounded-evidence-evaluation-for-visual-question-answering.md",
+    content_json: JSON.stringify({
+      schema_version: "paper_card.v2",
+      paper_id: paper.id,
+      paper,
+      card: {
+        paper_title: paper.title,
+        paper_id: paper.id,
+        evidence_level: "abstract_only",
+        signals: directionPayload.papers[0].signals,
+        sections,
+        weakest_assumption: "Stale abstract card.",
+        minimal_reproduction: "Status: blocked.",
+      },
+      evidence_level: "abstract_only",
+      full_text: staleReviewPayload.papers[0].full_text,
+    }),
+    created_at: "2026-07-10T00:00:00+00:00",
+    updated_at: "2026-07-10T00:00:00+00:00",
+  };
   const uploadedArtifact = fullTextCardArtifact("artifact_e2e_refresh_full_text", "2026-07-12T00:00:00+00:00");
 
-  await mockReaderProject(page, [staleReview, uploadedArtifact]);
+  await mockReaderProject(page, [staleReview, staleStandalone, uploadedArtifact]);
   await page.goto("/#paper-reader");
 
   await expect(page.getByRole("heading", { name: "全文级深读 · Paper Card" })).toBeVisible();
   await expect(page.getByText("已解析 14 页 / 50,000 字符")).toBeVisible();
   await expect(page.getByText("来源：用户上传 PDF")).toBeVisible();
-  await expect(page.getByText("CERTIFICATE_VERIFY_FAILED")).toHaveCount(0);
+  await expect(page.locator(".workflow-latest-notice").getByText(/CERTIFICATE_VERIFY_FAILED/)).toHaveCount(0);
+  await expect(page.locator(".reader-main-panel").getByText(/CERTIFICATE_VERIFY_FAILED/)).toHaveCount(0);
+  await page.getByRole("button", { name: /研究轨迹/ }).click();
+  const history = page.locator("details.workflow-history-notices");
+  await expect(history.getByText(/历史尝试/)).toBeVisible();
+  await history.locator("summary").click();
+  await expect(history.getByText(/CERTIFICATE_VERIFY_FAILED/)).toBeVisible();
 });
 
 test("paper memory shows a no-reliable-hit boundary instead of invented evidence", async ({ page }) => {
@@ -436,4 +513,7 @@ test("paper memory shows a no-reliable-hit boundary instead of invented evidence
   await expect(page.locator('[aria-label="memory reliability boundary"]')).toBeVisible();
   await expect(page.locator('[aria-label="memory answer"]')).toHaveCount(0);
   await expect(page.locator('[aria-label="retrieved paper memories"] article')).toHaveCount(0);
+  await page.getByRole("button", { name: "改写查询" }).click();
+  await expect(page.getByLabel("用户问题")).toHaveValue(/具体研究对象、失败模式、数据集、指标与 baseline/);
+  await expect(page.getByRole("button", { name: "返回 Literature Search" })).toBeVisible();
 });

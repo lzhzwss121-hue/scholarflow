@@ -169,15 +169,15 @@ def retrieve_direction_candidate_pool(
     scope = build_direction_scope(direction, round_index)
     candidates: list[PaperCandidate] = []
     errors: list[str] = []
-    relevance_coverage = empty_relevance_coverage()
 
     for query in scope.queries:
         result = search_literature(query, max_results=30, sources=["arxiv", "openalex"])
         candidates.extend(result.papers)
         errors.extend(result.errors)
-        relevance_coverage = merge_relevance_coverage(relevance_coverage, result.relevance_coverage)
 
     selected = select_top_direction_papers(candidates, direction, previously_read_titles, limit=10)
+    relevance_coverage = summarize_direction_candidate_pool(candidates, direction)
+    relevance_coverage["read_count"] = len(selected)
     return scope, candidates, selected, errors, relevance_coverage
 
 
@@ -235,8 +235,6 @@ def build_direction_readings(
     direction: str,
     baseline_map: BaselineMap,
 ) -> list[DirectionPaperReading]:
-    scored = sorted(papers, key=lambda paper: score_direction_paper_dict(paper, direction), reverse=True)
-    recommended_ids = {paper.get("id", "") for paper in scored[:3]}
     readings: list[DirectionPaperReading] = []
     full_text_results = resolve_open_full_texts(papers)
     for paper, full_text in zip(papers, full_text_results, strict=True):
@@ -251,11 +249,17 @@ def build_direction_readings(
                 card=card,
                 full_text=full_text.to_provenance(),
                 research_sight=research_sight,
-                why_selected=build_selection_reason(paper, direction),
+                why_selected=build_selection_reason(paper_for_evidence, direction, card),
                 venue_signal=detect_venue_signal(paper.get("venue", "")),
-                self_read_priority=paper.get("id", "") in recommended_ids,
+                self_read_priority=False,
             ),
         )
+    recommended_keys = {
+        paper_identity(reading.paper)
+        for reading in sorted(readings, key=lambda item: score_direction_reading(item, direction), reverse=True)[:3]
+    }
+    for reading in readings:
+        reading.self_read_priority = paper_identity(reading.paper) in recommended_keys
     enforce_research_sight_diversity(readings)
     return readings
 
@@ -341,6 +345,7 @@ def build_direction_review_bundle(
     recommended = [reading.paper.get("id", "") for reading in readings if reading.self_read_priority]
     coverage = normalize_direction_coverage(relevance_coverage, readings)
     relevant_read_count = sum(1 for reading in readings if is_relevant_paper_dict(reading.paper))
+    coverage["read_count"] = relevant_read_count
     total_read_count = previous_read_count + relevant_read_count
     target_paper_count = 10
     review_status = determine_review_status(
@@ -602,30 +607,101 @@ def empty_relevance_coverage() -> dict[str, int]:
         "weak_match_count": 0,
         "off_topic_count": 0,
         "filtered_count": 0,
+        "read_count": 0,
     }
 
 
-def merge_relevance_coverage(left: dict[str, int], right: dict[str, int]) -> dict[str, int]:
-    merged = dict(left)
-    for key, value in (right or {}).items():
-        if isinstance(value, int):
-            merged[key] = merged.get(key, 0) + value
-    return merged
-
-
-def build_selection_reason(paper: dict[str, Any], direction: str) -> str:
+def build_selection_reason(
+    paper: dict[str, Any],
+    direction: str,
+    card: DeepPaperCard | None = None,
+) -> str:
     terms = candidate_matched_terms(paper) or [
         term for term in significant_terms(direction) if term in f"{paper.get('title', '')} {paper.get('abstract', '')}".lower()
     ]
     venue = detect_venue_signal(str(paper.get("venue", "")))
     quality = normalize_space(str(paper.get("relevance_quality", ""))) or "medium"
+    evidence_level = card.evidence_level if card else ("abstract_only" if normalize_space(paper.get("abstract", "")) else "metadata_only")
+    source_snippet = selection_evidence_snippet(paper, terms)
+    signal_names = []
+    if card:
+        signal_names = [
+            field
+            for field in ("claim", "dataset", "metric", "baseline")
+            if has_card_signal(getattr(card.signals, field, ""))
+        ]
     if terms:
-        direct_source = "标题/摘要直接证据" if normalize_space(paper.get("abstract", "")) else "仅标题/元数据证据"
         return (
             f"相关性 {quality}；核心匹配词：{', '.join(terms[:5])}；"
-            f"证据质量：{direct_source}；{venue}；年份 {paper.get('year') or 'unknown'}。"
+            f"可核验证据：{source_snippet}；证据等级：{evidence_level}；"
+            f"已定位信号：{', '.join(signal_names) if signal_names else '未定位 claim/dataset/metric/baseline'}；"
+            f"{venue}；年份 {paper.get('year') or 'unknown'}。"
         )
-    return f"与方向存在弱相关，需要人工复核；{venue}；用于补全方法或评测背景。"
+    return f"未定位方向核心词，不应进入推荐精读；证据等级：{evidence_level}；{venue}。"
+
+
+def score_direction_reading(reading: DirectionPaperReading, direction: str) -> float:
+    evidence_weight = {"metadata_only": 0.0, "abstract_only": 0.45, "full_text": 1.1}.get(
+        normalize_space(reading.card.evidence_level),
+        0.0,
+    )
+    signal_count = sum(
+        has_card_signal(getattr(reading.card.signals, field, ""))
+        for field in ("claim", "dataset", "metric", "baseline")
+    )
+    return score_direction_paper_dict(reading.paper, direction) + evidence_weight + signal_count * 0.28
+
+
+def selection_evidence_snippet(paper: dict[str, Any], matched_terms: list[str]) -> str:
+    source_values = [
+        ("pdf.full_text", normalize_space(paper.get("full_text", ""))),
+        ("metadata.abstract", normalize_space(paper.get("abstract", ""))),
+        ("metadata.title", normalize_space(paper.get("title", ""))),
+    ]
+    for source, value in source_values:
+        if not value:
+            continue
+        sentences = [normalize_space(item) for item in re.split(r"(?<=[.!?。！？])\s+", value) if normalize_space(item)]
+        sentence = next(
+            (item for item in sentences if any(term and term in item.lower() for term in matched_terms)),
+            sentences[0] if sentences else value,
+        )
+        return f"{source}=`{truncate_text(sentence, 180)}`"
+    return "没有 title/abstract/full_text 原文片段"
+
+
+def has_card_signal(value: str) -> bool:
+    normalized = normalize_space(value)
+    return bool(normalized) and not normalized.startswith("当前证据不足") and not normalized.startswith("未识别")
+
+
+def paper_identity(paper: dict[str, Any]) -> str:
+    return normalize_space(paper.get("id", "")) or normalize_title_key(paper.get("title", ""))
+
+
+def summarize_direction_candidate_pool(candidates: list[PaperCandidate], direction: str) -> dict[str, int]:
+    intent = build_query_intent(direction)
+    deduped: dict[str, PaperCandidate] = {}
+    for candidate in candidates:
+        key = normalize_title_key(candidate.title)
+        if key and key not in deduped:
+            deduped[key] = candidate
+    counts = {"strong": 0, "medium": 0, "weak": 0, "off_topic": 0}
+    for candidate in deduped.values():
+        relevance = score_candidate(candidate, intent)
+        counts[relevance.quality] = counts.get(relevance.quality, 0) + 1
+    returned_count = counts["strong"] + counts["medium"]
+    filtered_count = counts["weak"] + counts["off_topic"]
+    return {
+        "candidate_count": len(deduped),
+        "returned_count": returned_count,
+        "strong_match_count": counts["strong"],
+        "medium_match_count": counts["medium"],
+        "weak_match_count": counts["weak"],
+        "off_topic_count": counts["off_topic"],
+        "filtered_count": filtered_count,
+        "read_count": 0,
+    }
 
 
 def candidate_matched_terms(paper: dict[str, Any]) -> list[str]:
@@ -732,6 +808,11 @@ def normalize_title_key(title: str) -> str:
 
 def normalize_space(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
+
+
+def truncate_text(value: str, limit: int) -> str:
+    normalized = normalize_space(value)
+    return normalized if len(normalized) <= limit else f"{normalized[: limit - 3]}..."
 
 
 def unique_preserve_order(values: list[str]) -> list[str]:

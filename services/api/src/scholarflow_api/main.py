@@ -969,6 +969,59 @@ def search_project_literature(project_id: str, payload: LiteratureSearchRequest)
     )
 
 
+@app.get("/projects/{project_id}/paper-cards", response_model=list[PaperCard])
+def list_project_paper_cards(project_id: str) -> list[PaperCard]:
+    """Return one evidence-best persisted card per paper_id.
+
+    Artifacts remain append-only for auditability. This projection is the read
+    contract used by the UI, so an older abstract/download-failure artifact
+    cannot overwrite a verified full-text card for the same paper.
+    """
+    ensure_project_exists(project_id)
+    with get_connection() as connection:
+        rows = fetch_project_paper_card_dicts(connection, project_id)
+    return [paper_card_from_row(row) for row in rows]
+
+
+def paper_card_from_row(row: dict) -> PaperCard:
+    sections = parse_json_list(row.get("sections_json"))
+    signals = row.get("signals") if isinstance(row.get("signals"), dict) else {}
+    full_text = row.get("full_text") if isinstance(row.get("full_text"), dict) else {}
+    artifact_title = str(row.get("artifact_title") or "")
+    card_source = (
+        "direction_review_artifact"
+        if "direction_round" in artifact_title.lower()
+        else ("paper_table" if row.get("paper_id") else "manual_unbound")
+    )
+    return PaperCard(
+        id=str(row.get("id") or ""),
+        project_id=str(row.get("project_id") or ""),
+        paper_id=row.get("paper_id") or None,
+        paper_title=str(row.get("paper_title") or ""),
+        artifact_id=row.get("artifact_id") or None,
+        source_artifact_title=artifact_title,
+        card_source=card_source,
+        evidence_level=str(row.get("evidence_level") or "metadata_only"),
+        full_text=full_text,
+        signals=signals,
+        sections=sections,
+        weakest_assumption=str(row.get("weakest_assumption") or ""),
+        minimal_reproduction=str(row.get("minimal_reproduction") or ""),
+        created_at=str(row.get("created_at") or ""),
+        updated_at=str(row.get("updated_at") or row.get("created_at") or ""),
+    )
+
+
+def parse_json_list(value: object) -> list[dict]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
+    return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
+
+
 @app.post("/projects/{project_id}/paper-cards", response_model=PaperCardResponse, status_code=201)
 def create_project_paper_card(project_id: str, payload: PaperCardCreateRequest) -> PaperCardResponse:
     with get_connection() as connection:
@@ -996,7 +1049,7 @@ def persist_project_paper_card(
             title=f"paper_card_{paper_slug(card.paper_title)}.md",
             kind="markdown",
             content_markdown=render_card_markdown(card, paper, provenance),
-            content_json=render_card_json(card, paper, provenance),
+            content_json=render_card_json(card, paper, provenance, updated_at=now),
             diff="+ Generated 12-section Deep Paper Card\n+ Saved structured JSON for downstream gap analysis",
             now=now,
         )
@@ -1046,7 +1099,10 @@ def persist_project_paper_card(
             id=card_id,
             project_id=project_id,
             paper_id=payload.paper_id,
+            paper_title=card.paper_title,
             artifact_id=artifact["id"],
+            source_artifact_title=artifact["title"],
+            card_source="paper_table" if payload.paper_id else "manual_unbound",
             evidence_level=card.evidence_level,
             full_text=provenance,
             signals=card.signals.to_dict(),
@@ -1054,6 +1110,7 @@ def persist_project_paper_card(
             weakest_assumption=card.weakest_assumption,
             minimal_reproduction=card.minimal_reproduction,
             created_at=now,
+            updated_at=now,
         ),
         artifact=Artifact.model_validate(artifact),
     )
@@ -1070,7 +1127,7 @@ def extract_project_paper_full_text(
 ) -> PaperFullTextExtractResponse:
     """Parse a user-supplied PDF without pretending a failed parse is full-text evidence."""
     with get_connection() as connection:
-        fetch_paper_dict(connection, project_id, paper_id)
+        paper = fetch_paper_dict(connection, project_id, paper_id)
     result = parse_pdf_bytes(payload, source="user_uploaded_pdf")
     generated = (
         persist_project_paper_card(
@@ -1081,9 +1138,17 @@ def extract_project_paper_full_text(
         if result.is_extracted
         else None
     )
+    updated_at = generated.card.updated_at if generated else utc_now()
+    evidence_level = "full_text" if result.is_extracted else ("abstract_only" if paper.get("abstract") else "metadata_only")
     return PaperFullTextExtractResponse(
         paper_id=paper_id,
         text=result.text if result.is_extracted else "",
+        evidence_level=evidence_level,
+        evidence_quality=evidence_level,
+        source=result.source,
+        page_count=result.page_count,
+        char_count=result.character_count,
+        updated_at=updated_at,
         full_text=result.to_provenance(),
         card=generated.card if generated else None,
         artifact=generated.artifact if generated else None,

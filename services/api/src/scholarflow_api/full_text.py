@@ -59,6 +59,8 @@ class FullTextResult:
     page_count: int = 0
     character_count: int = 0
     error: str = ""
+    failure_stage: str = ""
+    recovery_hint: str = ""
     text: str = ""
 
     @property
@@ -72,8 +74,17 @@ class FullTextResult:
 
 
 class FullTextFetchError(RuntimeError):
-    def __init__(self, status: str, message: str) -> None:
+    def __init__(
+        self,
+        status: str,
+        message: str,
+        *,
+        failure_stage: str = "",
+        recovery_hint: str = "",
+    ) -> None:
         self.status = status
+        self.failure_stage = failure_stage or ("parse" if status == "parse_failed" else "download")
+        self.recovery_hint = recovery_hint or recovery_hint_for_stage(self.failure_stage)
         super().__init__(message)
 
 
@@ -96,12 +107,16 @@ def resolve_open_full_text(paper: dict[str, Any]) -> FullTextResult:
             pdf_url=pdf_url,
             source=source,
             error="自动获取开放 PDF 已由 SCHOLARFLOW_AUTO_FETCH_PDF 关闭。",
+            failure_stage="configuration",
+            recovery_hint="开启 SCHOLARFLOW_AUTO_FETCH_PDF，或在 Paper Reader 中上传本地 PDF。",
         )
     if not pdf_url:
         return FullTextResult(
             status="not_available",
             source=source,
             error="检索元数据未提供可验证的开放 PDF URL。",
+            failure_stage="discovery",
+            recovery_hint="在 Paper Reader 中上传本地 PDF，或补充公开 PDF URL。",
         )
 
     try:
@@ -112,6 +127,8 @@ def resolve_open_full_text(paper: dict[str, Any]) -> FullTextResult:
             pdf_url=pdf_url,
             source=source,
             error=str(error),
+            failure_stage=error.failure_stage,
+            recovery_hint=error.recovery_hint,
         )
 
     return parse_pdf_bytes(payload, pdf_url=pdf_url, source=source)
@@ -193,12 +210,27 @@ def download_pdf_bytes(url: str) -> bytes:
     except FullTextFetchError:
         raise
     except ssl.SSLCertVerificationError as error:
-        raise FullTextFetchError("download_failed", f"开放 PDF TLS 证书验证失败：{error}") from error
+        raise FullTextFetchError(
+            "download_failed",
+            f"开放 PDF TLS 证书验证失败：{error}",
+            failure_stage="tls_verification",
+            recovery_hint="检查系统时间与 certifi 安装，或在 Paper Reader 中上传本地 PDF；不要关闭 TLS 校验。",
+        ) from error
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError) as error:
         message = str(error)
         if "CERTIFICATE_VERIFY_FAILED" in message.upper():
             message = f"TLS 证书验证失败：{message}"
-        raise FullTextFetchError("download_failed", f"开放 PDF 下载失败：{message}") from error
+        failure_stage = "tls_verification" if "TLS 证书验证失败" in message else "download"
+        raise FullTextFetchError(
+            "download_failed",
+            f"开放 PDF 下载失败：{message}",
+            failure_stage=failure_stage,
+            recovery_hint=(
+                "检查系统时间与 certifi 安装，或在 Paper Reader 中上传本地 PDF；不要关闭 TLS 校验。"
+                if failure_stage == "tls_verification"
+                else "稍后重试开放 PDF 下载，或在 Paper Reader 中上传本地 PDF。"
+            ),
+        ) from error
 
     if len(payload) > PDF_MAX_BYTES:
         raise FullTextFetchError("download_failed", f"开放 PDF 超过下载上限 {PDF_MAX_BYTES} bytes。")
@@ -212,6 +244,14 @@ def trusted_ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context(cafile=certifi.where())
 
 
+def recovery_hint_for_stage(stage: str) -> str:
+    if stage == "parse":
+        return "上传带可复制文本层的 PDF；扫描件需要先 OCR，再重新上传。"
+    if stage == "tls_verification":
+        return "检查系统时间与 certifi 安装，或上传本地 PDF；不要关闭 TLS 校验。"
+    return "稍后重试开放 PDF 下载，或在 Paper Reader 中上传本地 PDF。"
+
+
 def parse_pdf_bytes(payload: bytes, pdf_url: str = "", source: str = "user_uploaded_pdf") -> FullTextResult:
     if len(payload) > PDF_MAX_BYTES:
         return FullTextResult(
@@ -219,6 +259,8 @@ def parse_pdf_bytes(payload: bytes, pdf_url: str = "", source: str = "user_uploa
             pdf_url=pdf_url,
             source=source,
             error=f"PDF 超过解析上限 {PDF_MAX_BYTES} bytes。",
+            failure_stage="parse",
+            recovery_hint="上传不超过大小限制的 PDF，或仅提供论文正文文本。",
         )
     if not payload.lstrip().startswith(b"%PDF-"):
         return FullTextResult(
@@ -226,6 +268,8 @@ def parse_pdf_bytes(payload: bytes, pdf_url: str = "", source: str = "user_uploa
             pdf_url=pdf_url,
             source=source,
             error="上传内容不是 PDF 文件（缺少 %PDF 文件头）。",
+            failure_stage="validation",
+            recovery_hint="重新选择有效的 PDF 文件后上传。",
         )
     try:
         text, page_count = extract_research_text_from_pdf(payload)
@@ -235,6 +279,8 @@ def parse_pdf_bytes(payload: bytes, pdf_url: str = "", source: str = "user_uploa
             pdf_url=pdf_url,
             source=source,
             error=str(error),
+            failure_stage=error.failure_stage,
+            recovery_hint=error.recovery_hint,
         )
 
     character_count = len(text)
@@ -249,6 +295,8 @@ def parse_pdf_bytes(payload: bytes, pdf_url: str = "", source: str = "user_uploa
                 f"PDF 仅提取到 {character_count} 个正文字符，低于全文证据阈值 {PDF_MIN_TEXT_CHARS}；"
                 "可能是扫描件、加密文件或文本层缺失。"
             ),
+            failure_stage="parse",
+            recovery_hint="上传带可复制文本层的 PDF；扫描件需要先 OCR，再重新上传。",
         )
     return FullTextResult(
         status="extracted",

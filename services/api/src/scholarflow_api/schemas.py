@@ -6,6 +6,9 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 
+EvidenceLevel = Literal["metadata_only", "abstract_only", "full_text"]
+
+
 class HealthResponse(BaseModel):
     status: str
     service: str
@@ -178,6 +181,8 @@ class FullTextProvenance(BaseModel):
     page_count: int = 0
     character_count: int = 0
     error: str = ""
+    failure_stage: str = ""
+    recovery_hint: str = ""
 
 
 class EvidenceSnippet(BaseModel):
@@ -251,14 +256,18 @@ class PaperCard(BaseModel):
     id: str
     project_id: str
     paper_id: str | None
+    paper_title: str = ""
     artifact_id: str | None
-    evidence_level: Literal["metadata_only", "abstract_only", "full_text"] = "metadata_only"
+    source_artifact_title: str = ""
+    card_source: Literal["paper_table", "direction_review_artifact", "manual_unbound"] = "paper_table"
+    evidence_level: EvidenceLevel = "metadata_only"
     full_text: FullTextProvenance = Field(default_factory=FullTextProvenance)
     signals: PaperSignals = Field(default_factory=PaperSignals)
     sections: list[PaperCardSection]
     weakest_assumption: str
     minimal_reproduction: str
     created_at: str
+    updated_at: str = ""
 
 
 class PaperCardResponse(BaseModel):
@@ -269,6 +278,12 @@ class PaperCardResponse(BaseModel):
 class PaperFullTextExtractResponse(BaseModel):
     paper_id: str
     text: str = ""
+    evidence_level: EvidenceLevel = "metadata_only"
+    evidence_quality: EvidenceLevel = "metadata_only"
+    source: str = ""
+    page_count: int = 0
+    char_count: int = 0
+    updated_at: str = ""
     full_text: FullTextProvenance = Field(default_factory=FullTextProvenance)
     card: PaperCard | None = None
     artifact: Artifact | None = None
@@ -292,7 +307,7 @@ class DirectionScope(BaseModel):
 class DirectionPaperReading(BaseModel):
     paper: Paper
     abstract_translation: str
-    evidence_level: Literal["metadata_only", "abstract_only", "full_text"] = "metadata_only"
+    evidence_level: EvidenceLevel = "metadata_only"
     full_text: FullTextProvenance = Field(default_factory=FullTextProvenance)
     signals: PaperSignals = Field(default_factory=PaperSignals)
     sections: list[PaperCardSection]
@@ -391,6 +406,8 @@ class PaperMemoryHit(BaseModel):
     section_score: float = 0.0
     priority_score: float = 0.0
     snippets: list[str]
+    evidence_quality: Literal["metadata_only", "abstract_only", "full_text"] = "metadata_only"
+    evidence_refs: list[dict[str, str]] = Field(default_factory=list)
     abstract_translation: str
     weakest_assumption: str
     minimal_reproduction: str

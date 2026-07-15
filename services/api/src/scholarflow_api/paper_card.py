@@ -82,7 +82,11 @@ def generate_deep_paper_card(paper: dict[str, Any], extra_context: str = "") -> 
     evidence_level = infer_card_evidence_level(abstract, extra_context)
     signals = extract_paper_signals(title=title, abstract=abstract, paper_text=extra_context, venue=venue)
     focus = infer_focus(title, context)
-    limitation = signals.limitation if has_signal(signals.limitation) else infer_limitation(focus)
+    limitation = (
+        signals.limitation
+        if has_signal(signals.limitation)
+        else "无法判断：摘要/PDF 原文没有提供 limitation 或 failure mode 证据"
+    )
     weakest_assumption = build_weakest_assumption(focus, signals)
     minimal_reproduction = build_minimal_reproduction(signals, title)
     counterexample = build_counterexample(signals, focus)
@@ -176,6 +180,7 @@ def generate_deep_paper_card(paper: dict[str, Any], extra_context: str = "") -> 
         ),
         ],
         evidence_level,
+        title,
     )
 
     return DeepPaperCard(
@@ -319,11 +324,33 @@ def infer_card_evidence_level(abstract: str, paper_text: str) -> str:
 def apply_evidence_boundary_to_sections(
     sections: list[PaperCardSection],
     evidence_level: str,
+    paper_title: str,
 ) -> list[PaperCardSection]:
-    # Evidence level is a card-level contract. Repeating the same warning inside all
-    # 12 sections destroys the paper-specific analysis and pollutes saved memories.
-    # The API exposes evidence_level/full_text provenance and renderers show one
-    # global warning instead; each section keeps only its distinct research content.
+    if evidence_level == "metadata_only":
+        prompts = {
+            "research_problem": "需要补充 abstract 后确认论文实际研究问题、背景与价值。",
+            "prior_work": "需要原文 related work 或 abstract 才能判断已有研究不足。",
+            "author_reasoning": "没有作者动机或失败模式原文，不能重建作者思考路径。",
+            "intuition": "没有 method/claim 原文，不能概括核心 intuition。",
+            "method_pipeline": "需要 PDF 方法段后再拆解 input、processing 与 output。",
+            "math_theory": "没有公式、目标函数或方法描述，不能生成数学解释。",
+            "experiment_logic": "需要 dataset、metric、baseline 与 claim 原文后判断实验闭环。",
+            "takeaways": "当前只能记录标题线索，不能形成论文级 take-away。",
+            "weakest_assumption": "没有 claim/limitation/dataset/metric 原文，无法判断最脆弱假设。",
+            "minimal_reproduction": "缺少可验证 anchor，本节保持 blocked。",
+            "counterexample": "没有可测试 claim，不能为该论文设计反例。",
+            "follow_up": "没有 limitation/claim/evaluation 证据，不提出论文专属 follow-up。",
+        }
+        return [
+            PaperCardSection(
+                section.id,
+                section.title,
+                f"`{paper_title}` 当前仅有 metadata/title。{prompts.get(section.id, '需要补充原文证据后再判断。')}",
+            )
+            for section in sections
+        ]
+    # Abstract/full-text cards keep distinct paper-specific content. The global
+    # evidence boundary is rendered once instead of being repeated 12 times.
     return sections
 
 
@@ -683,6 +710,11 @@ def build_takeaways_section(signals: PaperSignals, focus: str) -> str:
             "Take-away 不是复现某个模型，而是提取它的文献组织价值：它如何划分问题空间、哪些范式被认为重要、"
             "哪些失败模式仍未解决。读这类论文时要特别检查 survey 的覆盖面和分类轴是否有明确纳入规则。"
         )
+    if not all(has_signal(getattr(signals, field)) for field in ["claim", "dataset", "metric"]):
+        return (
+            "无法判断：当前摘要/PDF 原文没有同时提供 claim、dataset 与 metric，"
+            "因此不能把任务归类或通用方法描述写成这篇论文的 take-away。"
+        )
     return (
         f"任务层面：这篇论文应被理解为 `{signals.task}` 下的 `{signals.contribution_type}` 工作。"
         f" 证据层面：可信判断依赖 `{signals.claim}`、`{signals.dataset}`、`{signals.metric}` 和 `{signals.baseline}` 是否形成闭环。"
@@ -693,20 +725,16 @@ def build_takeaways_section(signals: PaperSignals, focus: str) -> str:
 
 
 def build_weakest_assumption(focus: str, signals: PaperSignals) -> str:
-    if has_signal(signals.claim) and has_signal(signals.dataset) and has_signal(signals.metric):
+    required_fields = ["claim", "limitation", "dataset", "metric"]
+    missing = [field for field in required_fields if not has_signal(getattr(signals, field))]
+    if not missing:
         return (
-            f"最脆弱假设：`{signals.metric}` 在 `{signals.dataset}` 上足以支持 `{signals.claim}`。"
-            "只要数据分布、负样本构造、标注规则或指标与真实任务错位，论文的核心结论就可能被高估。"
-        )
-    if has_signal(signals.claim):
-        return (
-            f"最脆弱假设：`{signals.claim}` 可以在当前可见证据下成立。"
-            f"{missing_signal_sentence(signals, ['dataset', 'metric'])}"
-            "如果后续找不到清晰数据集和指标，这个 claim 只能被视作待验证假设。"
+            f"推断性弱假设：原文 limitation `{signals.limitation}` 可能使 `{signals.metric}` 在 `{signals.dataset}` 上"
+            f"不足以支持 `{signals.claim}`。该判断锚定上述四项原文信号，仍需回到对应段落复核。"
         )
     return (
-        f"最脆弱假设：论文定义的评价对象和真实目标能力一致。当前围绕 `{focus}` 的证据链不完整，"
-        f"{missing_signal_sentence(signals, ['claim', 'dataset', 'metric'])}"
+        f"无法判断：缺少 {', '.join(missing)} 的摘要/PDF 原文证据，"
+        "不能把通用 benchmark 风险或任务假设包装成该论文最脆弱的假设。"
     )
 
 
@@ -852,11 +880,16 @@ def render_card_json(
     card: DeepPaperCard,
     paper: dict[str, Any],
     full_text: dict[str, Any] | None = None,
+    updated_at: str = "",
 ) -> str:
+    paper_id = paper.get("id") or ""
     return json.dumps(
         {
+            "schema_version": "paper_card.v2",
+            "paper_id": paper_id,
+            "updated_at": updated_at,
             "paper": {
-                "id": paper.get("id") or "",
+                "id": paper_id,
                 "project_id": paper.get("project_id") or "",
                 "title": paper.get("title") or card.paper_title,
                 "authors": paper.get("authors") or "",
@@ -871,6 +904,7 @@ def render_card_json(
             },
             "card": card.to_dict(),
             "evidence_level": card.evidence_level,
+            "evidence_quality": card.evidence_level,
             "full_text": full_text or {
                 "status": "not_available",
                 "pdf_url": paper.get("pdf_url") or "",
