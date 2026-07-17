@@ -251,19 +251,27 @@ def search_literature(query: str, max_results: int = 12, sources: list[str] | No
                 break
 
     ranked_result = rank_and_deduplicate_result(candidates, query)
-    if has_relevance_filtering(ranked_result.coverage):
-        errors.append(f"relevance_coverage:{format_relevance_coverage(ranked_result.coverage)}")
-    if len(ranked_result.papers) < LOW_RECALL_THRESHOLD:
+    eligible_count = len(ranked_result.papers)
+    visible_papers = ranked_result.papers[:max_results]
+    relevance_coverage = {
+        **ranked_result.coverage,
+        "eligible_count": eligible_count,
+        "returned_count": len(visible_papers),
+        "truncated_count": max(0, eligible_count - len(visible_papers)),
+    }
+    if has_relevance_filtering(relevance_coverage):
+        errors.append(f"relevance_coverage:{format_relevance_coverage(relevance_coverage)}")
+    if len(visible_papers) < LOW_RECALL_THRESHOLD:
         errors.append(
-            f"low_recall: only {len(ranked_result.papers)} strong/medium papers returned after query expansion and relaxation; "
+            f"low_recall: only {len(visible_papers)} strong/medium papers returned after query expansion and relaxation; "
             "results are partial and should not be treated as a complete direction survey.",
         )
     return LiteratureSearchResult(
         query=query,
         expanded_queries=expanded_queries,
-        papers=ranked_result.papers[:max_results],
+        papers=visible_papers,
         errors=compact_retrieval_errors(errors),
-        relevance_coverage=ranked_result.coverage,
+        relevance_coverage=relevance_coverage,
     )
 
 
@@ -1316,6 +1324,9 @@ def has_relevance_filtering(coverage: dict[str, int]) -> bool:
 def format_relevance_coverage(coverage: dict[str, int]) -> str:
     return (
         f"{coverage.get('candidate_count', 0)} candidates / "
+        f"{coverage.get('eligible_count', coverage.get('returned_count', 0))} eligible / "
+        f"{coverage.get('returned_count', 0)} returned / "
+        f"{coverage.get('truncated_count', 0)} truncated by limit / "
         f"{coverage.get('strong_match_count', 0)} strong matches / "
         f"{coverage.get('medium_match_count', 0)} medium matches / "
         f"{coverage.get('weak_match_count', 0)} weak filtered / "

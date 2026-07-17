@@ -551,7 +551,7 @@ export interface ApiToolEvent {
   session_id: string;
   time_label: string;
   tool: string;
-  status: "done" | "running" | "queued" | "failed" | "cancelled";
+  status: "done" | "running" | "queued" | "partial" | "blocked" | "failed" | "cancelled";
   summary: string;
   created_at: string;
 }

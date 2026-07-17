@@ -1597,15 +1597,28 @@ export function ProductPaperTableView({
             icon={Search}
             label="本轮候选"
             value={String(relevanceCoverage.candidate_count)}
-            hint="本轮从检索源收集、去重前后进入相关性筛选的候选论文数。"
+            hint="本轮从检索源收集并去重后，进入相关性筛选的候选论文数。"
+          />
+          <MetricCard
+            icon={ShieldCheck}
+            label="通过门槛"
+            value={String(relevanceCoverage.eligible_count)}
+            hint="被判定为强相关或中相关、具备进入结果集资格的论文数。"
           />
           <MetricCard
             icon={FileText}
-            label="本轮返回"
+            label="本轮展示"
             value={String(relevanceCoverage.returned_count)}
-            hint="本轮检索后保留下来并写入项目的论文数；与项目累计保存数不同。"
+            hint="受 max_results 上限约束后，本轮实际返回并写入项目的论文数。"
           />
-          <MetricCard icon={Target} label="强 / 中相关" value={`${strongCount} / ${mediumCount}`} hint="本轮返回论文按相关性分级后的数量。" />
+          <MetricCard
+            icon={AlertTriangle}
+            label="因上限未展示"
+            value={String(relevanceCoverage.truncated_count)}
+            hint="已通过相关性门槛，但因本轮数量上限而未写入项目的论文数。"
+            amber={relevanceCoverage.truncated_count > 0}
+          />
+          <MetricCard icon={Target} label="强 / 中相关" value={`${strongCount} / ${mediumCount}`} hint="所有通过门槛论文的相关性分级；两者之和等于“通过门槛”。" />
           <MetricCard icon={AlertTriangle} label="弱相关已过滤" value={String(weakCount)} hint="因只命中泛词或证据不足而未进入默认结果的候选数。" amber={weakCount > 0} />
           <MetricCard icon={ShieldCheck} label="离题已过滤" value={String(offTopicCount)} hint="因领域或核心主题不匹配而被排除的候选数。" amber={offTopicCount > 0} />
         </div>
@@ -1758,11 +1771,17 @@ function derivePaperTableCoverage(papers: PaperRow[], coverage: Record<string, n
   const mediumFromRows = papers.filter((paper) => paper.relevanceQuality === "medium" || !paper.relevanceQuality).length;
   const weakCount = coverage.weak_match_count ?? 0;
   const offTopicCount = coverage.off_topic_count ?? 0;
+  const strongCount = coverage.strong_match_count ?? strongFromRows;
+  const mediumCount = coverage.medium_match_count ?? mediumFromRows;
+  const eligibleCount = coverage.eligible_count ?? strongCount + mediumCount;
+  const returnedCount = coverage.returned_count ?? papers.length;
   return {
     candidate_count: coverage.candidate_count ?? papers.length,
-    returned_count: coverage.returned_count ?? papers.length,
-    strong_match_count: coverage.strong_match_count ?? strongFromRows,
-    medium_match_count: coverage.medium_match_count ?? mediumFromRows,
+    eligible_count: eligibleCount,
+    returned_count: returnedCount,
+    truncated_count: coverage.truncated_count ?? Math.max(0, eligibleCount - returnedCount),
+    strong_match_count: strongCount,
+    medium_match_count: mediumCount,
     weak_match_count: weakCount,
     off_topic_count: offTopicCount,
     filtered_count: coverage.filtered_count ?? weakCount + offTopicCount,

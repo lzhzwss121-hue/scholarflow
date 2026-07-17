@@ -28,6 +28,50 @@ from scholarflow_api.text_utils import extract_terms
 
 
 class ResearchQualitySmokeTest(unittest.TestCase):
+    def test_literature_coverage_distinguishes_eligible_from_returned_limit(self) -> None:
+        papers = [
+            literature.PaperCandidate(
+                title=f"Evidence Faithfulness Benchmark {index}",
+                year="2026",
+                authors="A. Researcher",
+                abstract="A VQA evidence faithfulness benchmark.",
+                type="Benchmark",
+                venue="arXiv cs.CV",
+                source="arxiv",
+                url=f"https://arxiv.org/abs/2601.{index:05d}",
+                relation="direct match",
+                priority="High",
+                relevance_score=1.5,
+                relevance_quality="strong",
+            )
+            for index in range(6)
+        ]
+        ranked = literature.RankedPaperSet(
+            papers=papers,
+            coverage={
+                "candidate_count": 6,
+                "returned_count": 6,
+                "strong_match_count": 6,
+                "medium_match_count": 0,
+                "weak_match_count": 0,
+                "off_topic_count": 0,
+                "filtered_count": 0,
+            },
+        )
+
+        with patch.object(literature, "expand_queries", return_value=["evidence faithfulness"]), patch.object(
+            literature,
+            "search_sources_for_query",
+            return_value=papers,
+        ), patch.object(literature, "rank_and_deduplicate_result", return_value=ranked):
+            result = literature.search_literature("evidence faithfulness", max_results=2, sources=["arxiv"])
+
+        self.assertEqual(len(result.papers), 2)
+        self.assertEqual(result.relevance_coverage["candidate_count"], 6)
+        self.assertEqual(result.relevance_coverage["eligible_count"], 6)
+        self.assertEqual(result.relevance_coverage["returned_count"], 2)
+        self.assertEqual(result.relevance_coverage["truncated_count"], 4)
+
     def test_literature_low_recall_relaxes_query_and_degrades_openalex(self) -> None:
         calls: list[tuple[str, bool]] = []
 
@@ -1554,6 +1598,7 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                             status = polled
                             break
                         time.sleep(0.05)
+                    timeline = main_module.get_project_timeline(project.id)
 
         literature_step = next(step for step in status.steps if step.tool == "literature_search")
         self.assertIn(status.status, {"partial", "completed_with_warnings"})
@@ -1564,6 +1609,8 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertTrue(status.run_status_summary)
         self.assertTrue(any(step.step_id == "experiment-planner" for step in status.workflow_steps))
         self.assertIsNotNone(status.artifact)
+        self.assertEqual(int(status.summary_metrics.get("warning_count") or 0), len(status.warnings))
+        self.assertTrue(any(event.tool == "agent.execute" and event.status == "partial" for event in timeline))
 
     def test_agent_run_cancel_marks_planned_run_cancelled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

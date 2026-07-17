@@ -78,6 +78,63 @@ test("empty user project paper table does not show mock or demo papers", async (
   await expect(page.getByText(/Synthetic Example/)).toHaveCount(0);
 });
 
+test("timeline failure does not erase successfully loaded papers", async ({ page }) => {
+  const project = {
+    id: "project_e2e_timeline_failure",
+    title: "时间线局部失败回归",
+    description: "partial resource hydration regression",
+    keyword: "VQA evidence faithfulness",
+    field: "Artificial Intelligence",
+    language: "zh-CN",
+    workflow: "survey-to-experiment",
+    stage: "literature-retrieval",
+    active_session_id: "session_e2e_timeline_failure",
+    created_at: "2026-07-02T00:00:00+00:00",
+    updated_at: "2026-07-02T00:00:00+00:00",
+  };
+  const paper = {
+    id: "paper_e2e_timeline_failure",
+    project_id: project.id,
+    title: "Paper Survives Timeline Failure",
+    authors: "A. Researcher",
+    abstract: "A grounded VQA evidence faithfulness benchmark.",
+    year: "2026",
+    type: "Benchmark",
+    venue: "arXiv cs.CV",
+    source: "arxiv",
+    url: "https://arxiv.org/abs/2601.00042",
+    relation: "strong evidence faithfulness match",
+    priority: "High",
+    code: "unknown",
+    relevance_score: 1.6,
+    relevance_quality: "strong",
+    created_at: "2026-07-02T00:00:00+00:00",
+  };
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
+  });
+  await page.route("**/projects", async (route) => {
+    await route.fulfill({ json: [project] });
+  });
+  await page.route(`**/projects/${project.id}/papers`, async (route) => {
+    await route.fulfill({ json: [paper] });
+  });
+  await page.route(`**/projects/${project.id}/timeline`, async (route) => {
+    await route.fulfill({ status: 500, json: { detail: "timeline validation failed" } });
+  });
+  await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/paper-cards`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+
+  await page.goto("/#paper-table");
+  await expect(page.getByText(paper.title, { exact: true })).toBeVisible();
+  await expect(page.getByText("本次没有可展示论文")).toHaveCount(0);
+});
+
 test("paper table uses structured relevance coverage and partial workflow status", async ({ page }) => {
   const project = {
     id: "project_e2e_relevance_coverage",

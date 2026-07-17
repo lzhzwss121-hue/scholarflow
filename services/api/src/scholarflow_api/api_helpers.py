@@ -15,6 +15,7 @@ from scholarflow_api.schemas import (
     PaperCardCreateRequest,
     PaperMemoryHit,
     ResearchSight,
+    ToolEventStatusLiteral,
 )
 
 def ensure_project_exists(project_id: str) -> None:
@@ -413,7 +414,7 @@ def insert_tool_event(
     connection,
     session_id: str,
     tool: str,
-    status: str,
+    status: ToolEventStatusLiteral,
     summary: str,
     created_at: str,
     time_label: str = "Now",

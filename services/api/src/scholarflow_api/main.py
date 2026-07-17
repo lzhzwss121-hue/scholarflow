@@ -296,7 +296,9 @@ def agent_workflow_steps(outputs: dict[str, object] | None, artifacts: list[dict
                 label="Paper Table",
                 summary=(
                     f"{coverage.get('candidate_count', len(papers))} candidates / "
+                    f"{coverage.get('eligible_count', coverage.get('returned_count', len(papers)))} eligible / "
                     f"{coverage.get('returned_count', len(papers))} returned / "
+                    f"{coverage.get('truncated_count', 0)} truncated / "
                     f"{coverage.get('off_topic_count', 0)} off-topic filtered"
                 ),
                 warnings=[f"degraded retrieval: {error}" for error in errors],
@@ -446,7 +448,9 @@ def persist_agent_run_progress(
         summary_text = "cancelled: Agent Run stopped by user request."
     else:
         summary_text = str(run_summary["summary"])
-    plan["summary_metrics"] = collect_agent_summary_metrics(plan, len(papers))
+    summary_metrics = collect_agent_summary_metrics(plan, len(papers))
+    summary_metrics["warning_count"] = len(merged_warnings)
+    plan["summary_metrics"] = summary_metrics
     plan["warnings"] = merged_warnings
     plan["artifact_refs"] = serialize_artifact_refs(artifacts)
     plan["workflow_steps"] = serialize_workflow_steps(workflow_steps)
@@ -956,9 +960,9 @@ def search_project_literature(project_id: str, payload: LiteratureSearchRequest)
                 label="Paper Table",
                 summary=(
                     f"{result.relevance_coverage.get('candidate_count', len(rows))} candidates / "
+                    f"{result.relevance_coverage.get('eligible_count', result.relevance_coverage.get('returned_count', len(rows)))} eligible / "
                     f"{result.relevance_coverage.get('returned_count', len(rows))} returned / "
-                    f"{result.relevance_coverage.get('strong_match_count', 0)} strong matches / "
-                    f"{result.relevance_coverage.get('medium_match_count', 0)} medium matches / "
+                    f"{result.relevance_coverage.get('truncated_count', 0)} truncated / "
                     f"{result.relevance_coverage.get('off_topic_count', 0)} off-topic filtered"
                 ),
                 warnings=result.errors,
@@ -1934,7 +1938,9 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
             summary=(
                 f"已检索真实论文候选 {len(result.papers)} 篇；"
                 f"{result.relevance_coverage.get('candidate_count', len(result.papers))} candidates / "
+                f"{result.relevance_coverage.get('eligible_count', result.relevance_coverage.get('returned_count', len(papers)))} eligible / "
                 f"{result.relevance_coverage.get('returned_count', len(papers))} returned / "
+                f"{result.relevance_coverage.get('truncated_count', 0)} truncated / "
                 f"{result.relevance_coverage.get('off_topic_count', 0)} off-topic filtered。"
             ),
             summary_metrics={

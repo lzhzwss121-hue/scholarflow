@@ -462,6 +462,16 @@ AgentRunStatusLiteral = Literal[
     "cancelled",
 ]
 
+ToolEventStatusLiteral = Literal[
+    "done",
+    "running",
+    "queued",
+    "partial",
+    "blocked",
+    "failed",
+    "cancelled",
+]
+
 
 class AgentPlanStep(BaseModel):
     id: str
@@ -544,6 +554,6 @@ class ToolEvent(BaseModel):
     session_id: str
     time_label: str
     tool: str
-    status: Literal["done", "running", "queued", "failed", "cancelled"]
+    status: ToolEventStatusLiteral
     summary: str
     created_at: str

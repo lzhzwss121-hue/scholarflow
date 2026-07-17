@@ -83,6 +83,15 @@ type RequestGuard = {
   finish: () => void;
 };
 
+type ProjectResourceSnapshot = {
+  papers?: ApiPaper[];
+  timeline?: Awaited<ReturnType<typeof getProjectTimeline>>;
+  artifactSummaries?: ApiArtifactSummary[];
+  artifacts?: ApiArtifact[];
+  paperCards?: ApiPaperCard[];
+  warnings: string[];
+};
+
 const workflowLabels: Record<ViewId, string> = {
   dashboard: "项目总览",
   "new-project": "新建项目",
@@ -319,6 +328,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       setApiStatus("online");
       setProjects(loadedProjects);
       setActiveProject(firstProject);
+      activeProjectIdRef.current = firstProject?.id ?? null;
       setApiMessage(firstProject ? "API 已连接，正在使用 SQLite 工作区。" : "API 已连接，尚未创建项目。");
       if (firstProject && !isDemoProject(firstProject.id)) {
         storeActiveProjectId(firstProject.id);
@@ -340,28 +350,12 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
   async function loadProjectResources(projectId: string, outerGuard?: RequestGuard) {
     const guard = outerGuard ?? beginRequest("resources");
     try {
-      const [apiPapers, apiTimeline, artifactSummaries, apiPaperCards] = await Promise.all([
-        listProjectPapers(projectId, { signal: guard.signal }),
-        getProjectTimeline(projectId, { signal: guard.signal }),
-        listProjectArtifactSummaries(projectId, { signal: guard.signal }),
-        listProjectPaperCards(projectId, { signal: guard.signal }).catch((error) => {
-          if (isAbortError(error)) {
-            throw error;
-          }
-          return [];
-        }),
-      ]);
-
+      const snapshot = await fetchProjectResourceSnapshot(projectId, { signal: guard.signal });
       if (!guard.isCurrent() || activeProjectIdRef.current !== projectId) {
         return;
       }
 
-      const apiArtifacts = await loadHydrationArtifacts(artifactSummaries, { signal: guard.signal });
-      if (!guard.isCurrent() || activeProjectIdRef.current !== projectId) {
-        return;
-      }
-
-      applyProjectResources(projectId, apiPapers, apiTimeline, artifactSummaries, apiArtifacts, apiPaperCards);
+      applyProjectResources(projectId, snapshot);
     } catch (error) {
       if (!guard.isCurrent() || isAbortError(error)) {
         return;
@@ -376,23 +370,33 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
 
   function applyProjectResources(
     projectId: string,
-    apiPapers: ApiPaper[],
-    apiTimeline: Awaited<ReturnType<typeof getProjectTimeline>>,
-    artifactSummaries: ApiArtifactSummary[],
-    apiArtifacts: ApiArtifact[],
-    apiPaperCards: ApiPaperCard[] = [],
+    snapshot: ProjectResourceSnapshot,
   ) {
     if (activeProjectIdRef.current !== projectId) {
       return;
     }
-    setPaperRows(apiPapers.filter((paper) => !isSeedLikePaper(paper)).map(toPaperRow));
-    setTimelineRows(apiTimeline.map(toTimelineEvent));
-    setPersistedArtifactCount(artifactSummaries.length);
-    setProjectArtifactSummaries(artifactSummaries);
+    if (snapshot.papers) {
+      setPaperRows(snapshot.papers.filter((paper) => !isSeedLikePaper(paper)).map(toPaperRow));
+    }
+    if (snapshot.timeline) {
+      setTimelineRows(snapshot.timeline.map(toTimelineEvent));
+    }
+    if (snapshot.artifactSummaries) {
+      setPersistedArtifactCount(snapshot.artifactSummaries.length);
+      setProjectArtifactSummaries(snapshot.artifactSummaries);
+    }
+    if (snapshot.paperCards) {
+      setPaperCards(snapshot.paperCards);
+    }
+    if (!snapshot.artifacts) {
+      setHydrationWarnings(snapshot.warnings);
+      return;
+    }
+
+    const apiArtifacts = snapshot.artifacts;
     setProjectArtifacts(apiArtifacts);
-    setPaperCards(apiPaperCards);
     setLastSavedArtifact(selectArtifactForView(apiArtifacts, activeView));
-    setHydrationWarnings(collectArtifactHydrationWarnings(apiArtifacts));
+    setHydrationWarnings([...snapshot.warnings, ...collectArtifactHydrationWarnings(apiArtifacts)]);
     const restored = hydrateWorkflowStateFromArtifacts(apiArtifacts);
     if (Object.keys(restored.literatureCoverage).length) {
       setLiteratureCoverage(restored.literatureCoverage);
@@ -749,7 +753,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       applyBackendWorkflowSteps(result.workflow_steps);
       setApiMessage(
         result.relevance_coverage
-          ? `检索完成：${result.relevance_coverage.candidate_count ?? result.papers.length} candidates / ${result.relevance_coverage.strong_match_count ?? 0} strong matches / ${result.relevance_coverage.off_topic_count ?? 0} off-topic filtered，artifact: ${result.artifact.id}`
+          ? `检索完成：${result.relevance_coverage.candidate_count ?? result.papers.length} 篇候选 / ${result.relevance_coverage.eligible_count ?? result.papers.length} 篇通过门槛 / ${result.relevance_coverage.returned_count ?? result.papers.length} 篇实际展示，artifact: ${result.artifact.id}`
           : `检索完成：${result.papers.length} 篇论文，artifact: ${result.artifact.id}`,
       );
       await loadProjectResources(projectId, guard);
@@ -1142,17 +1146,11 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       return;
     }
     try {
-      const [apiPapers, apiTimeline, artifactSummaries, apiPaperCards] = await Promise.all([
-        listProjectPapers(projectId),
-        getProjectTimeline(projectId),
-        listProjectArtifactSummaries(projectId),
-        listProjectPaperCards(projectId).catch(() => []),
-      ]);
+      const snapshot = await fetchProjectResourceSnapshot(projectId);
       if (activeProjectIdRef.current !== projectId) {
         return;
       }
-      const apiArtifacts = await loadHydrationArtifacts(artifactSummaries);
-      applyProjectResources(projectId, apiPapers, apiTimeline, artifactSummaries, apiArtifacts, apiPaperCards);
+      applyProjectResources(projectId, snapshot);
     } catch (error) {
       if (!isAbortError(error)) {
         setApiMessage(formatApiFailure(error, "刷新 Agent Run 进度失败，请查看 API 日志。"));
@@ -1360,6 +1358,52 @@ function formatApiFailure(error: unknown, fallback: string): string {
   return normalized.detail ? `${fallback} ${normalized.detail}` : fallback;
 }
 
+async function fetchProjectResourceSnapshot(
+  projectId: string,
+  options?: RequestInit,
+): Promise<ProjectResourceSnapshot> {
+  const [papersResult, timelineResult, artifactSummariesResult, paperCardsResult] = await Promise.allSettled([
+    listProjectPapers(projectId, options),
+    getProjectTimeline(projectId, options),
+    listProjectArtifactSummaries(projectId, options),
+    listProjectPaperCards(projectId, options),
+  ]);
+  const results = [papersResult, timelineResult, artifactSummariesResult, paperCardsResult];
+  const aborted = results.find((result) => result.status === "rejected" && isAbortError(result.reason));
+  if (aborted?.status === "rejected") {
+    throw aborted.reason;
+  }
+
+  const snapshot: ProjectResourceSnapshot = { warnings: [] };
+  if (papersResult.status === "fulfilled") {
+    snapshot.papers = papersResult.value;
+  } else {
+    snapshot.warnings.push(projectResourceWarning("论文列表", papersResult.reason));
+  }
+  if (timelineResult.status === "fulfilled") {
+    snapshot.timeline = timelineResult.value;
+  } else {
+    snapshot.warnings.push(projectResourceWarning("运行时间线", timelineResult.reason));
+  }
+  if (artifactSummariesResult.status === "fulfilled") {
+    snapshot.artifactSummaries = artifactSummariesResult.value;
+    snapshot.artifacts = await loadHydrationArtifacts(artifactSummariesResult.value, options);
+  } else {
+    snapshot.warnings.push(projectResourceWarning("Artifact 列表", artifactSummariesResult.reason));
+  }
+  if (paperCardsResult.status === "fulfilled") {
+    snapshot.paperCards = paperCardsResult.value;
+  } else {
+    snapshot.warnings.push(projectResourceWarning("Paper Card 列表", paperCardsResult.reason));
+  }
+  return snapshot;
+}
+
+function projectResourceWarning(label: string, error: unknown): string {
+  const normalized = normalizeApiError(error);
+  return `${label}读取失败，其他项目数据已保留：${normalized.detail || normalized.message}`;
+}
+
 function emptyArtifactForView(view: ViewId): ArtifactContent {
   return {
     title: `${workflowLabels[view]} Artifact`,
@@ -1418,7 +1462,7 @@ function buildWorkflowSteps(input: {
       id: "paper-table",
       label: "Paper Table",
       summary: hasPapers
-        ? `${input.literatureCoverage.candidate_count ?? input.paperRows.length} candidates / ${returnedCount} returned / ${input.literatureCoverage.strong_match_count ?? 0} strong / ${input.literatureCoverage.medium_match_count ?? 0} medium`
+        ? `${input.literatureCoverage.candidate_count ?? input.paperRows.length} candidates / ${input.literatureCoverage.eligible_count ?? returnedCount} eligible / ${returnedCount} shown / ${input.literatureCoverage.truncated_count ?? 0} truncated`
         : "运行 Literature Search",
       status: resolveStepStatus({
         blocked: !hasProject || input.apiStatus === "offline",
@@ -1657,9 +1701,6 @@ function buildWorkflowWarnings(input: {
   if (input.apiStatus === "offline") {
     notices.push({ id: "api-offline", kind: "error", message: input.apiMessage || "API 未连接" });
   }
-  input.hydrationWarnings.forEach((message, index) => {
-    notices.push({ id: `hydration-${index}`, kind: "warning", message });
-  });
   input.agentRunWarnings.forEach((message, index) => {
     notices.push({ id: `agent-run-${index}`, kind: "warning", message });
   });
@@ -1669,6 +1710,9 @@ function buildWorkflowWarnings(input: {
       kind: isRetrievalWarning(message) ? "warning" : "error",
       message,
     });
+  });
+  input.hydrationWarnings.forEach((message, index) => {
+    notices.push({ id: `hydration-${index}`, kind: "warning", message });
   });
   input.directionReview?.errors.forEach((message, index) => {
     notices.push({ id: `direction-${index}`, kind: "warning", message });
