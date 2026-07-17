@@ -42,6 +42,137 @@ def build_minimal_text_pdf() -> bytes:
 
 
 class FullTextEvidenceContractTest(unittest.TestCase):
+    def test_pdf_selection_preserves_page_sections_and_excludes_references_tail(self) -> None:
+        pages = [
+            (
+                "ScholarFlow Conference 2026\n"
+                "Abstract\n"
+                "We study grounded evidence faithfulness for visual question answering.\n"
+                "1"
+            ),
+            (
+                "ScholarFlow Conference 2026\n"
+                "1 Introduction\n"
+                "Existing methods suffer from object hallucination under conflicting visual evidence.\n"
+                "2"
+            ),
+            (
+                "ScholarFlow Conference 2026\n"
+                "3 Method\n"
+                "We propose a counterfactual grounding intervention for large vision-language models.\n"
+                "3"
+            ),
+            (
+                "ScholarFlow Conference 2026\n"
+                "4 Experiments\n"
+                "Experiments use GQA and report grounding accuracy against LLaVA.\n"
+                "4"
+            ),
+            (
+                "ScholarFlow Conference 2026\n"
+                "References\n"
+                "[1] POPE: Polling-based Object Probing Evaluation.\n"
+                "5"
+            ),
+        ]
+
+        selected = full_text.select_research_text(pages, max_chars=10000)
+
+        self.assertIn("[PDF page 3]", selected)
+        self.assertIn("[Section: method]", selected)
+        self.assertIn("[Section: experiments]", selected)
+        self.assertNotIn("References", selected)
+        self.assertNotIn("POPE", selected)
+        self.assertNotIn("ScholarFlow Conference 2026", selected)
+
+    def test_paper_signals_ignore_reference_names_and_separate_prior_work_from_own_limitation(self) -> None:
+        from scholarflow_api.paper_card import extract_paper_signals
+
+        structured_text = """
+[PDF page 2]
+[Section: related_work]
+However, these models suffer from object hallucination under conflicting visual evidence.
+
+[PDF page 4]
+[Section: method]
+We propose a counterfactual grounding intervention for visual question answering.
+
+[PDF page 7]
+[Section: experiments]
+Experiments use Dataset: GQA. Evaluation metrics include accuracy and acc.
+Baselines include LLaVA and BLIP-2. We show improved grounding accuracy.
+
+[PDF page 12]
+[Section: references]
+POPE: Polling-based Object Probing Evaluation for Object Hallucination.
+"""
+        signals = extract_paper_signals(
+            title="Counterfactual Grounding for Visual Question Answering",
+            abstract="We propose a grounded evaluation method for visual question answering.",
+            paper_text=structured_text,
+            venue="CVPR",
+        )
+
+        self.assertEqual(signals.dataset, "GQA")
+        self.assertNotIn("POPE", signals.dataset)
+        self.assertEqual(set(signals.metric.split(", ")), {"accuracy", "grounding accuracy"})
+        self.assertNotIn("acc,", signals.metric.lower())
+        self.assertIn("当前证据不足", signals.limitation)
+        self.assertIn("these models suffer", signals.prior_work_limitation)
+        dataset_evidence = signals.signal_evidence["dataset"]
+        self.assertEqual(dataset_evidence.source, "pdf.full_text")
+        self.assertEqual(dataset_evidence.section, "experiments")
+        self.assertEqual(dataset_evidence.page, 7)
+        self.assertIn("Dataset: GQA", dataset_evidence.quote)
+
+    def test_explicit_own_limitation_is_grounded_to_limitation_section(self) -> None:
+        from scholarflow_api.paper_card import extract_paper_signals
+
+        signals = extract_paper_signals(
+            title="Grounded Evaluation for VQA",
+            abstract="We introduce a grounded evaluation protocol.",
+            paper_text=(
+                "[PDF page 9]\n"
+                "[Section: limitations]\n"
+                "Our method is limited to English prompts and we cannot verify multilingual transfer."
+            ),
+            venue="ACL",
+        )
+
+        self.assertIn("Our method is limited", signals.limitation)
+        evidence = signals.signal_evidence["limitation"]
+        self.assertEqual(evidence.section, "limitations")
+        self.assertEqual(evidence.page, 9)
+
+    def test_pdf_source_does_not_force_high_semantic_extraction_confidence(self) -> None:
+        from scholarflow_api.evidence import build_paper_evidence_pack
+
+        full_text_value = (
+            "[PDF page 4]\n"
+            "[Section: method]\n"
+            "We propose a grounded intervention method and describe its architecture for evidence faithfulness. "
+            "The method uses a visual encoder and a language decoder in a controlled pipeline."
+        )
+        pack = build_paper_evidence_pack(
+            {
+                "title": "Grounded Intervention for VQA",
+                "abstract": "We study evidence faithfulness in visual question answering.",
+                "venue": "CVPR",
+                "url": "https://example.org/paper",
+                "evidence_level": "full_text",
+                "full_text": full_text_value,
+            },
+            [{"id": "method", "title": "Method", "content": "Grounded intervention."}],
+            "VQA evidence faithfulness",
+        )
+
+        self.assertEqual(pack.source_confidence, "high")
+        self.assertEqual(pack.extraction_confidence, "medium")
+        self.assertEqual(pack.confidence, "medium")
+        pdf_snippet = next(snippet for snippet in pack.snippets if snippet.source == "pdf.full_text")
+        self.assertEqual(pdf_snippet.section, "method")
+        self.assertEqual(pdf_snippet.page, 4)
+
     def test_open_pdf_download_uses_certifi_ca_context_without_disabling_tls_verification(self) -> None:
         pdf_url = "https://arxiv.org/pdf/2601.00003.pdf"
         response = MagicMock()

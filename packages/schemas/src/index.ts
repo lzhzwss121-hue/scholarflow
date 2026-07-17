@@ -168,9 +168,23 @@ export interface ApiPaperSignals {
   baseline: string;
   claim: string;
   limitation: string;
+  prior_work_limitation?: string;
   contribution_type: string;
   contribution_evidence?: string;
   missing_signals: string[];
+  signal_evidence?: Record<string, ApiSignalEvidence>;
+}
+
+export interface ApiSignalEvidence {
+  field: string;
+  canonical_value: string;
+  raw_value: string;
+  source: string;
+  section: string;
+  page: number | null;
+  quote: string;
+  confidence: string;
+  validation_errors: string[];
 }
 
 export type ApiFullTextStatus =
@@ -191,6 +205,8 @@ export interface ApiFullTextProvenance {
   error: string;
   failure_stage?: string;
   recovery_hint?: string;
+  page_numbers?: number[];
+  section_names?: string[];
 }
 
 export interface ApiEvidenceSnippet {
@@ -200,11 +216,15 @@ export interface ApiEvidenceSnippet {
   text: string;
   note: string;
   confidence: string;
+  section?: string;
+  page?: number | null;
 }
 
 export interface ApiEvidencePack {
   evidence_level: string;
   confidence: string;
+  source_confidence?: string;
+  extraction_confidence?: string;
   snippets: ApiEvidenceSnippet[];
   missing_evidence: string[];
   grounding_summary: string;

@@ -13,6 +13,8 @@ class EvidenceSnippet:
     text: str
     note: str
     confidence: str
+    section: str = ""
+    page: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -22,6 +24,8 @@ class EvidenceSnippet:
 class EvidencePack:
     evidence_level: str
     confidence: str
+    source_confidence: str
+    extraction_confidence: str
     snippets: list[EvidenceSnippet]
     missing_evidence: list[str]
     grounding_summary: str
@@ -30,6 +34,8 @@ class EvidencePack:
         return {
             "evidence_level": self.evidence_level,
             "confidence": self.confidence,
+            "source_confidence": self.source_confidence,
+            "extraction_confidence": self.extraction_confidence,
             "snippets": [snippet.to_dict() for snippet in self.snippets],
             "missing_evidence": self.missing_evidence,
             "grounding_summary": self.grounding_summary,
@@ -43,11 +49,15 @@ def build_paper_evidence_pack(
 ) -> EvidencePack:
     snippets = build_paper_evidence_snippets(paper, sections, direction)
     missing = infer_missing_evidence(paper, sections)
-    confidence = infer_confidence(snippets, missing, paper)
+    source_confidence = infer_source_confidence(snippets, paper)
+    extraction_confidence = infer_extraction_confidence(snippets, missing)
+    confidence = lower_confidence(source_confidence, extraction_confidence)
     level = infer_evidence_level(paper, sections)
     return EvidencePack(
         evidence_level=level,
         confidence=confidence,
+        source_confidence=source_confidence,
+        extraction_confidence=extraction_confidence,
         snippets=snippets,
         missing_evidence=missing,
         grounding_summary=build_grounding_summary(level, confidence, snippets, missing),
@@ -116,16 +126,18 @@ def build_paper_evidence_snippets(
             ),
         )
 
-    full_text = normalize_space(paper.get("full_text", ""))
-    for index, sentence in enumerate(select_full_text_sentences(full_text, direction), start=1):
+    full_text = str(paper.get("full_text", "") or "")
+    for index, located in enumerate(select_full_text_sentences(full_text, direction), start=1):
         snippets.append(
             EvidenceSnippet(
                 id=f"pdf_full_text_{index}",
                 source="pdf.full_text",
-                kind=infer_sentence_kind(sentence),
-                text=sentence[:360],
-                note="来自开放 PDF 文本层的原文片段；页码、表格结构与公式版式仍需回到 PDF 复核。",
-                confidence="high",
+                kind=infer_sentence_kind(located.text),
+                text=located.text[:360],
+                note="来自 PDF 文本层的定位片段；语义归类仍需回到原文复核。",
+                confidence="medium",
+                section=located.section,
+                page=located.page,
             ),
         )
 
@@ -173,15 +185,38 @@ def infer_missing_evidence(paper: dict[str, Any], sections: list[dict[str, Any]]
 
 
 def infer_confidence(snippets: list[EvidenceSnippet], missing: list[str], paper: dict[str, Any]) -> str:
+    return lower_confidence(
+        infer_source_confidence(snippets, paper),
+        infer_extraction_confidence(snippets, missing),
+    )
+
+
+def infer_source_confidence(snippets: list[EvidenceSnippet], paper: dict[str, Any]) -> str:
     if any(snippet.source == "pdf.full_text" for snippet in snippets):
         return "high"
     abstract_available = bool(normalize_space(paper.get("abstract", "")))
-    venue = normalize_space(paper.get("venue", ""))
-    if abstract_available and len(snippets) >= 4 and len(missing) <= 2 and venue and "arxiv" not in venue.lower():
-        return "high"
-    if abstract_available and len(snippets) >= 3:
+    if abstract_available:
         return "medium"
     return "low"
+
+
+def infer_extraction_confidence(snippets: list[EvidenceSnippet], missing: list[str]) -> str:
+    located_pdf = [
+        snippet
+        for snippet in snippets
+        if snippet.source == "pdf.full_text" and snippet.page is not None and snippet.section not in {"", "unknown"}
+    ]
+    section_count = len({snippet.section for snippet in located_pdf})
+    if len(located_pdf) >= 3 and section_count >= 2 and len(missing) <= 1:
+        return "high"
+    if located_pdf or any(snippet.source == "metadata.abstract" for snippet in snippets):
+        return "medium"
+    return "low"
+
+
+def lower_confidence(left: str, right: str) -> str:
+    rank = {"low": 0, "medium": 1, "high": 2}
+    return left if rank.get(left, 0) <= rank.get(right, 0) else right
 
 
 def infer_evidence_level(paper: dict[str, Any], sections: list[dict[str, Any]]) -> str:
@@ -225,7 +260,14 @@ def select_relevant_sentences(text: str, direction: str) -> list[str]:
     return (matched or sentences)[:2]
 
 
-def select_full_text_sentences(text: str, direction: str) -> list[str]:
+@dataclass
+class LocatedSentence:
+    text: str
+    section: str
+    page: int | None
+
+
+def select_full_text_sentences(text: str, direction: str) -> list[LocatedSentence]:
     if not text:
         return []
     direction_terms = significant_terms(direction)
@@ -240,16 +282,44 @@ def select_full_text_sentences(text: str, direction: str) -> list[str]:
         "limitation",
         "failure",
     }
-    sentences = [
-        normalize_space(sentence)
-        for sentence in re.split(r"(?<=[。！？.!?])\s+", text)
-        if len(normalize_space(sentence)) >= 40
-    ]
+    sentences: list[LocatedSentence] = []
+    current_page: int | None = None
+    current_section = "unknown"
+    buffer: list[str] = []
+
+    def flush() -> None:
+        block = normalize_space(" ".join(buffer))
+        for sentence in re.split(r"(?<=[。！？.!?])\s+", block):
+            normalized = normalize_space(sentence)
+            if len(normalized) >= 40 and current_section not in {"references", "related_work", "front_matter"}:
+                sentences.append(LocatedSentence(normalized, current_section, current_page))
+        buffer.clear()
+
+    for line in str(text).splitlines():
+        page_match = re.fullmatch(r"\[PDF page (\d+)\]", line.strip())
+        if page_match:
+            flush()
+            current_page = int(page_match.group(1))
+            continue
+        section_match = re.fullmatch(r"\[Section: ([a-z_]+)\]", line.strip())
+        if section_match:
+            flush()
+            current_section = section_match.group(1)
+            continue
+        if line.strip():
+            buffer.append(line.strip())
+    flush()
+    if not sentences and normalize_space(text):
+        sentences = [
+            LocatedSentence(normalize_space(sentence), "unknown", None)
+            for sentence in re.split(r"(?<=[。！？.!?])\s+", normalize_space(text))
+            if len(normalize_space(sentence)) >= 40
+        ]
     ranked = sorted(
         enumerate(sentences),
         key=lambda item: (
-            sum(term in item[1].lower() for term in research_terms),
-            sum(term in item[1].lower() for term in direction_terms),
+            sum(term in item[1].text.lower() for term in research_terms),
+            sum(term in item[1].text.lower() for term in direction_terms),
             -item[0],
         ),
         reverse=True,

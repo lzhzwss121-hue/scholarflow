@@ -6,7 +6,7 @@ from typing import Any
 
 from scholarflow_api.baseline_map import BaselineMap
 from scholarflow_api.evidence import EvidencePack, EvidenceSnippet, build_paper_evidence_pack
-from scholarflow_api.paper_card import PaperSignals
+from scholarflow_api.paper_card import PaperSignals, SignalEvidence
 
 
 @dataclass
@@ -149,6 +149,38 @@ def append_signal_evidence_snippets(
     signals: PaperSignals,
 ) -> set[str]:
     supported: set[str] = set()
+    existing_ids = {snippet.id for snippet in evidence_pack.snippets}
+    for field, signal_evidence in signals.signal_evidence.items():
+        if field not in {"method", "claim", "dataset", "metric", "baseline", "limitation"}:
+            continue
+        evidence = signal_evidence if isinstance(signal_evidence, SignalEvidence) else None
+        if evidence is None or evidence.validation_errors or not evidence.quote:
+            continue
+        supported.add(field)
+        snippet_id = f"signal_{field}_{'pdf' if evidence.source == 'pdf.full_text' else 'abstract'}"
+        if snippet_id in existing_ids:
+            continue
+        evidence_pack.snippets.append(
+            EvidenceSnippet(
+                id=snippet_id,
+                source=evidence.source,
+                kind={
+                    "method": "method",
+                    "claim": "evaluation",
+                    "dataset": "evaluation",
+                    "metric": "evaluation",
+                    "baseline": "evaluation",
+                    "limitation": "risk",
+                }[field],
+                text=evidence.quote[:360],
+                note=f"PaperSignals.{field} 的定位证据；section={evidence.section or 'unknown'}。",
+                confidence=evidence.confidence,
+                section=evidence.section,
+                page=evidence.page,
+            ),
+        )
+        existing_ids.add(snippet_id)
+
     source_texts = [
         ("pdf.full_text", normalize_space(paper.get("full_text", "")), "high"),
         ("metadata.abstract", normalize_space(paper.get("abstract", "")), "medium"),
@@ -161,8 +193,9 @@ def append_signal_evidence_snippets(
         "baseline": "evaluation",
         "limitation": "risk",
     }
-    existing_ids = {snippet.id for snippet in evidence_pack.snippets}
     for field, kind in kind_by_field.items():
+        if field in supported:
+            continue
         signal = normalize_space(getattr(signals, field, ""))
         if not has_research_signal(signal):
             continue
@@ -405,9 +438,11 @@ def normalize_signals(signals: PaperSignals | dict[str, Any] | None) -> PaperSig
             baseline=normalize_space(signals.get("baseline", "")),
             claim=normalize_space(signals.get("claim", "")),
             limitation=normalize_space(signals.get("limitation", "")),
+            prior_work_limitation=normalize_space(signals.get("prior_work_limitation", "")),
             contribution_type=normalize_space(signals.get("contribution_type", "")),
             contribution_evidence=normalize_space(signals.get("contribution_evidence", "")),
             missing_signals=list(signals.get("missing_signals", [])) if isinstance(signals.get("missing_signals"), list) else [],
+            signal_evidence=normalize_signal_evidence_map(signals.get("signal_evidence")),
         )
     return PaperSignals(
         task="未识别任务",
@@ -417,10 +452,42 @@ def normalize_signals(signals: PaperSignals | dict[str, Any] | None) -> PaperSig
         baseline="",
         claim="",
         limitation="",
+        prior_work_limitation="",
         contribution_type="",
         contribution_evidence="",
         missing_signals=["method", "dataset", "metric", "baseline", "claim", "limitation"],
+        signal_evidence={},
     )
+
+
+def normalize_signal_evidence_map(value: object) -> dict[str, SignalEvidence]:
+    if not isinstance(value, dict):
+        return {}
+    output: dict[str, SignalEvidence] = {}
+    for key, item in value.items():
+        if isinstance(item, SignalEvidence):
+            output[str(key)] = item
+            continue
+        if not isinstance(item, dict):
+            continue
+        output[str(key)] = SignalEvidence(
+            field=normalize_space(item.get("field", "")) or str(key),
+            canonical_value=normalize_space(item.get("canonical_value", "")),
+            raw_value=normalize_space(item.get("raw_value", "")),
+            source=normalize_space(item.get("source", "")),
+            section=normalize_space(item.get("section", "")),
+            page=int(item["page"]) if isinstance(item.get("page"), int) else None,
+            quote=normalize_space(item.get("quote", "")),
+            confidence=normalize_space(item.get("confidence", "")) or "low",
+            validation_errors=[
+                normalize_space(error)
+                for error in item.get("validation_errors", [])
+                if normalize_space(error)
+            ]
+            if isinstance(item.get("validation_errors"), list)
+            else [],
+        )
+    return output
 
 
 def infer_contribution_type(text: str) -> str:

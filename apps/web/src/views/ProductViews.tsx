@@ -49,6 +49,7 @@ import {
   type ApiProject,
   type ApiResearchDecisionResponse,
   type ApiResearchMemoryQueryResponse,
+  type ApiSignalEvidence,
 } from "@scholarflow/schemas";
 import {
   navItems,
@@ -1799,6 +1800,18 @@ function formatEvidenceLevel(level: string): string {
     return "元数据级证据";
   }
   return level || "未知证据等级";
+}
+
+function formatSignalEvidenceLocation(evidence?: ApiSignalEvidence): string {
+  if (!evidence) {
+    return "未找到可定位的原文证据";
+  }
+  const location = [
+    evidence.source || "unknown source",
+    evidence.section || "unknown section",
+    typeof evidence.page === "number" ? `p.${evidence.page}` : "",
+  ].filter(Boolean);
+  return `${location.join(" · ")} · 抽取置信度 ${evidence.confidence || "low"}`;
 }
 
 function MetricCard({
@@ -3882,22 +3895,32 @@ function DirectionPaperDetail({
             <div>
               <strong>方法</strong>
               <span>{signals.method || "暂无"}</span>
+              <small className="critique-evidence-note">{formatSignalEvidenceLocation(signals.signal_evidence?.method)}</small>
             </div>
             <div>
               <strong>数据集</strong>
               <span>{signals.dataset || "暂无"}</span>
+              <small className="critique-evidence-note">{formatSignalEvidenceLocation(signals.signal_evidence?.dataset)}</small>
             </div>
             <div>
               <strong>指标</strong>
               <span>{signals.metric || "暂无"}</span>
+              <small className="critique-evidence-note">{formatSignalEvidenceLocation(signals.signal_evidence?.metric)}</small>
             </div>
             <div>
               <strong>Claim</strong>
               <span>{signals.claim || "暂无"}</span>
+              <small className="critique-evidence-note">{formatSignalEvidenceLocation(signals.signal_evidence?.claim)}</small>
             </div>
             <div>
-              <strong>Limitation</strong>
+              <strong>本论文自身 Limitation</strong>
               <span>{signals.limitation || "暂无"}</span>
+              <small className="critique-evidence-note">{formatSignalEvidenceLocation(signals.signal_evidence?.limitation)}</small>
+            </div>
+            <div>
+              <strong>已有研究不足</strong>
+              <span>{signals.prior_work_limitation || "暂无可定位证据"}</span>
+              <small className="critique-evidence-note">{formatSignalEvidenceLocation(signals.signal_evidence?.prior_work_limitation)}</small>
             </div>
             <div>
               <strong>缺失字段</strong>
@@ -3919,7 +3942,9 @@ function DirectionPaperDetail({
           <div>
             <strong>证据等级</strong>
             <span>
-              {formatEvidenceLevel(reading.evidence_level ?? evidencePack.evidence_level)}；{evidencePack.grounding_summary}
+              {formatEvidenceLevel(reading.evidence_level ?? evidencePack.evidence_level)}；
+              来源置信度 {evidencePack.source_confidence || "unknown"} / 抽取置信度 {evidencePack.extraction_confidence || "unknown"} /
+              最终 {evidencePack.confidence || "low"}。{evidencePack.grounding_summary}
             </span>
           </div>
           <div>
@@ -3972,7 +3997,11 @@ function DirectionPaperDetail({
             {evidencePack.snippets.length ? (
               evidencePack.snippets.slice(0, 4).map((snippet) => (
                 <article key={`${snippet.source}-${snippet.id}`}>
-                  <span>{snippet.source} · {snippet.kind} · {snippet.confidence}</span>
+                  <span>
+                    {snippet.source} · {snippet.kind} · {snippet.confidence}
+                    {snippet.section ? ` · ${snippet.section}` : ""}
+                    {typeof snippet.page === "number" ? ` · p.${snippet.page}` : ""}
+                  </span>
                   <p>{snippet.text}</p>
                   <small>{snippet.note}</small>
                 </article>

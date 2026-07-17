@@ -225,6 +225,8 @@ function fullTextCardArtifact(id: string, createdAt: string) {
     page_count: 14,
     character_count: 50000,
     error: "",
+    page_numbers: [4, 7, 9],
+    section_names: ["method", "experiments", "limitations"],
   };
   const card = {
     paper_title: paper.title,
@@ -239,9 +241,34 @@ function fullTextCardArtifact(id: string, createdAt: string) {
       baseline: "LLaVA",
       claim: "grounded intervention reduces object hallucination",
       limitation: "needs cross-model validation",
+      prior_work_limitation: "existing methods suffer from object hallucination",
       contribution_type: "benchmark",
       contribution_evidence: "贡献证据：We introduce a benchmark and evaluate against LLaVA.",
       missing_signals: [],
+      signal_evidence: {
+        dataset: {
+          field: "dataset",
+          canonical_value: "POPE",
+          raw_value: "POPE",
+          source: "pdf.full_text",
+          section: "experiments",
+          page: 7,
+          quote: "Experiments use Dataset: POPE.",
+          confidence: "medium",
+          validation_errors: [],
+        },
+        limitation: {
+          field: "limitation",
+          canonical_value: "needs cross-model validation",
+          raw_value: "needs cross-model validation",
+          source: "pdf.full_text",
+          section: "limitations",
+          page: 9,
+          quote: "Our method is limited to the evaluated model families.",
+          confidence: "medium",
+          validation_errors: [],
+        },
+      },
     },
     sections: sections.map((section) => ({
       ...section,
@@ -291,6 +318,19 @@ test("12-section reader uses a table of contents and one readable section instea
   await expect(board.locator("#paper-reader-section-7")).toBeVisible();
   await expect(board.locator(".paper-reader-section-body")).toContainText("第 7 段唯一科研内容");
   await expect(board.locator(".paper-reader-section-body")).not.toContainText("第 1 段唯一科研内容");
+});
+
+test("full-text paper detail exposes signal source section and page", async ({ page }) => {
+  const fullTextArtifact = fullTextCardArtifact("artifact_e2e_located_signals", "2026-07-10T01:00:00+00:00");
+  await mockReaderProject(page, [artifact, fullTextArtifact]);
+  await page.goto(`/#paper-reader/${paper.id}?from=direction-review`);
+
+  const signalPanel = page.locator('article[aria-label="paper evidence signals"]');
+  await expect(signalPanel).toBeVisible();
+  await expect(signalPanel.getByText("本论文自身 Limitation", { exact: true })).toBeVisible();
+  await expect(signalPanel.getByText("已有研究不足", { exact: true })).toBeVisible();
+  await expect(signalPanel.getByText("pdf.full_text · experiments · p.7 · 抽取置信度 medium", { exact: true })).toBeVisible();
+  await expect(signalPanel.getByText("pdf.full_text · limitations · p.9 · 抽取置信度 medium", { exact: true })).toBeVisible();
 });
 
 test("legacy repeated evidence boilerplate is centralized and the mobile reader does not overflow", async ({ page }) => {

@@ -155,6 +155,18 @@ class PaperCardSection(BaseModel):
     content: str
 
 
+class SignalEvidence(BaseModel):
+    field: str = ""
+    canonical_value: str = ""
+    raw_value: str = ""
+    source: str = ""
+    section: str = ""
+    page: int | None = None
+    quote: str = ""
+    confidence: str = ""
+    validation_errors: list[str] = Field(default_factory=list)
+
+
 class PaperSignals(BaseModel):
     task: str = ""
     method: str = ""
@@ -163,9 +175,11 @@ class PaperSignals(BaseModel):
     baseline: str = ""
     claim: str = ""
     limitation: str = ""
+    prior_work_limitation: str = ""
     contribution_type: str = ""
     contribution_evidence: str = ""
     missing_signals: list[str] = Field(default_factory=list)
+    signal_evidence: dict[str, SignalEvidence] = Field(default_factory=dict)
 
 
 class FullTextProvenance(BaseModel):
@@ -183,6 +197,8 @@ class FullTextProvenance(BaseModel):
     error: str = ""
     failure_stage: str = ""
     recovery_hint: str = ""
+    page_numbers: list[int] = Field(default_factory=list)
+    section_names: list[str] = Field(default_factory=list)
 
 
 class EvidenceSnippet(BaseModel):
@@ -192,11 +208,15 @@ class EvidenceSnippet(BaseModel):
     text: str = ""
     note: str = ""
     confidence: str = ""
+    section: str = ""
+    page: int | None = None
 
 
 class EvidencePack(BaseModel):
     evidence_level: str = ""
     confidence: str = ""
+    source_confidence: str = ""
+    extraction_confidence: str = ""
     snippets: list[EvidenceSnippet] = Field(default_factory=list)
     missing_evidence: list[str] = Field(default_factory=list)
     grounding_summary: str = ""

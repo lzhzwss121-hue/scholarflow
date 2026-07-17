@@ -324,9 +324,33 @@ function normalizePaperSignals(payload: unknown): ApiPaperSignals | undefined {
     baseline: asString(payload.baseline),
     claim: asString(payload.claim),
     limitation: asString(payload.limitation),
+    prior_work_limitation: asString(payload.prior_work_limitation),
     contribution_type: asString(payload.contribution_type),
     contribution_evidence: asString(payload.contribution_evidence),
     missing_signals: asStringArray(payload.missing_signals),
+    signal_evidence: isRecord(payload.signal_evidence)
+      ? Object.fromEntries(
+          Object.entries(payload.signal_evidence).flatMap(([key, item]) => {
+            if (!isRecord(item)) {
+              return [];
+            }
+            return [[
+              key,
+              {
+                field: asString(item.field) || key,
+                canonical_value: asString(item.canonical_value),
+                raw_value: asString(item.raw_value),
+                source: asString(item.source),
+                section: asString(item.section),
+                page: typeof item.page === "number" ? item.page : null,
+                quote: asString(item.quote),
+                confidence: asString(item.confidence) || "low",
+                validation_errors: asStringArray(item.validation_errors),
+              },
+            ]];
+          }),
+        )
+      : {},
   };
 }
 
@@ -372,6 +396,8 @@ export function normalizeEvidencePack(payload: unknown): ApiEvidencePack {
   return {
     evidence_level: normalizeEvidenceLevel(asString(pack.evidence_level)) || "unknown",
     confidence: asString(pack.confidence) || "low",
+    source_confidence: asString(pack.source_confidence) || "low",
+    extraction_confidence: asString(pack.extraction_confidence) || "low",
     snippets: Array.isArray(pack.snippets)
       ? pack.snippets.map((item, index) => {
           const snippet: Record<string, unknown> = isRecord(item) ? item : {};
@@ -382,6 +408,8 @@ export function normalizeEvidencePack(payload: unknown): ApiEvidencePack {
             text: asString(snippet.text),
             note: asString(snippet.note),
             confidence: asString(snippet.confidence) || "low",
+            section: asString(snippet.section),
+            page: typeof snippet.page === "number" ? snippet.page : null,
           };
         })
       : [],
@@ -411,6 +439,12 @@ function normalizeFullTextProvenance(payload: unknown): ApiFullTextProvenance | 
     page_count: asNumber(payload.page_count),
     character_count: asNumber(payload.character_count),
     error: asString(payload.error),
+    failure_stage: asString(payload.failure_stage),
+    recovery_hint: asString(payload.recovery_hint),
+    page_numbers: Array.isArray(payload.page_numbers)
+      ? payload.page_numbers.filter((value): value is number => typeof value === "number")
+      : [],
+    section_names: asStringArray(payload.section_names),
   };
 }
 

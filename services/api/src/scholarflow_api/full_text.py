@@ -50,6 +50,24 @@ RESEARCH_PAGE_MARKERS = {
     "conclusion": 2,
 }
 
+SECTION_HEADING_PATTERNS = [
+    ("abstract", r"^(?:abstract)$"),
+    ("introduction", r"^(?:\d+(?:\.\d+)*[\s.:-]*)?introduction$"),
+    ("related_work", r"^(?:\d+(?:\.\d+)*[\s.:-]*)?(?:related work|background|preliminaries)$"),
+    (
+        "method",
+        r"^(?:\d+(?:\.\d+)*[\s.:-]*)?(?:method|methods|methodology|approach|proposed method|framework|model architecture)$",
+    ),
+    (
+        "experiments",
+        r"^(?:\d+(?:\.\d+)*[\s.:-]*)?(?:experiment|experiments|experimental setup|evaluation|evaluations)$",
+    ),
+    ("results", r"^(?:\d+(?:\.\d+)*[\s.:-]*)?(?:result|results|analysis|ablation|ablation study)$"),
+    ("limitations", r"^(?:\d+(?:\.\d+)*[\s.:-]*)?(?:limitation|limitations|failure cases?|discussion)$"),
+    ("conclusion", r"^(?:\d+(?:\.\d+)*[\s.:-]*)?(?:conclusion|conclusions|concluding remarks)$"),
+    ("references", r"^(?:references|bibliography)$"),
+]
+
 
 @dataclass
 class FullTextResult:
@@ -70,6 +88,8 @@ class FullTextResult:
     def to_provenance(self) -> dict[str, Any]:
         data = asdict(self)
         data.pop("text", None)
+        data["page_numbers"] = extract_page_numbers(self.text)
+        data["section_names"] = extract_section_names(self.text)
         return data
 
 
@@ -343,7 +363,7 @@ def extract_research_text_from_pdf(payload: bytes) -> tuple[str, int]:
         page_limit = min(len(reader.pages), PDF_MAX_PAGES)
         for page in reader.pages[:page_limit]:
             try:
-                pages.append(normalize_extracted_text(page.extract_text() or ""))
+                pages.append(normalize_extracted_page_text(page.extract_text() or ""))
             except Exception:  # noqa: BLE001 - preserve usable pages if one page is malformed.
                 pages.append("")
     except FullTextFetchError:
@@ -355,7 +375,9 @@ def extract_research_text_from_pdf(payload: bytes) -> tuple[str, int]:
 
 
 def select_research_text(pages: list[str], max_chars: int) -> str:
-    nonempty = [(index, text) for index, text in enumerate(pages) if text]
+    cleaned_pages = remove_repeated_page_margins(pages)
+    structured_pages = structure_pdf_pages(cleaned_pages)
+    nonempty = [(index, text) for index, text in enumerate(structured_pages) if text]
     if not nonempty:
         return ""
 
@@ -368,7 +390,7 @@ def select_research_text(pages: list[str], max_chars: int) -> str:
     selected: list[tuple[int, str]] = []
     used = 0
     for index, text in ranked:
-        page_block = f"[PDF page {index + 1}] {text}"
+        page_block = f"[PDF page {index + 1}]\n{text}"
         if used >= max_chars:
             break
         remaining = max_chars - used
@@ -378,15 +400,114 @@ def select_research_text(pages: list[str], max_chars: int) -> str:
     return normalize_extracted_text("\n\n".join(text for _index, text in selected))[:max_chars]
 
 
+def remove_repeated_page_margins(pages: list[str]) -> list[str]:
+    """Remove repeated headers/footers without flattening the page body."""
+    line_counts: dict[str, int] = {}
+    page_lines: list[list[str]] = []
+    for page in pages:
+        lines = [normalize_inline_space(line) for line in page.splitlines() if normalize_inline_space(line)]
+        page_lines.append(lines)
+        candidates = {*lines[:2], *lines[-2:]}
+        for line in candidates:
+            key = repeated_margin_key(line)
+            if key:
+                line_counts[key] = line_counts.get(key, 0) + 1
+
+    threshold = max(2, (len([lines for lines in page_lines if lines]) + 1) // 2)
+    repeated = {key for key, count in line_counts.items() if count >= threshold}
+    output: list[str] = []
+    for lines in page_lines:
+        kept = [
+            line
+            for index, line in enumerate(lines)
+            if not (
+                (index < 2 or index >= max(0, len(lines) - 2))
+                and repeated_margin_key(line) in repeated
+            )
+        ]
+        output.append("\n".join(kept))
+    return output
+
+
+def repeated_margin_key(line: str) -> str:
+    normalized = re.sub(r"\b\d+\b", "#", normalize_inline_space(line).lower())
+    if len(normalized) < 4 or len(normalized) > 140:
+        return ""
+    return normalized
+
+
+def structure_pdf_pages(pages: list[str]) -> list[str]:
+    """Annotate page text with section markers and exclude the references tail."""
+    output: list[str] = []
+    current_section = "front_matter"
+    references_started = False
+    for page in pages:
+        if references_started or not page:
+            output.append("")
+            continue
+        blocks: list[str] = []
+        buffer: list[str] = []
+        for line in page.splitlines():
+            heading = classify_section_heading(line)
+            if heading:
+                if buffer:
+                    blocks.append(render_section_block(current_section, buffer))
+                    buffer = []
+                if heading == "references":
+                    references_started = True
+                    break
+                current_section = heading
+                continue
+            buffer.append(line)
+        if buffer and not references_started:
+            blocks.append(render_section_block(current_section, buffer))
+        output.append("\n".join(block for block in blocks if block))
+    return output
+
+
+def render_section_block(section: str, lines: list[str]) -> str:
+    body = "\n".join(line for line in lines if line).strip()
+    return f"[Section: {section}]\n{body}" if body else ""
+
+
+def classify_section_heading(line: str) -> str:
+    normalized = normalize_inline_space(line).strip(" .:-").lower()
+    if not normalized or len(normalized) > 80:
+        return ""
+    for section, pattern in SECTION_HEADING_PATTERNS:
+        if re.fullmatch(pattern, normalized, flags=re.IGNORECASE):
+            return section
+    return ""
+
+
 def research_page_score(text: str) -> int:
     lower = text.lower()
     return sum(weight for marker, weight in RESEARCH_PAGE_MARKERS.items() if marker in lower)
 
 
 def normalize_extracted_text(value: Any) -> str:
-    text = str(value or "").replace("\x00", " ")
-    text = re.sub(r"(?<=\w)-\s+(?=\w)", "", text)
-    return re.sub(r"\s+", " ", text).strip()
+    text = str(value or "").replace("\x00", " ").replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"(?<=\w)-[ \t]*\n[ \t]*(?=\w)", "", text)
+    lines = [normalize_inline_space(line) for line in text.splitlines()]
+    normalized = "\n".join(lines)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    return normalized.strip()
+
+
+def normalize_extracted_page_text(value: Any) -> str:
+    return normalize_extracted_text(value)
+
+
+def normalize_inline_space(value: Any) -> str:
+    return re.sub(r"[ \t\f\v]+", " ", str(value or "")).strip()
+
+
+def extract_page_numbers(text: str) -> list[int]:
+    return [int(value) for value in dict.fromkeys(re.findall(r"\[PDF page (\d+)\]", text))]
+
+
+def extract_section_names(text: str) -> list[str]:
+    return list(dict.fromkeys(re.findall(r"\[Section: ([a-z_]+)\]", text)))
 
 
 def normalize_space(value: Any) -> str:
