@@ -580,8 +580,10 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertEqual(answer.reliability_status, "reliable")
         self.assertEqual(len(answer.hits), 1)
         self.assertIn("paper_id=paper_grounded", answer.answer)
-        self.assertIn("evidence_quality=abstract_only", answer.answer)
-        self.assertIn("snippet=abstract_1", answer.answer)
+        self.assertEqual(answer.answer_summary, "当前找到 1 篇可靠命中，其中 0 篇达到全文级；证据可以定位与问题直接相关的单篇陈述，但尚未形成可跨论文复核的一致结论。")
+        self.assertEqual(answer.claims[0].confidence, "low")
+        self.assertEqual(answer.claims[0].evidence_refs[0]["snippet_id"], "abstract_1")
+        self.assertTrue(any("第二篇独立论文" in item for item in answer.unanswered_parts))
 
     def test_research_sight_without_source_text_does_not_invent_claim_metric_or_dataset(self) -> None:
         paper = {
@@ -957,7 +959,10 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                 )
                 payload = json.loads(response.artifact.content_json)
 
-        self.assertEqual(payload["schema_version"], "research_memory_answer.v2")
+        self.assertEqual(payload["schema_version"], "research_memory_answer.v3")
+        self.assertIn("answer_summary", payload)
+        self.assertIn("claims", payload)
+        self.assertIn("unanswered_parts", payload)
         self.assertGreaterEqual(len(payload["hits"]), 1)
         hit = payload["hits"][0]
         self.assertNotIn("memory", hit)

@@ -4189,7 +4189,44 @@ export function ResearchMemoryView({
                 <span title="本次请求的最大返回数。">请求 top {result.top_k}</span>
               </div>
             </div>
-            <p>{result.answer}</p>
+            <p className="memory-answer-summary">{result.answer_summary || result.answer}</p>
+            {result.claims?.length ? (
+              <div className="memory-claim-list" aria-label="memory synthesized claims">
+                {result.claims.map((claim) => (
+                  <article key={claim.id}>
+                    <div>
+                      <strong>{claim.support_status === "corroborated" ? "多篇支持" : "单篇证据"}</strong>
+                      <span className={`confidence ${claim.confidence}`}>{claim.confidence}</span>
+                    </div>
+                    <p>{claim.statement}</p>
+                    <small>
+                      {claim.evidence_refs
+                        .map((reference) =>
+                          [
+                            reference.paper_id,
+                            reference.source,
+                            reference.section,
+                            reference.page ? `p.${reference.page}` : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" · "),
+                        )
+                        .join(" / ")}
+                    </small>
+                  </article>
+                ))}
+              </div>
+            ) : null}
+            {result.unanswered_parts?.length ? (
+              <div className="memory-unanswered" aria-label="memory unanswered parts">
+                <strong>当前证据仍不能回答</strong>
+                <ul>
+                  {result.unanswered_parts.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             {memoryEvidenceBoundary ? (
               <div className="partial-review-banner">
                 <AlertTriangle size={18} />
@@ -4234,49 +4271,52 @@ export function ResearchMemoryView({
                     <span>{hit.paper?.year || "year unknown"}</span>
                     <span>{hit.paper?.venue || hit.paper?.source || "source unknown"}</span>
                   </div>
-                  <div className="memory-hit-score-grid" aria-label="memory score breakdown">
-                    <span>title {(hit.title_score ?? 0).toFixed(2)}</span>
-                    <span>keyword {(hit.keyword_score ?? 0).toFixed(2)}</span>
-                    <span>section {(hit.section_score ?? 0).toFixed(2)}</span>
-                    <span>priority {(hit.priority_score ?? 0).toFixed(2)}</span>
-                  </div>
-                  <div className="memory-hit-evidence" data-testid="memory-hit-evidence">
-                    <strong>命中理由</strong>
-                    <span>{hit.paper?.relation || "标题、关键词或结构化字段与当前问题存在直接交集。"}</span>
-                    <small>{formatEvidenceLevel(pack.evidence_level || "metadata_only")}</small>
-                  </div>
-                  <p>{hit.snippets?.[0] ?? "暂无命中片段。"}</p>
-                  <dl>
-                    <div>
-                      <dt>最脆弱假设</dt>
-                      <dd>{hit.weakest_assumption || "暂无"}</dd>
+                  <details className="memory-hit-details">
+                    <summary>查看证据、评分与研究备注</summary>
+                    <div className="memory-hit-score-grid" aria-label="memory score breakdown">
+                      <span>title {(hit.title_score ?? 0).toFixed(2)}</span>
+                      <span>keyword {(hit.keyword_score ?? 0).toFixed(2)}</span>
+                      <span>section {(hit.section_score ?? 0).toFixed(2)}</span>
+                      <span>priority {(hit.priority_score ?? 0).toFixed(2)}</span>
                     </div>
-                    <div>
-                      <dt>一周验证</dt>
-                      <dd>{hit.minimal_reproduction || "暂无"}</dd>
+                    <div className="memory-hit-evidence" data-testid="memory-hit-evidence">
+                      <strong>命中理由</strong>
+                      <span>{hit.paper?.relation || "标题、关键词或结构化字段与当前问题存在直接交集。"}</span>
+                      <small>{formatEvidenceLevel(pack.evidence_level || hit.evidence_quality || "metadata_only")}</small>
                     </div>
-                    <div>
-                      <dt>反例设计</dt>
-                      <dd>{hit.counterexample || "暂无"}</dd>
-                    </div>
-                    <div>
-                      <dt>审美批判</dt>
-                      <dd>{sight.why_not_good || "暂无 ResearchSight 批判字段"}</dd>
-                    </div>
-                    <div>
-                      <dt>更好角度</dt>
-                      <dd>{sight.better_angle || "暂无 ResearchSight 破局视角"}</dd>
-                    </div>
-                    <div>
-                      <dt>证据等级</dt>
-                      <dd>
-                        {buildEvidenceBoundary(pack.evidence_level)?.title
-                          ? `${buildEvidenceBoundary(pack.evidence_level)?.title}；`
-                          : ""}
-                        {pack.grounding_summary || "暂无 EvidencePack"}
-                      </dd>
-                    </div>
-                  </dl>
+                    <p>{hit.snippets?.[0] ?? "暂无命中片段。"}</p>
+                    <dl>
+                      <div>
+                        <dt>最脆弱假设</dt>
+                        <dd>{hit.weakest_assumption || "暂无"}</dd>
+                      </div>
+                      <div>
+                        <dt>一周验证</dt>
+                        <dd>{hit.minimal_reproduction || "暂无"}</dd>
+                      </div>
+                      <div>
+                        <dt>反例设计</dt>
+                        <dd>{hit.counterexample || "暂无"}</dd>
+                      </div>
+                      <div>
+                        <dt>审美批判</dt>
+                        <dd>{sight.why_not_good || "暂无 ResearchSight 批判字段"}</dd>
+                      </div>
+                      <div>
+                        <dt>更好角度</dt>
+                        <dd>{sight.better_angle || "暂无 ResearchSight 破局视角"}</dd>
+                      </div>
+                      <div>
+                        <dt>证据等级</dt>
+                        <dd>
+                          {buildEvidenceBoundary(pack.evidence_level)?.title
+                            ? `${buildEvidenceBoundary(pack.evidence_level)?.title}；`
+                            : ""}
+                          {pack.grounding_summary || "暂无 EvidencePack"}
+                        </dd>
+                      </div>
+                    </dl>
+                  </details>
                 </article>
               );
             })}
@@ -4466,6 +4506,27 @@ export function GapBoardView({
           决策目标
           <textarea value={goal} onChange={(event) => onGoalChange(event.target.value)} />
         </label>
+        {decision?.decision_intent ? (
+          <div className="decision-intent-summary" aria-label="parsed decision intent">
+            <strong>系统识别的目标约束</strong>
+            <span>研究类型：{decision.decision_intent.contribution_type}</span>
+            <span>
+              目标关键词（锚点至少命中一项）：{decision.decision_intent.required_terms.join(" / ") || "未指定"}
+            </span>
+            <span>
+              对照对象：{decision.decision_intent.contrast_terms.join(" / ") || "未指定"}
+            </span>
+            <span>
+              明确排除：{decision.decision_intent.excluded_terms.join(" / ") || "无"}
+            </span>
+            <span>
+              时间预算：
+              {decision.decision_intent.time_budget_days
+                ? `${decision.decision_intent.time_budget_days} 天`
+                : "未指定，不自动假设 7 天"}
+            </span>
+          </div>
+        ) : null}
         {isGenerating ? <OperationStatusNote apiStatus={apiStatus} message={apiMessage} /> : null}
         {decision ? (
           <div className="validation-summary">
@@ -4664,6 +4725,42 @@ export function ExperimentPlannerView({
               <dd>{plan.resources}</dd>
             </div>
           </dl>
+          {plan.goal_alignment ? (
+            <div className="experiment-readiness" aria-label="experiment goal alignment">
+              <strong>目标对齐</strong>
+              <dl>
+                {Object.entries(plan.goal_alignment).map(([key, value]) => (
+                  <div key={key}>
+                    <dt>{key}</dt>
+                    <dd>{formatDecisionValue(value)}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          ) : null}
+          {plan.readiness_checks ? (
+            <div className="experiment-readiness" aria-label="experiment readiness checks">
+              <strong>执行前就绪检查</strong>
+              <dl>
+                {Object.entries(plan.readiness_checks).map(([key, value]) => (
+                  <div key={key}>
+                    <dt>{key}</dt>
+                    <dd className={value.startsWith("unknown:") ? "unknown" : "ready"}>{value}</dd>
+                  </div>
+                ))}
+              </dl>
+              {plan.assumptions?.length ? (
+                <>
+                  <strong>尚未验证的假设</strong>
+                  <ul>
+                    {plan.assumptions.map((assumption) => (
+                      <li key={assumption}>{assumption}</li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+            </div>
+          ) : null}
           {isBlocked && plan.unblock_suggestions.length ? (
             <div className="experiment-unblock">
               <strong>Unblock Suggestions</strong>
@@ -4703,6 +4800,16 @@ export function ExperimentPlannerView({
       ) : null}
     </div>
   );
+}
+
+function formatDecisionValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.length ? value.map(String).join(" / ") : "无";
+  }
+  if (value === null || value === undefined || value === "") {
+    return "未指定";
+  }
+  return String(value);
 }
 
 function Metric({ label, value, detail }: { label: string; value: string; detail: string }) {

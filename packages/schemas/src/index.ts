@@ -401,6 +401,16 @@ export interface ApiIdeaValidation {
   key_risks: string[];
 }
 
+export interface ApiDecisionIntent {
+  raw_goal: string;
+  focus: string;
+  required_terms: string[];
+  contrast_terms: string[];
+  excluded_terms: string[];
+  contribution_type: string;
+  time_budget_days: number | null;
+}
+
 export interface ApiExperimentPlan {
   status: "ready" | "blocked";
   anchor_paper_id: string;
@@ -415,6 +425,9 @@ export interface ApiExperimentPlan {
   success_criterion: string;
   failure_criterion: string;
   unblock_suggestions: string[];
+  goal_alignment?: Record<string, unknown>;
+  readiness_checks?: Record<string, string>;
+  assumptions?: string[];
 }
 
 export interface ApiResearchDecisionResponse {
@@ -425,6 +438,7 @@ export interface ApiResearchDecisionResponse {
   decision_status?: "complete" | "partial" | "blocked";
   evidence_quality?: Record<string, unknown>;
   warnings?: string[];
+  decision_intent?: ApiDecisionIntent | null;
   workflow_steps?: ApiWorkflowStepState[];
 }
 
@@ -450,6 +464,8 @@ export interface ApiPaperMemoryHit {
     source: string;
     text: string;
     confidence: string;
+    section?: string;
+    page?: string;
   }>;
   abstract_translation: string;
   weakest_assumption: string;
@@ -471,6 +487,24 @@ export interface ApiDirectionMemory {
   updated_at: string;
 }
 
+export interface ApiResearchMemoryClaim {
+  id: string;
+  statement: string;
+  support_status: "corroborated" | "single_source" | "conflicted";
+  confidence: "low" | "medium" | "high";
+  paper_ids: string[];
+  evidence_refs: Array<{
+    paper_id: string;
+    paper_title: string;
+    snippet_id: string;
+    source: string;
+    section: string;
+    page: string;
+    text: string;
+    confidence: string;
+  }>;
+}
+
 export interface ApiResearchMemoryQueryResponse {
   schema_version?: string;
   question: string;
@@ -481,6 +515,9 @@ export interface ApiResearchMemoryQueryResponse {
   total_memories: number;
   reliability_status?: "reliable" | "no_reliable_hit" | "no_memory";
   reliability_reason?: string;
+  answer_summary?: string;
+  claims?: ApiResearchMemoryClaim[];
+  unanswered_parts?: string[];
   artifact: ApiArtifact;
   warnings: string[];
   workflow_steps?: ApiWorkflowStepState[];

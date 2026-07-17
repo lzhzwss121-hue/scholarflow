@@ -383,6 +383,16 @@ class IdeaValidation(BaseModel):
     key_risks: list[str]
 
 
+class DecisionIntent(BaseModel):
+    raw_goal: str = ""
+    focus: str = ""
+    required_terms: list[str] = Field(default_factory=list)
+    contrast_terms: list[str] = Field(default_factory=list)
+    excluded_terms: list[str] = Field(default_factory=list)
+    contribution_type: str = "unspecified"
+    time_budget_days: int | None = None
+
+
 class ExperimentPlan(BaseModel):
     status: Literal["ready", "blocked"] = "ready"
     anchor_paper_id: str = ""
@@ -397,6 +407,9 @@ class ExperimentPlan(BaseModel):
     success_criterion: str
     failure_criterion: str
     unblock_suggestions: list[str] = Field(default_factory=list)
+    goal_alignment: dict[str, object] = Field(default_factory=dict)
+    readiness_checks: dict[str, str] = Field(default_factory=dict)
+    assumptions: list[str] = Field(default_factory=list)
 
 
 class ResearchDecisionResponse(BaseModel):
@@ -407,6 +420,7 @@ class ResearchDecisionResponse(BaseModel):
     decision_status: Literal["complete", "partial", "blocked"] = "complete"
     evidence_quality: dict[str, object] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
+    decision_intent: DecisionIntent | None = None
     workflow_steps: list[WorkflowStepState] = Field(default_factory=list)
 
 
@@ -448,6 +462,15 @@ class DirectionMemory(BaseModel):
     updated_at: str
 
 
+class ResearchMemoryClaim(BaseModel):
+    id: str
+    statement: str
+    support_status: Literal["corroborated", "single_source", "conflicted"]
+    confidence: Literal["low", "medium", "high"]
+    paper_ids: list[str]
+    evidence_refs: list[dict[str, str]] = Field(default_factory=list)
+
+
 class ResearchMemoryQueryResponse(BaseModel):
     question: str
     top_k: int
@@ -457,6 +480,9 @@ class ResearchMemoryQueryResponse(BaseModel):
     total_memories: int
     reliability_status: str = "reliable"
     reliability_reason: str = ""
+    answer_summary: str = ""
+    claims: list[ResearchMemoryClaim] = Field(default_factory=list)
+    unanswered_parts: list[str] = Field(default_factory=list)
     artifact: Artifact
     warnings: list[str]
     workflow_steps: list[WorkflowStepState] = Field(default_factory=list)

@@ -557,3 +557,85 @@ test("paper memory shows a no-reliable-hit boundary instead of invented evidence
   await expect(page.getByLabel("用户问题")).toHaveValue(/具体研究对象、失败模式、数据集、指标与 baseline/);
   await expect(page.getByRole("button", { name: "返回 Literature Search" })).toBeVisible();
 });
+
+test("paper memory prioritizes synthesis and collapses per-paper research notes", async ({ page }) => {
+  const memoryPayload = {
+    schema_version: "research_memory_answer.v3",
+    question: "对象幻觉在视觉证据冲突时为何恶化？",
+    top_k: 3,
+    answer: "结构化综合答案。",
+    answer_summary: "两篇原文共同覆盖对象幻觉与视觉证据冲突，但尚不能证明结论完全一致。",
+    claims: [
+      {
+        id: "memory-claim-1",
+        statement: `${paper.title}：Object hallucination increases under conflicting visual evidence.`,
+        support_status: "single_source",
+        confidence: "medium",
+        paper_ids: [paper.id],
+        evidence_refs: [
+          {
+            paper_id: paper.id,
+            paper_title: paper.title,
+            snippet_id: "pdf-results-p7",
+            source: "pdf.full_text",
+            section: "results",
+            page: "7",
+            text: "Object hallucination increases under conflicting visual evidence.",
+            confidence: "medium",
+          },
+        ],
+      },
+    ],
+    unanswered_parts: ["仍缺少跨模型复现实验。"],
+    hits: [
+      {
+        paper,
+        direction: project.keyword,
+        round: 1,
+        score: 1.42,
+        title_score: 0.42,
+        keyword_score: 0.36,
+        section_score: 0.49,
+        priority_score: 0.15,
+        snippets: ["[pdf-results-p7|pdf.full_text] Object hallucination increases under conflicting visual evidence."],
+        evidence_quality: "full_text",
+        evidence_refs: [],
+        abstract_translation: "本文研究视觉证据冲突。",
+        weakest_assumption: "视觉冲突样本能够代表真实失败。",
+        minimal_reproduction: "复现视觉冲突切片。",
+        counterexample: "替换视觉证据但保持答案选项不变。",
+        follow_up_idea: "验证跨模型稳定性。",
+        why_selected: "命中对象幻觉与视觉冲突。",
+        research_sight: directionPayload.papers[0].research_sight,
+        self_read_priority: true,
+      },
+    ],
+    direction_memory: null,
+    total_memories: 2,
+    reliability_status: "reliable",
+    reliability_reason: "命中全文证据。",
+    warnings: [],
+  };
+  const memoryArtifact = {
+    id: "artifact_e2e_memory_synthesis",
+    project_id: project.id,
+    title: "research_memory_answer_object-hallucination.md",
+    kind: "markdown",
+    content_markdown: "# Research Memory Answer",
+    content_json: JSON.stringify(memoryPayload),
+    diff: "+ Structured memory synthesis",
+    created_at: "2026-07-17T00:00:00+00:00",
+    updated_at: "2026-07-17T00:00:00+00:00",
+  };
+  await mockReaderProject(page, [artifact, memoryArtifact]);
+  await page.goto("/#paper-memory");
+
+  await expect(page.getByText(memoryPayload.answer_summary, { exact: true })).toBeVisible();
+  await expect(page.locator('[aria-label="memory synthesized claims"]')).toContainText("results · p.7");
+  await expect(page.locator('[aria-label="memory unanswered parts"]')).toContainText("仍缺少跨模型复现实验");
+  const details = page.locator(".memory-hit-details").first();
+  await expect(details).not.toHaveAttribute("open", "");
+  await expect(page.getByText("替换视觉证据但保持答案选项不变。", { exact: true })).not.toBeVisible();
+  await details.locator("summary").click();
+  await expect(page.getByText("替换视觉证据但保持答案选项不变。", { exact: true })).toBeVisible();
+});

@@ -2060,6 +2060,7 @@ test("hydrates real direction review and memory artifact shapes without blank vi
   await page.goto("/#paper-memory");
   await expect(page.getByText("Memory-Grounded Answer")).toBeVisible();
   await expect(page.locator('[aria-label="memory answer"]').getByText("摘要级证据，不是全文结论", { exact: true })).toBeVisible();
+  await page.locator(".memory-hit-details summary").first().click();
   await expect(page.locator("dd", { hasText: "构造同答案但视觉证据冲突的样本。" })).toBeVisible();
   expect(pageErrors).toEqual([]);
   expect(consoleWarnings.filter((message) => message.includes("Encountered two children with the same key"))).toEqual([]);

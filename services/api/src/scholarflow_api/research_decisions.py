@@ -5,6 +5,8 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from scholarflow_api.text_utils import extract_terms, score_term_overlap
+
 
 KNOWN_BASELINES = [
     "Qwen2.5-VL",
@@ -19,6 +21,40 @@ KNOWN_BASELINES = [
     "mPLUG-Owl",
     "LLaVA",
 ]
+
+GOAL_GENERIC_TERMS = {
+    "build",
+    "day",
+    "days",
+    "experiment",
+    "find",
+    "gap",
+    "idea",
+    "month",
+    "months",
+    "novel",
+    "one-week",
+    "plan",
+    "week",
+    "weeks",
+    "实验",
+    "计划",
+    "缺口",
+}
+
+
+@dataclass
+class DecisionIntent:
+    raw_goal: str
+    focus: str
+    required_terms: list[str]
+    contrast_terms: list[str]
+    excluded_terms: list[str]
+    contribution_type: str
+    time_budget_days: int | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass
@@ -64,6 +100,9 @@ class ExperimentPlan:
     success_criterion: str
     failure_criterion: str
     unblock_suggestions: list[str] = field(default_factory=list)
+    goal_alignment: dict[str, Any] = field(default_factory=dict)
+    readiness_checks: dict[str, str] = field(default_factory=dict)
+    assumptions: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -82,6 +121,7 @@ class ExperimentAnchor:
     minimal_reproduction: str
     reason: str
     score: float
+    goal_alignment: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -96,6 +136,7 @@ class ResearchDecisionBundle:
     decision_status: str = "complete"
     evidence_quality: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    decision_intent: DecisionIntent | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -106,6 +147,7 @@ class ResearchDecisionBundle:
             "decision_status": self.decision_status,
             "evidence_quality": self.evidence_quality,
             "warnings": self.warnings,
+            "decision_intent": self.decision_intent.to_dict() if self.decision_intent else None,
         }
 
 
@@ -121,12 +163,15 @@ def generate_research_decisions(
     warnings = build_evidence_quality_warnings(evidence_quality)
     decision_status = evidence_quality["decision_status"]
     focus = infer_focus(project, gap_evidence_papers or evidence_papers, paper_cards, goal)
+    decision_intent = parse_decision_intent(goal, focus)
     top_papers = (
         ", ".join(paper.get("title", "") for paper in gap_evidence_papers[:3] if paper.get("title"))
         or "当前没有 strong/medium 相关论文可作为 gap evidence（且非 survey-only）"
     )
-    anchor = select_experiment_anchor(gap_evidence_papers, paper_cards)
-    unblock_suggestions = build_unblock_suggestions(gap_evidence_papers, paper_cards) if anchor is None else []
+    anchor = select_experiment_anchor(gap_evidence_papers, paper_cards, decision_intent)
+    unblock_suggestions = (
+        build_unblock_suggestions(gap_evidence_papers, paper_cards, decision_intent) if anchor is None else []
+    )
     grounded_evidence = collect_grounded_gap_evidence(gap_evidence_papers, paper_cards)
     if decision_status == "complete" and not grounded_evidence:
         decision_status = "partial"
@@ -134,6 +179,10 @@ def generate_research_decisions(
         warnings.append(
             "未找到同时绑定原文 snippet 与 limitation 的 Gap evidence；Research Decision 降级为 partial。"
         )
+    if decision_status == "complete" and len(grounded_evidence) < 2:
+        decision_status = "partial"
+        evidence_quality["decision_status"] = decision_status
+        warnings.append("方向级 Gap 至少需要 2 篇独立论文的原文限制证据；当前不足，已降级为 partial。")
     gaps = build_gap_decisions(
         decision_status=decision_status,
         top_papers=top_papers,
@@ -142,7 +191,7 @@ def generate_research_decisions(
 
     validation = build_idea_validation(focus, decision_status, warnings, grounded_evidence)
 
-    experiment = build_experiment_plan_from_anchor(anchor, focus, unblock_suggestions)
+    experiment = build_experiment_plan_from_anchor(anchor, focus, unblock_suggestions, decision_intent)
 
     if experiment.status == "blocked" and decision_status == "complete":
         decision_status = "partial"
@@ -157,6 +206,7 @@ def generate_research_decisions(
         decision_status=decision_status,
         evidence_quality=evidence_quality,
         warnings=unique_preserve_order(warnings),
+        decision_intent=decision_intent,
     )
 
 
@@ -197,13 +247,22 @@ def build_gap_decisions(
     for index, item in enumerate(grounded_evidence[:3], start=1):
         title = item["title"]
         limitation = item["limitation"] or "原文未给出显式 limitation，不能扩展成确定缺口。"
+        locator = " / ".join(
+            part
+            for part in [
+                item.get("section", ""),
+                f"p.{item.get('page')}" if item.get("page") else "",
+            ]
+            if part
+        )
         decisions.append(
             GapDecision(
                 id=f"gap_source_{index}",
                 title=f"待验证的原文限制：{title}",
                 kind="engineering_gap",
                 evidence=(
-                    f"事实证据（{item['snippet_id']}，{item['source']}）：{item['snippet']} "
+                    f"事实证据（{item['snippet_id']}，{item['source']}"
+                    f"{f'，{locator}' if locator else ''}）：{item['snippet']} "
                     f"原文限制信号：{limitation}"
                 ),
                 weakness="推断：该限制是否跨论文稳定出现仍需用相同任务和指标复核，不能仅凭单篇论文下结论。",
@@ -223,26 +282,20 @@ def collect_grounded_gap_evidence(
     grounded: list[dict[str, str]] = []
     for paper in papers:
         card = cards_by_paper_id.get(str(paper.get("id") or ""), {})
-        sight = parse_json_object(card.get("research_sight_json", "{}"))
-        pack = sight.get("evidence_pack") if isinstance(sight.get("evidence_pack"), dict) else {}
-        snippets = pack.get("snippets") if isinstance(pack.get("snippets"), list) else []
-        source_snippet = next(
-            (
-                snippet
-                for snippet in snippets
-                if isinstance(snippet, dict)
-                and snippet.get("source") in {"metadata.abstract", "pdf.full_text"}
-                and normalize_space(snippet.get("text", ""))
-            ),
-            None,
-        )
-        if not isinstance(source_snippet, dict):
-            continue
         signals = card.get("signals") if isinstance(card.get("signals"), dict) else {}
         limitation = normalize_space(signals.get("limitation", ""))
         if limitation.startswith("当前证据不足"):
             limitation = ""
         if not limitation:
+            continue
+        signal_evidence = signals.get("signal_evidence") if isinstance(signals.get("signal_evidence"), dict) else {}
+        limitation_evidence = (
+            signal_evidence.get("limitation") if isinstance(signal_evidence.get("limitation"), dict) else None
+        )
+        source_snippet = normalize_limitation_evidence(limitation_evidence)
+        if source_snippet is None:
+            source_snippet = find_legacy_limitation_snippet(card, limitation)
+        if source_snippet is None:
             continue
         grounded.append(
             {
@@ -251,9 +304,54 @@ def collect_grounded_gap_evidence(
                 "source": normalize_space(source_snippet.get("source", "")),
                 "snippet": normalize_space(source_snippet.get("text", ""))[:280],
                 "limitation": limitation,
+                "section": normalize_space(source_snippet.get("section", "")),
+                "page": normalize_space(source_snippet.get("page", "")),
             },
         )
     return grounded
+
+
+def normalize_limitation_evidence(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not value:
+        return None
+    source = normalize_space(value.get("source", ""))
+    quote = normalize_space(value.get("quote", ""))
+    validation_errors = value.get("validation_errors")
+    if source not in {"metadata.abstract", "pdf.full_text"} or not quote:
+        return None
+    if isinstance(validation_errors, list) and validation_errors:
+        return None
+    page = value.get("page")
+    section = normalize_space(value.get("section", ""))
+    locator = section or "unknown"
+    if page not in (None, ""):
+        locator += f"-p{page}"
+    return {
+        "id": f"signal-limitation-{locator}",
+        "source": source,
+        "text": quote,
+        "section": section,
+        "page": page,
+    }
+
+
+def find_legacy_limitation_snippet(card: dict[str, Any], limitation: str) -> dict[str, Any] | None:
+    sight = parse_json_object(card.get("research_sight_json", "{}"))
+    pack = sight.get("evidence_pack") if isinstance(sight.get("evidence_pack"), dict) else {}
+    snippets = pack.get("snippets") if isinstance(pack.get("snippets"), list) else []
+    limitation_text = normalize_space(re.sub(r"^(本论文自身局限|原文限制信号)\s*[:：]\s*", "", limitation))
+    for snippet in snippets:
+        if not isinstance(snippet, dict):
+            continue
+        text = normalize_space(snippet.get("text", ""))
+        if snippet.get("source") not in {"metadata.abstract", "pdf.full_text"} or not text:
+            continue
+        if limitation_text and (
+            limitation_text.lower() in text.lower()
+            or text.lower() in limitation_text.lower()
+        ):
+            return snippet
+    return None
 
 
 def parse_json_object(value: Any) -> dict[str, Any]:
@@ -293,25 +391,29 @@ def build_idea_validation(
             ],
         )
     anchor = grounded_evidence[0]
+    corroborating = grounded_evidence[1]
     evidence_label = f"{anchor['title']} / {anchor['snippet_id']} / {anchor['source']}"
+    corroborating_label = (
+        f"{corroborating['title']} / {corroborating['snippet_id']} / {corroborating['source']}"
+    )
     return IdeaValidation(
         idea=(
             f"推断性 idea：围绕 `{focus}` 复核 `{anchor['limitation']}` 是否稳定存在。"
-            f"证据锚点：{evidence_label}；原文片段：{anchor['snippet']}"
+            f"主证据锚点：{evidence_label}；独立复核锚点：{corroborating_label}。"
         ),
         why_not_incremental=(
-            "只有当同一限制能在至少一个强 baseline 和同一数据/指标协议下复现时，"
+            "两篇论文都有可定位限制证据，但只有当这些限制在同一任务、强 baseline 和同一数据/指标协议下复现时，"
             "才有资格进一步判断它是否构成非增量研究入口。"
         ),
         difference_from_existing_work=(
             f"当前无法声称优于已有工作；可验证差异仅是把 `{anchor['limitation']}` 作为待复核对象，"
-            "后续必须补充明确 baseline、dataset 与 metric 对照。"
+            f"并用 `{corroborating['limitation']}` 作为独立证据边界；后续必须补充明确 baseline、dataset 与 metric 对照。"
         ),
         novelty_risk="high",
         feasibility="one-month",
         key_risks=[
-            f"当前 idea 只锚定单篇原文证据 {evidence_label}，不能外推为方向共识。",
-            "需要第二篇独立论文报告同类 limitation，或用统一协议复现实证。",
+            f"两篇锚点 {evidence_label} / {corroborating_label} 的 limitation 未必语义等价，仍不能外推为方向共识。",
+            "需要用统一协议复现实证，确认二者是否属于同一失败机制。",
             "如果 baseline、dataset、metric 不能固定，差异可能只是实验设置变化。",
         ],
     )
@@ -403,7 +505,11 @@ def is_relevant_evidence_paper(paper: dict[str, Any]) -> bool:
     return priority in {"High", "Medium"}
 
 
-def select_experiment_anchor(papers: list[dict[str, Any]], paper_cards: list[dict[str, Any]]) -> ExperimentAnchor | None:
+def select_experiment_anchor(
+    papers: list[dict[str, Any]],
+    paper_cards: list[dict[str, Any]],
+    intent: DecisionIntent | None = None,
+) -> ExperimentAnchor | None:
     paper_by_id = {paper.get("id", ""): paper for paper in papers if paper.get("id")}
     candidates: list[ExperimentAnchor] = []
     for card in paper_cards:
@@ -413,7 +519,7 @@ def select_experiment_anchor(papers: list[dict[str, Any]], paper_cards: list[dic
         merged_paper = merge_card_paper(card, paper)
         if is_survey_like(merged_paper, card):
             continue
-        anchor = build_experiment_anchor_candidate(merged_paper, card)
+        anchor = build_experiment_anchor_candidate(merged_paper, card, intent)
         if anchor and anchor.score >= 3.0:
             candidates.append(anchor)
     if not candidates:
@@ -466,7 +572,11 @@ def merge_card_paper(card: dict[str, Any], paper: dict[str, Any]) -> dict[str, A
     return merged
 
 
-def build_experiment_anchor_candidate(paper: dict[str, Any], card: dict[str, Any]) -> ExperimentAnchor | None:
+def build_experiment_anchor_candidate(
+    paper: dict[str, Any],
+    card: dict[str, Any],
+    intent: DecisionIntent | None = None,
+) -> ExperimentAnchor | None:
     title = normalize_space(paper.get("title") or card.get("paper_title") or card.get("id") or "Untitled paper")
     minimal = normalize_space(card.get("minimal_reproduction", ""))
     if not minimal or is_invalid_minimal_reproduction(minimal):
@@ -489,6 +599,11 @@ def build_experiment_anchor_candidate(paper: dict[str, Any], card: dict[str, Any
     baseline = extract_anchor_baseline(minimal, combined)
     score = 0.0
     reasons: list[str] = []
+    goal_alignment = score_anchor_goal_alignment(combined, intent)
+    if goal_alignment["excluded_matches"]:
+        return None
+    if intent and intent.required_terms and not goal_alignment["matched_required_terms"]:
+        return None
 
     if claim:
         score += 1.4
@@ -511,6 +626,9 @@ def build_experiment_anchor_candidate(paper: dict[str, Any], card: dict[str, Any
     if normalize_space(paper.get("priority", "")).lower() == "high":
         score += 0.2
         reasons.append("High priority paper")
+    score += float(goal_alignment["score"])
+    if goal_alignment["matched_required_terms"]:
+        reasons.append(f"目标匹配：{', '.join(goal_alignment['matched_required_terms'])}")
 
     if not (dataset and metrics and baseline and (claim or has_benchmark_signal(combined))):
         return None
@@ -526,11 +644,23 @@ def build_experiment_anchor_candidate(paper: dict[str, Any], card: dict[str, Any
         minimal_reproduction=minimal,
         reason="；".join(reasons),
         score=score,
+        goal_alignment=goal_alignment,
     )
 
 
-def build_unblock_suggestions(papers: list[dict[str, Any]], paper_cards: list[dict[str, Any]]) -> list[str]:
+def build_unblock_suggestions(
+    papers: list[dict[str, Any]],
+    paper_cards: list[dict[str, Any]],
+    intent: DecisionIntent | None = None,
+) -> list[str]:
     suggestions: list[str] = []
+    if intent and intent.required_terms:
+        suggestions.append(
+            f"目标硬约束：锚点论文至少需直接覆盖 {', '.join(intent.required_terms)} 中的一项；"
+            "当前候选未形成满足约束的全文级实验锚点。"
+        )
+    if intent and intent.excluded_terms:
+        suggestions.append(f"排除约束：实验锚点不得依赖 {', '.join(intent.excluded_terms)}。")
     if not papers:
         suggestions.append("先运行 Literature Search，补充至少 5 篇非 survey/review 的候选论文。")
     if not paper_cards:
@@ -622,6 +752,7 @@ def build_experiment_plan_from_anchor(
     anchor: ExperimentAnchor | None,
     focus: str,
     unblock_suggestions: list[str] | None = None,
+    intent: DecisionIntent | None = None,
 ) -> ExperimentPlan:
     if anchor is None:
         suggestions = unblock_suggestions or [
@@ -649,8 +780,26 @@ def build_experiment_plan_from_anchor(
             success_criterion="找到一篇可实验论文，其 Paper Card 明确包含 claim、dataset、metric 或 benchmark+baseline。",
             failure_criterion="继续只能命中 survey/review/overview，或 Paper Card 明确写着需要补充 PDF/实验细节。",
             unblock_suggestions=suggestions,
+            goal_alignment=blocked_goal_alignment(intent),
+            readiness_checks={
+                "anchor": "blocked",
+                "dataset": "unknown",
+                "baseline_or_model": "unknown",
+                "metric": "unknown",
+                "code_or_api": "unknown",
+                "compute": "unknown",
+                "annotation": "unknown",
+            },
+            assumptions=[],
         )
 
+    readiness_checks, assumptions = build_readiness_checks(anchor)
+    timeline = build_intent_timeline(anchor, intent)
+    budget_label = (
+        f"{intent.time_budget_days} 天"
+        if intent and intent.time_budget_days
+        else "未指定周期"
+    )
     return ExperimentPlan(
         status="ready",
         anchor_paper_id=anchor.paper_id,
@@ -665,19 +814,16 @@ def build_experiment_plan_from_anchor(
             "按样本难度、问题类型和失败模式分层分析。",
         ],
         resources=(
-            f"Anchor reason: {anchor.reason}。单卡推理或 API 推理；50-100 条样本；人工标注约 4-6 小时；总周期 7 天以内。"
+            f"Anchor reason: {anchor.reason}。目标周期：{budget_label}。"
+            "样本量、算力、模型/API 权限与标注工时未从论文证据中自动臆测，必须在执行前确认。"
         ),
-        timeline=[
-            f"Day 1: Anchor paper 指向 `{anchor.paper_title}`；复核原论文 claim、dataset、metric 和 baseline。",
-            f"Day 2-3: 从 `{anchor.dataset}` 抽 50-100 条样本并跑 `{anchor.baseline}`。",
-            "Day 4: 按论文指标和反例指标标注 failure slices。",
-            "Day 5: 构造 20 条能攻击核心 claim 的 counterexamples。",
-            "Day 6: 做 ablation 和错误分析，确认失败是否稳定。",
-            "Day 7: 输出复现实验报告、失败样本表和下一步 thesis-scale 计划。",
-        ],
+        timeline=timeline,
         success_criterion=f"在 `{anchor.paper_title}` 的小规模设置下复现 claim 相关现象，并定位至少一个稳定失败模式。",
         failure_criterion="现象只来自个别样本、标注争议、prompt 不稳定或 benchmark-specific tuning，无法支持 anchor claim。",
         unblock_suggestions=[],
+        goal_alignment=anchor.goal_alignment,
+        readiness_checks=readiness_checks,
+        assumptions=assumptions,
     )
 
 
@@ -871,6 +1017,208 @@ def normalize_space(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
+def parse_decision_intent(goal: str, focus: str) -> DecisionIntent:
+    raw_goal = normalize_space(goal)
+    contrast_terms = extract_goal_clause_terms(
+        raw_goal,
+        [
+            r"(?:different from|different than|contrast with|versus|vs\.?)\s+([^,;。；]+)",
+            r"(?:区别于|不同于|对比|相比)\s*([^,，;；。]+)",
+        ],
+    )
+    excluded_terms = extract_goal_clause_terms(
+        raw_goal,
+        [
+            r"(?:do not use|don't use|without|avoid|exclude)\s+([^,;。；]+)",
+            r"(?:不使用|不要|排除|避免)\s*([^,，;；。]+)",
+        ],
+    )
+    known_phrases = [
+        phrase
+        for phrase in [
+            "object hallucination",
+            "evidence faithfulness",
+            "visual grounding",
+            "counterexample evaluation",
+            "multiple objects",
+            "multi-object",
+            "物体幻觉",
+            "对象幻觉",
+            "多物体",
+            "证据忠实性",
+            "视觉定位",
+            "反例评测",
+        ]
+        if phrase.lower() in raw_goal.lower()
+    ]
+    excluded_keys = {term.lower() for term in [*contrast_terms, *excluded_terms]}
+    required_terms = unique_preserve_order(
+        [
+            *known_phrases,
+            *[
+                term
+                for term in extract_terms(raw_goal, limit=18)
+                if term.lower() not in GOAL_GENERIC_TERMS
+                and term.lower() not in excluded_keys
+                and term.lower() not in {"different", "contrast", "versus", "without", "avoid", "exclude"}
+            ],
+        ],
+    )
+    return DecisionIntent(
+        raw_goal=raw_goal,
+        focus=focus,
+        required_terms=required_terms[:8],
+        contrast_terms=contrast_terms[:5],
+        excluded_terms=excluded_terms[:5],
+        contribution_type=infer_goal_contribution_type(raw_goal),
+        time_budget_days=infer_time_budget_days(raw_goal),
+    )
+
+
+def extract_goal_clause_terms(goal: str, patterns: list[str]) -> list[str]:
+    values: list[str] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, goal, flags=re.IGNORECASE):
+            clause = normalize_space(match.group(1))
+            values.extend(extract_terms(clause, limit=5, include_domain_phrases=True))
+            values.extend(re.findall(r"\b[A-Z][A-Za-z0-9._-]{2,}\b", clause))
+    return unique_preserve_order(values)
+
+
+def infer_goal_contribution_type(goal: str) -> str:
+    lower = goal.lower()
+    if any(term in lower for term in ["failure analysis", "failure mode", "反例", "失败模式", "错误分析"]):
+        return "failure_analysis"
+    if any(term in lower for term in ["benchmark", "evaluation", "evaluate", "评测", "评价", "评估"]):
+        return "evaluation"
+    if any(term in lower for term in ["dataset", "data set", "数据集"]):
+        return "dataset"
+    if any(term in lower for term in ["method", "architecture", "training", "方法", "架构", "训练"]):
+        return "method"
+    return "unspecified"
+
+
+def infer_time_budget_days(goal: str) -> int | None:
+    lower = goal.lower()
+    numeric_day = re.search(r"\b(\d{1,3})\s*(?:day|days)\b", lower)
+    if numeric_day:
+        return int(numeric_day.group(1))
+    numeric_week = re.search(r"\b(\d{1,2})\s*(?:week|weeks)\b", lower)
+    if numeric_week:
+        return int(numeric_week.group(1)) * 7
+    numeric_month = re.search(r"\b(\d{1,2})\s*(?:month|months)\b", lower)
+    if numeric_month:
+        return int(numeric_month.group(1)) * 30
+    chinese_day = re.search(r"(\d{1,3})\s*天", goal)
+    if chinese_day:
+        return int(chinese_day.group(1))
+    chinese_week = re.search(r"(\d{1,2})\s*(?:周|星期)", goal)
+    if chinese_week:
+        return int(chinese_week.group(1)) * 7
+    chinese_month = re.search(r"(\d{1,2})\s*个?月", goal)
+    if chinese_month:
+        return int(chinese_month.group(1)) * 30
+    if any(term in lower for term in ["one-week", "one week", "一周"]):
+        return 7
+    if any(term in lower for term in ["one-month", "one month", "一个月"]):
+        return 30
+    return None
+
+
+def score_anchor_goal_alignment(combined: str, intent: DecisionIntent | None) -> dict[str, Any]:
+    if intent is None:
+        return {
+            "status": "not_specified",
+            "score": 0.0,
+            "matched_required_terms": [],
+            "missing_required_terms": [],
+            "contrast_terms": [],
+            "excluded_matches": [],
+        }
+    matched = score_term_overlap(combined, set(intent.required_terms), weight=0.45, max_score=2.4).matched_terms
+    excluded_matches = score_term_overlap(
+        combined,
+        set(intent.excluded_terms),
+        weight=0.1,
+        max_score=1.0,
+    ).matched_terms
+    matched_keys = {term.lower() for term in matched}
+    missing = [term for term in intent.required_terms if term.lower() not in matched_keys]
+    status = "aligned" if matched or not intent.required_terms else "mismatch"
+    return {
+        "status": "excluded" if excluded_matches else status,
+        "score": round(min(2.4, len(matched) * 0.45), 4),
+        "matched_required_terms": matched,
+        "missing_required_terms": missing,
+        "contrast_terms": intent.contrast_terms,
+        "excluded_matches": excluded_matches,
+    }
+
+
+def blocked_goal_alignment(intent: DecisionIntent | None) -> dict[str, Any]:
+    return {
+        "status": "blocked",
+        "score": 0.0,
+        "matched_required_terms": [],
+        "missing_required_terms": intent.required_terms if intent else [],
+        "contrast_terms": intent.contrast_terms if intent else [],
+        "excluded_matches": [],
+    }
+
+
+def build_readiness_checks(anchor: ExperimentAnchor) -> tuple[dict[str, str], list[str]]:
+    paper = anchor.paper
+    card = anchor.card
+    combined = normalize_space(f"{card.get('minimal_reproduction', '')} {card.get('sections_json', '')}")
+    code_value = normalize_space(paper.get("code", ""))
+    code_ready = bool(code_value and code_value.lower() not in {"unknown", "none", "n/a"})
+    compute_ready = bool(re.search(r"\b(?:cpu|gpu|tpu|a100|h100|v100|api)\b", combined, flags=re.IGNORECASE))
+    annotation_ready = any(
+        marker in combined.lower()
+        for marker in ["annotat", "human evaluation", "labeling", "标注", "人工评测"]
+    )
+    checks = {
+        "anchor": f"ready: {anchor.paper_title}",
+        "dataset": f"ready: {anchor.dataset}",
+        "baseline_or_model": f"ready: {anchor.baseline}",
+        "metric": f"ready: {', '.join(anchor.metrics)}",
+        "code_or_api": f"ready: {code_value}" if code_ready else "unknown: 未发现可验证代码仓库或 API 权限信息",
+        "compute": "ready: 原文/卡片包含算力或 API 线索" if compute_ready else "unknown: 未说明设备、显存或 API 配额",
+        "annotation": "ready: 原文/卡片包含标注线索" if annotation_ready else "unknown: 未说明人工标注协议与工时",
+    }
+    assumptions = [
+        detail.replace("unknown: ", "")
+        for detail in checks.values()
+        if detail.startswith("unknown:")
+    ]
+    return checks, assumptions
+
+
+def build_intent_timeline(anchor: ExperimentAnchor, intent: DecisionIntent | None) -> list[str]:
+    budget_days = intent.time_budget_days if intent else None
+    if budget_days is not None and budget_days <= 7:
+        return [
+            f"Day 1: 核验 `{anchor.paper_title}` 的 claim、dataset、metric、baseline 与目标约束。",
+            f"Day 2-3: 在 `{anchor.dataset}` 上先跑通 `{anchor.baseline}`；样本量由可用算力和统计需求决定。",
+            "Day 4-5: 构造反例与 failure slices，并记录所有协议变更。",
+            "Day 6: 做最小 ablation 和稳定性检查。",
+            "Day 7: 输出可复现记录、失败样本与继续/停止决策。",
+        ]
+    if budget_days is not None and budget_days <= 31:
+        return [
+            "Week 1: 核验锚点证据、代码/模型权限、数据许可与评测协议。",
+            "Week 2: 复现论文基线并冻结实验配置。",
+            "Week 3: 运行反例、切片和 ablation，记录不一致结果。",
+            "Week 4: 复核统计稳定性，输出继续/停止决策与下一阶段计划。",
+        ]
+    return [
+        "Phase 1: 核验锚点证据以及代码、数据、模型、算力和标注可用性。",
+        "Phase 2: 先复现 baseline，再冻结数据与指标协议。",
+        "Phase 3: 运行反例、failure slices 与 ablation。",
+        "Phase 4: 根据预注册成功/失败标准做继续或停止决策。",
+    ]
+
+
 def infer_focus(project: dict[str, Any], papers: list[dict[str, Any]], paper_cards: list[dict[str, Any]], goal: str) -> str:
     text = " ".join(
         [
@@ -893,6 +1241,19 @@ def infer_focus(project: dict[str, Any], papers: list[dict[str, Any]], paper_car
 
 def render_gap_board_markdown(bundle: ResearchDecisionBundle) -> str:
     blocks = ["# Gap Board", f"Project: {bundle.project_title}"]
+    if bundle.decision_intent:
+        blocks.append(
+            "\n".join(
+                [
+                    "## Decision Intent",
+                    f"- Raw goal: {bundle.decision_intent.raw_goal or 'not specified'}",
+                    f"- Required terms: {', '.join(bundle.decision_intent.required_terms) or 'none'}",
+                    f"- Contrast terms: {', '.join(bundle.decision_intent.contrast_terms) or 'none'}",
+                    f"- Excluded terms: {', '.join(bundle.decision_intent.excluded_terms) or 'none'}",
+                    f"- Time budget: {bundle.decision_intent.time_budget_days or 'not specified'} days",
+                ],
+            ),
+        )
     for gap in bundle.gaps:
         blocks.append(
             "\n".join(
@@ -940,6 +1301,12 @@ def render_experiment_markdown(bundle: ResearchDecisionBundle) -> str:
             "## Metrics\n" + "\n".join(f"- {metric}" for metric in plan.metrics),
             "## Ablations\n" + "\n".join(f"- {ablation}" for ablation in plan.ablations),
             f"## Resources\n{plan.resources}",
+            "## Goal Alignment\n"
+            + "\n".join(f"- {key}: {value}" for key, value in plan.goal_alignment.items()),
+            "## Readiness Checks\n"
+            + "\n".join(f"- {key}: {value}" for key, value in plan.readiness_checks.items()),
+            "## Explicit Assumptions\n"
+            + ("\n".join(f"- {item}" for item in plan.assumptions) if plan.assumptions else "- none"),
             "## Timeline\n" + "\n".join(f"- {step}" for step in plan.timeline),
             f"## Success Criterion\n{plan.success_criterion}",
             f"## Failure Criterion\n{plan.failure_criterion}",

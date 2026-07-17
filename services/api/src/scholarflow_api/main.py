@@ -1452,8 +1452,12 @@ def create_project_research_decisions(project_id: str, payload: ResearchDecision
             connection,
             session_id,
             "experiment.plan",
-            "done",
-            "已生成包含 baseline、dataset、metric、ablation、resource estimate 的实验计划。",
+            "done" if bundle.experiment.status == "ready" else "blocked",
+            (
+                "已生成包含目标对齐、baseline、dataset、metric、ablation 与资源就绪检查的实验计划。"
+                if bundle.experiment.status == "ready"
+                else "实验计划被阻塞：缺少满足目标约束的全文级可复现 anchor。"
+            ),
             now,
         )
         connection.execute(
@@ -1469,6 +1473,7 @@ def create_project_research_decisions(project_id: str, payload: ResearchDecision
         decision_status=bundle.decision_status,  # type: ignore[arg-type]
         evidence_quality=bundle.evidence_quality,
         warnings=bundle.warnings,
+        decision_intent=bundle.decision_intent.to_dict() if bundle.decision_intent else None,
         workflow_steps=[
             workflow_step_state(
                 step_id="gap-board",
@@ -1562,6 +1567,9 @@ def query_project_research_memory(project_id: str, payload: ResearchMemoryQueryR
         total_memories=answer.total_memories,
         reliability_status=answer.reliability_status,
         reliability_reason=answer.reliability_reason,
+        answer_summary=answer.answer_summary,
+        claims=[claim.to_dict() for claim in answer.claims],
+        unanswered_parts=answer.unanswered_parts,
         artifact=Artifact.model_validate(artifact),
         warnings=answer.warnings,
         workflow_steps=[

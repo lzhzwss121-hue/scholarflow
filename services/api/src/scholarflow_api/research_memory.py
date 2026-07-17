@@ -3,13 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from scholarflow_api.literature import build_query_intent
 from scholarflow_api.text_utils import extract_terms, normalize_space, normalize_terms, score_term_overlap
 
-RESEARCH_MEMORY_SCHEMA_VERSION = "research_memory_answer.v2"
+RESEARCH_MEMORY_SCHEMA_VERSION = "research_memory_answer.v3"
 MIN_RELIABLE_MEMORY_SCORE = 0.28
 
 
@@ -100,6 +100,19 @@ class DirectionMemorySnapshot:
 
 
 @dataclass
+class MemoryClaim:
+    id: str
+    statement: str
+    support_status: str
+    confidence: str
+    paper_ids: list[str]
+    evidence_refs: list[dict[str, str]]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class ResearchMemoryAnswer:
     question: str
     top_k: int
@@ -110,6 +123,9 @@ class ResearchMemoryAnswer:
     reliability_status: str
     reliability_reason: str
     warnings: list[str]
+    answer_summary: str = ""
+    claims: list[MemoryClaim] = field(default_factory=list)
+    unanswered_parts: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -123,6 +139,9 @@ class ResearchMemoryAnswer:
             "reliability_status": self.reliability_status,
             "reliability_reason": self.reliability_reason,
             "warnings": self.warnings,
+            "answer_summary": self.answer_summary,
+            "claims": [claim.to_dict() for claim in self.claims],
+            "unanswered_parts": self.unanswered_parts,
         }
 
 
@@ -461,16 +480,30 @@ def query_research_memory(
             warnings.append(f"当前原文证据未覆盖主题词：{', '.join(missing_terms[:5])}。")
             warnings.append(f"可尝试改写为：{' '.join(missing_terms[:3])} + 具体任务/数据集/指标，或重新运行 Literature Search。")
 
+    answer_summary, claims, unanswered_parts = build_memory_synthesis(
+        question,
+        reliable_hits,
+        reliability_status,
+        missing_terms,
+    )
+    answer_text = (
+        render_memory_synthesis_text(answer_summary, claims, unanswered_parts)
+        if reliable_hits
+        else build_memory_answer(question, reliable_hits, snapshot, reliability_status, missing_terms)
+    )
     return ResearchMemoryAnswer(
         question=question,
         top_k=top_k,
-        answer=build_memory_answer(question, reliable_hits, snapshot, reliability_status, missing_terms),
+        answer=answer_text,
         hits=reliable_hits,
         direction_memory=snapshot,
         total_memories=len(records),
         reliability_status=reliability_status,
         reliability_reason=reliability_reason,
         warnings=warnings,
+        answer_summary=answer_summary,
+        claims=claims,
+        unanswered_parts=unanswered_parts,
     )
 
 
@@ -663,6 +696,123 @@ def build_memory_snippets(record: dict[str, Any], terms: set[str]) -> list[str]:
     return snippets
 
 
+def build_memory_synthesis(
+    question: str,
+    hits: list[PaperMemoryHit],
+    reliability_status: str,
+    missing_terms: list[str] | None = None,
+) -> tuple[str, list[MemoryClaim], list[str]]:
+    if not hits:
+        if reliability_status == "no_memory":
+            return "当前项目还没有可用于回答的论文记忆。", [], ["先完成方向精读并生成 Paper Card。"]
+        missing = f"；未覆盖：{', '.join((missing_terms or [])[:5])}" if missing_terms else ""
+        return (
+            f"当前记忆没有达到可靠证据门槛的命中{missing}。",
+            [],
+            ["补充与问题直接相关的全文证据，或用任务、数据集、指标和失败模式重新表述问题。"],
+        )
+
+    terms = memory_query_terms(question)
+    selected: list[tuple[PaperMemoryHit, dict[str, str]]] = []
+    coverage: dict[str, set[str]] = {}
+    for hit in hits[:5]:
+        reference = best_memory_evidence_ref(hit.memory, question)
+        if reference is None:
+            continue
+        paper_id = normalize_space(hit.memory.get("paper_id", "")) or normalize_space(hit.memory.get("id", ""))
+        selected.append((hit, reference))
+        matched = score_term_overlap(reference.get("text", ""), terms, weight=0.1, max_score=1.0).matched_terms
+        for term in matched:
+            coverage.setdefault(term, set()).add(paper_id)
+
+    shared_terms = [
+        term
+        for term, paper_ids in sorted(coverage.items(), key=lambda item: (-len(item[1]), item[0]))
+        if len(paper_ids) >= 2
+    ]
+    full_text_count = sum(1 for hit, _ in selected if memory_evidence_quality(hit.memory) == "full_text")
+    if shared_terms:
+        answer_summary = (
+            f"现有可靠证据中，{len(selected)} 篇论文的原文共同覆盖 "
+            f"`{', '.join(shared_terms[:3])}`；其中 {full_text_count} 篇达到全文级。"
+            "这支持“这些主题在多篇文献中被直接讨论”，但不自动证明论文结论一致或已经形成方向级共识。"
+        )
+    else:
+        answer_summary = (
+            f"当前找到 {len(selected)} 篇可靠命中，其中 {full_text_count} 篇达到全文级；"
+            "证据可以定位与问题直接相关的单篇陈述，但尚未形成可跨论文复核的一致结论。"
+        )
+
+    claims: list[MemoryClaim] = []
+    for index, (hit, reference) in enumerate(selected[:3], start=1):
+        paper_id = normalize_space(hit.memory.get("paper_id", "")) or normalize_space(hit.memory.get("id", ""))
+        quality = memory_evidence_quality(hit.memory)
+        confidence = normalize_memory_claim_confidence(quality, reference.get("confidence", "low"))
+        evidence_ref = {
+            "paper_id": paper_id,
+            "paper_title": normalize_space(hit.memory.get("title", "")) or "Untitled",
+            "snippet_id": reference.get("id", "source"),
+            "source": reference.get("source", "unknown"),
+            "section": reference.get("section", ""),
+            "page": reference.get("page", ""),
+            "text": reference.get("text", ""),
+            "confidence": confidence,
+        }
+        claims.append(
+            MemoryClaim(
+                id=f"memory-claim-{index}",
+                statement=f"{evidence_ref['paper_title']}：{reference.get('text', '')}",
+                support_status="single_source",
+                confidence=confidence,
+                paper_ids=[paper_id],
+                evidence_refs=[evidence_ref],
+            ),
+        )
+
+    unanswered_parts: list[str] = []
+    if missing_terms:
+        unanswered_parts.append(f"原文证据尚未覆盖：{', '.join(missing_terms[:5])}。")
+    if len(selected) < 2:
+        unanswered_parts.append("缺少第二篇独立论文，不能判断该观察是否可复现或具有方向代表性。")
+    if full_text_count < len(selected):
+        unanswered_parts.append("部分命中仅有摘要证据，方法、实验设置和失败边界仍需回到 PDF 核验。")
+    if not shared_terms and len(selected) >= 2:
+        unanswered_parts.append("多篇命中的原文没有形成共同问题词项，不能把它们合并为统一结论。")
+    return answer_summary, claims, list(dict.fromkeys(unanswered_parts))
+
+
+def normalize_memory_claim_confidence(evidence_quality: str, source_confidence: str) -> str:
+    confidence = normalize_space(source_confidence).lower()
+    if evidence_quality != "full_text":
+        return "low"
+    if confidence == "high":
+        return "high"
+    if confidence == "medium":
+        return "medium"
+    return "low"
+
+
+def render_memory_synthesis_text(
+    answer_summary: str,
+    claims: list[MemoryClaim],
+    unanswered_parts: list[str],
+) -> str:
+    claim_lines = [
+        (
+            f"- [{claim.id}; confidence={claim.confidence}; paper_id={','.join(claim.paper_ids)}] "
+            f"{claim.statement}"
+        )
+        for claim in claims
+    ]
+    unanswered_lines = [f"- {item}" for item in unanswered_parts]
+    parts = [answer_summary]
+    if claim_lines:
+        parts.append("可追溯证据：\n" + "\n".join(claim_lines))
+    if unanswered_lines:
+        parts.append("仍未回答：\n" + "\n".join(unanswered_lines))
+    return "\n".join(parts)
+
+
 def build_memory_answer(
     question: str,
     hits: list[PaperMemoryHit],
@@ -729,12 +879,23 @@ def memory_evidence_refs(record: dict[str, Any]) -> list[dict[str, str]]:
                 "source": source,
                 "text": text,
                 "confidence": normalize_space(snippet.get("confidence", "low")) or "low",
+                "section": normalize_space(snippet.get("section", "")),
+                "page": normalize_space(snippet.get("page", "")),
             },
         )
     if references:
         return references
     title = normalize_space(record.get("title", ""))
-    return [{"id": "title", "source": "metadata.title", "text": title, "confidence": "low"}] if title else []
+    return [
+        {
+            "id": "title",
+            "source": "metadata.title",
+            "text": title,
+            "confidence": "low",
+            "section": "title",
+            "page": "",
+        },
+    ] if title else []
 
 
 def memory_evidence_quality(record: dict[str, Any]) -> str:
@@ -810,6 +971,14 @@ def render_research_memory_answer_markdown(answer: ResearchMemoryAnswer) -> str:
             direction,
             "## Answer",
             answer.answer,
+            "## Structured Claims",
+            "\n".join(
+                f"- [{claim.id}; {claim.support_status}; {claim.confidence}] {claim.statement}"
+                for claim in answer.claims
+            )
+            or "- none",
+            "## Unanswered Parts",
+            "\n".join(f"- {item}" for item in answer.unanswered_parts) or "- none",
             "## Retrieved Paper Memories",
             "\n".join(rows),
         ],

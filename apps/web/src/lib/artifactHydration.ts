@@ -265,6 +265,8 @@ export function normalizeMemoryHit(hitPayload: unknown, artifactProjectId: strin
     section_score: asNumber(hit.section_score),
     priority_score: asNumber(hit.priority_score),
     snippets: asStringArray(hit.snippets),
+    evidence_quality: normalizeEvidenceLevel(asString(hit.evidence_quality)) as ApiPaperMemoryHit["evidence_quality"],
+    evidence_refs: normalizeMemoryEvidenceRefs(hit.evidence_refs),
     abstract_translation: firstString(hit.abstract_translation, memory.abstract_translation),
     weakest_assumption: firstString(hit.weakest_assumption, memory.weakest_assumption),
     minimal_reproduction: firstString(hit.minimal_reproduction, memory.minimal_reproduction),
@@ -274,6 +276,25 @@ export function normalizeMemoryHit(hitPayload: unknown, artifactProjectId: strin
     research_sight: normalizeResearchSight(researchSightPayload),
     self_read_priority: selfReadPriority,
   };
+}
+
+function normalizeMemoryEvidenceRefs(value: unknown): ApiPaperMemoryHit["evidence_refs"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item) => {
+    if (!isRecord(item)) {
+      return [];
+    }
+    return [{
+      id: asString(item.id),
+      source: asString(item.source),
+      text: asString(item.text),
+      confidence: asString(item.confidence),
+      section: asString(item.section),
+      page: asString(item.page),
+    }];
+  });
 }
 
 function normalizeApiPaper(payload: unknown, artifactProjectId: string, artifactCreatedAt: string): ApiPaper {
@@ -554,6 +575,9 @@ function hydrateResearchMemory(items: ApiArtifact[]): ApiResearchMemoryQueryResp
     question: asString(payload.question),
     top_k: asNumber(payload.top_k, hits.length),
     answer: asString(payload.answer),
+    answer_summary: asString(payload.answer_summary),
+    claims: normalizeMemoryClaims(payload.claims),
+    unanswered_parts: asStringArray(payload.unanswered_parts),
     hits,
     direction_memory: isRecord(payload.direction_memory)
       ? (payload.direction_memory as unknown as ApiResearchMemoryQueryResponse["direction_memory"])
@@ -562,6 +586,44 @@ function hydrateResearchMemory(items: ApiArtifact[]): ApiResearchMemoryQueryResp
     artifact: artifact.artifact,
     warnings: asStringArray(payload.warnings),
   };
+}
+
+function normalizeMemoryClaims(value: unknown): NonNullable<ApiResearchMemoryQueryResponse["claims"]> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item) => {
+    if (!isRecord(item)) {
+      return [];
+    }
+    const supportStatus = asString(item.support_status);
+    const confidence = asString(item.confidence);
+    return [{
+      id: asString(item.id),
+      statement: asString(item.statement),
+      support_status:
+        supportStatus === "corroborated" || supportStatus === "conflicted" ? supportStatus : "single_source",
+      confidence: confidence === "high" || confidence === "medium" ? confidence : "low",
+      paper_ids: asStringArray(item.paper_ids),
+      evidence_refs: Array.isArray(item.evidence_refs)
+        ? item.evidence_refs.flatMap((reference) => {
+            if (!isRecord(reference)) {
+              return [];
+            }
+            return [{
+              paper_id: asString(reference.paper_id),
+              paper_title: asString(reference.paper_title),
+              snippet_id: asString(reference.snippet_id),
+              source: asString(reference.source),
+              section: asString(reference.section),
+              page: asString(reference.page),
+              text: asString(reference.text),
+              confidence: asString(reference.confidence),
+            }];
+          })
+        : [],
+    }];
+  });
 }
 
 function hydrateResearchDecision(items: ApiArtifact[]): ApiResearchDecisionResponse | null {
