@@ -4151,6 +4151,229 @@ td a {
   font-weight: 700;
 }
 
+.rag-quality-panel {
+  display: grid;
+  gap: 12px;
+  border: 1px solid #d8e2e8;
+  border-radius: 8px;
+  padding: 14px;
+  background: #fbfcfd;
+}
+
+.rag-quality-panel.compact {
+  margin-top: 14px;
+  background: #fffdf8;
+}
+
+.rag-quality-panel > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.rag-quality-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.rag-quality-title svg {
+  color: #1f6f8b;
+}
+
+.rag-quality-title h3 {
+  margin: 0;
+  color: #1d2733;
+  font-size: 15px;
+}
+
+.rag-quality-score {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+}
+
+.rag-quality-score strong {
+  color: #1f6f8b;
+  font-size: 18px;
+}
+
+.rag-quality-score span {
+  color: #667789;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.rag-quality-score[data-status="safe_refusal"] strong {
+  color: #176642;
+}
+
+.rag-quality-score[data-status="review_required"] strong,
+.rag-quality-score[data-status="insufficient_evidence"] strong {
+  color: #8a5a13;
+}
+
+.rag-quality-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.rag-quality-metrics div {
+  display: grid;
+  gap: 3px;
+  border: 1px solid #e2e7ed;
+  border-radius: 6px;
+  padding: 8px 9px;
+  background: #ffffff;
+}
+
+.rag-quality-metrics span {
+  color: #667789;
+  font-size: 10px;
+}
+
+.rag-quality-metrics strong {
+  color: #263545;
+  font-size: 13px;
+}
+
+.rag-quality-meter {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e7edf1;
+}
+
+.rag-quality-meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #1f6f8b;
+}
+
+.rag-quality-strengths {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rag-quality-strengths li {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  color: #315f4a;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.rag-quality-strengths svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: #23815a;
+}
+
+.rag-quality-risks {
+  border-left: 3px solid #d19a45;
+  padding: 8px 10px;
+  background: #fffaf0;
+}
+
+.rag-quality-risks strong {
+  color: #72501c;
+  font-size: 11px;
+}
+
+.rag-quality-risks ul {
+  margin: 6px 0 0;
+  padding-left: 17px;
+  color: #6f5a31;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.rag-quality-checks {
+  border-top: 1px solid #e2e7ed;
+  padding-top: 9px;
+}
+
+.rag-quality-checks summary {
+  cursor: pointer;
+  color: #526170;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.rag-quality-checks > div {
+  display: grid;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.rag-quality-checks article {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border-radius: 6px;
+  padding: 8px;
+  background: #fffaf0;
+}
+
+.rag-quality-checks article > span {
+  border-radius: 999px;
+  padding: 2px 6px;
+  background: #f5dfb7;
+  color: #77521b;
+  font-size: 9px;
+  font-weight: 900;
+}
+
+.rag-quality-checks article[data-status="fail"] {
+  background: #fff3f1;
+}
+
+.rag-quality-checks article[data-status="fail"] > span {
+  background: #f6d7d3;
+  color: #8a3029;
+}
+
+.rag-quality-checks article div {
+  min-width: 0;
+}
+
+.rag-quality-checks article strong,
+.rag-quality-checks article p,
+.rag-quality-checks article small {
+  display: block;
+}
+
+.rag-quality-checks article strong {
+  color: #344256;
+  font-size: 11px;
+}
+
+.rag-quality-checks article p,
+.rag-quality-checks article small {
+  margin: 3px 0 0;
+  color: #667789;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.rag-quality-checks article small {
+  color: #77521b;
+}
+
+.rag-quality-disclaimer {
+  margin: 0;
+  color: #778595;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
 .rag-answer-body {
   border-left: 3px solid #1f6f8b;
   padding: 12px 14px;
@@ -4390,8 +4613,17 @@ td a {
   }
 
   .rag-claim-grid,
-  .rag-boundary-grid {
+  .rag-boundary-grid,
+  .rag-quality-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .rag-quality-panel > header {
+    display: grid;
+  }
+
+  .rag-quality-score {
+    justify-items: start;
   }
 
   .rag-evidence-card footer {

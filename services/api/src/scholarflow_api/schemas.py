@@ -463,6 +463,32 @@ class RagCitationValidation(BaseModel):
     rejected_claim_count: int = 0
 
 
+class RagQualityCheck(BaseModel):
+    id: str
+    label: str
+    status: Literal["pass", "warn", "fail", "not_applicable"]
+    detail: str
+    remediation: str = ""
+
+
+class RagQualityAssessment(BaseModel):
+    evaluation_id: str
+    quality_status: Literal[
+        "strong_evidence",
+        "review_required",
+        "safe_refusal",
+        "insufficient_evidence",
+    ]
+    score: float | None = None
+    metrics: dict[str, float | int] = Field(default_factory=dict)
+    checks: list[RagQualityCheck] = Field(default_factory=list)
+    strengths: list[str] = Field(default_factory=list)
+    risk_flags: list[str] = Field(default_factory=list)
+    human_review_required: bool = True
+    disclaimer: str
+    evaluated_at: str
+
+
 class RagAnswerResponse(BaseModel):
     question: str
     status: Literal["complete", "partial", "no_reliable_hit", "failed"]
@@ -477,8 +503,35 @@ class RagAnswerResponse(BaseModel):
     generation_provider: str = ""
     generation_model: str = ""
     external_data_transfer: bool = False
+    quality_assessment: RagQualityAssessment | None = None
     artifact: Artifact | None = None
     warnings: list[str] = Field(default_factory=list)
+
+
+class RagEvaluationRecord(BaseModel):
+    id: str
+    project_id: str
+    answer_artifact_id: str | None = None
+    question: str
+    answer_status: Literal["complete", "partial", "no_reliable_hit", "failed"]
+    answer_kind: Literal["grounded_synthesis", "extractive_evidence", "no_answer"]
+    quality_status: Literal[
+        "strong_evidence",
+        "review_required",
+        "safe_refusal",
+        "insufficient_evidence",
+    ]
+    score: float | None = None
+    generation_provider: str = ""
+    generation_model: str = ""
+    assessment: RagQualityAssessment
+    created_at: str
+
+
+class RagEvaluationListResponse(BaseModel):
+    project_id: str
+    total: int
+    evaluations: list[RagEvaluationRecord] = Field(default_factory=list)
 
 
 class DirectionReviewRequest(BaseModel):

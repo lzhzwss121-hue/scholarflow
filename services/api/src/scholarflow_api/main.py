@@ -85,6 +85,11 @@ from scholarflow_api.rag_index import (
     project_index_status,
 )
 from scholarflow_api.rag_answer import answer_project_rag, render_rag_answer_markdown
+from scholarflow_api.rag_evaluation import (
+    assess_rag_answer,
+    insert_rag_evaluation,
+    list_rag_evaluations,
+)
 from scholarflow_api.rag_retrieval import (
     EmbeddingError,
     embed_project_chunks,
@@ -122,6 +127,8 @@ from scholarflow_api.schemas import (
     RagAnswerResponse,
     RagEmbeddingRequest,
     RagEmbeddingStatus,
+    RagEvaluationListResponse,
+    RagEvaluationRecord,
     RagSearchRequest,
     RagSearchResponse,
     ResearchSight,
@@ -1291,8 +1298,14 @@ def create_project_rag_answer(
             max_chunks_per_paper=payload.max_chunks_per_paper,
             refresh_embeddings=payload.refresh_embeddings,
         )
+        evaluation = assess_rag_answer(
+            answer,
+            evaluation_id=new_id("rag_eval"),
+            evaluated_at=now,
+        )
+        answer["quality_assessment"] = evaluation
         artifact_payload = {
-            "schema_version": "rag_answer.v1",
+            "schema_version": "rag_answer.v2",
             **answer,
         }
         artifact = insert_artifact_row(
@@ -1310,6 +1323,14 @@ def create_project_rag_answer(
             now=now,
         )
         answer["artifact"] = artifact
+        insert_rag_evaluation(
+            connection,
+            project_id=project_id,
+            answer_artifact_id=str(artifact["id"]),
+            answer=answer,
+            assessment=evaluation,
+            created_at=now,
+        )
         insert_tool_event(
             connection,
             session_id,
@@ -1332,7 +1353,49 @@ def create_project_rag_answer(
             ),
             now,
         )
+        insert_tool_event(
+            connection,
+            session_id,
+            "rag.evaluate",
+            "done",
+            (
+                "已完成自动证据质量检查；"
+                f"状态 {evaluation['quality_status']}，"
+                f"分数 {evaluation['score'] if evaluation['score'] is not None else 'not_scored'}。"
+            ),
+            now,
+        )
     return RagAnswerResponse.model_validate(answer)
+
+
+@app.get(
+    "/projects/{project_id}/rag-evaluations",
+    response_model=RagEvaluationListResponse,
+)
+def get_project_rag_evaluations(
+    project_id: str,
+    limit: int = 20,
+) -> RagEvaluationListResponse:
+    ensure_project_exists(project_id)
+    safe_limit = max(1, min(100, limit))
+    with get_connection() as connection:
+        rows = list_rag_evaluations(
+            connection,
+            project_id=project_id,
+            limit=safe_limit,
+        )
+        total_row = connection.execute(
+            "SELECT COUNT(*) AS total FROM rag_evaluations WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+    return RagEvaluationListResponse(
+        project_id=project_id,
+        total=int(total_row["total"]) if total_row else 0,
+        evaluations=[
+            RagEvaluationRecord.model_validate(item)
+            for item in rows
+        ],
+    )
 
 
 @app.get(

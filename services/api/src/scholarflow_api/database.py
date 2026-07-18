@@ -178,6 +178,23 @@ def init_db() -> None:
                 FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS rag_evaluations (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                answer_artifact_id TEXT,
+                question TEXT NOT NULL,
+                answer_status TEXT NOT NULL,
+                answer_kind TEXT NOT NULL,
+                quality_status TEXT NOT NULL,
+                score REAL,
+                generation_provider TEXT NOT NULL DEFAULT '',
+                generation_model TEXT NOT NULL DEFAULT '',
+                assessment_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (answer_artifact_id) REFERENCES artifacts(id) ON DELETE SET NULL
+            );
+
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
@@ -238,6 +255,10 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_paper_chunks_paper_id ON paper_chunks(project_id, paper_id, chunk_index);
             CREATE INDEX IF NOT EXISTS idx_paper_chunks_locator ON paper_chunks(project_id, section, page_start);
             CREATE INDEX IF NOT EXISTS idx_paper_chunks_hash ON paper_chunks(project_id, paper_id, chunk_hash);
+            CREATE INDEX IF NOT EXISTS idx_rag_evaluations_project_id
+                ON rag_evaluations(project_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_rag_evaluations_question
+                ON rag_evaluations(project_id, question, created_at);
             CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id);
             CREATE INDEX IF NOT EXISTS idx_agent_runs_project_id ON agent_runs(project_id);
             CREATE INDEX IF NOT EXISTS idx_agent_runs_session_id ON agent_runs(session_id);

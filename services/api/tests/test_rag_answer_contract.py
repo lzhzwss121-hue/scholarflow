@@ -130,6 +130,18 @@ class RagAnswerContractTest(unittest.TestCase):
                 self.assertEqual(response.generation_provider, "local")
                 self.assertEqual(response.generation_model, "extractive-evidence-v1")
                 self.assertFalse(response.external_data_transfer)
+                self.assertIsNotNone(response.quality_assessment)
+                self.assertEqual(
+                    response.quality_assessment.quality_status,
+                    "review_required",
+                )
+                self.assertTrue(
+                    any(
+                        "检索匹配强度偏低" in item
+                        for item in response.quality_assessment.risk_flags
+                    )
+                )
+                self.assertTrue(response.quality_assessment.human_review_required)
                 self.assertGreaterEqual(len(response.claims), 1)
                 self.assertGreaterEqual(len(response.citations), 1)
                 self.assertEqual(
@@ -150,14 +162,37 @@ class RagAnswerContractTest(unittest.TestCase):
                 self.assertIsNotNone(response.artifact)
                 self.assertTrue(response.artifact.title.startswith("rag_answer_"))
                 artifact_payload = json.loads(response.artifact.content_json)
-                self.assertEqual(artifact_payload["schema_version"], "rag_answer.v1")
+                self.assertEqual(artifact_payload["schema_version"], "rag_answer.v2")
                 self.assertEqual(
                     artifact_payload["citation_validation"]["used_citation_ids"],
                     response.citation_validation.used_citation_ids,
                 )
+                self.assertEqual(
+                    artifact_payload["quality_assessment"]["evaluation_id"],
+                    response.quality_assessment.evaluation_id,
+                )
+
+                evaluations = main_module.get_project_rag_evaluations(project.id)
+                self.assertEqual(evaluations.total, 1)
+                self.assertEqual(
+                    evaluations.evaluations[0].id,
+                    response.quality_assessment.evaluation_id,
+                )
+                self.assertEqual(
+                    evaluations.evaluations[0].answer_artifact_id,
+                    response.artifact.id,
+                )
+                other_project = main_module.create_project(
+                    ProjectCreate(title="Evaluation isolation"),
+                )
+                self.assertEqual(
+                    main_module.get_project_rag_evaluations(other_project.id).total,
+                    0,
+                )
 
                 openapi_paths = main_module.app.openapi()["paths"]
                 self.assertIn("/projects/{project_id}/rag-answer", openapi_paths)
+                self.assertIn("/projects/{project_id}/rag-evaluations", openapi_paths)
 
     def test_no_reliable_hit_refuses_generation(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -190,6 +225,12 @@ class RagAnswerContractTest(unittest.TestCase):
                 self.assertEqual(response.answer, "")
                 self.assertEqual(response.claims, [])
                 self.assertEqual(response.citations, [])
+                self.assertEqual(
+                    response.quality_assessment.quality_status,
+                    "safe_refusal",
+                )
+                self.assertIsNone(response.quality_assessment.score)
+                self.assertFalse(response.quality_assessment.human_review_required)
                 generate.assert_not_called()
 
     def test_citation_validator_rejects_unknown_and_unsupported_numeric_claims(self) -> None:

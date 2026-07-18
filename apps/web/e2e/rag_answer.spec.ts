@@ -90,6 +90,43 @@ function retrieval(hits = [citation]) {
   };
 }
 
+function qualityAssessment(safeRefusal = false) {
+  return {
+    evaluation_id: safeRefusal ? "rag_eval_refusal" : "rag_eval_grounded",
+    quality_status: safeRefusal ? "safe_refusal" : "strong_evidence",
+    score: safeRefusal ? null : 96,
+    metrics: {
+      claim_traceability: 1,
+      citation_integrity: 1,
+      full_text_coverage: safeRefusal ? 0 : 1,
+      mean_retrieval_score: safeRefusal ? 0 : 0.79,
+      distinct_papers: safeRefusal ? 0 : 1,
+      accepted_claims: safeRefusal ? 0 : 1,
+      rejected_claims: 0,
+    },
+    checks: [
+      {
+        id: "answer_boundary",
+        label: "回答边界",
+        status: "pass",
+        detail: safeRefusal ? "无可靠命中时保持空答案，拒答边界正确。" : "1 条主张进入最终回答。",
+        remediation: "",
+      },
+    ],
+    strengths: [
+      safeRefusal
+        ? "没有可靠证据时未生成答案。"
+        : "所有最终主张都能定位到当前响应中的原文引用。",
+    ],
+    risk_flags: safeRefusal
+      ? []
+      : ["自动检查不能验证论文结论、因果关系或实验可复现性。"],
+    human_review_required: !safeRefusal,
+    disclaimer: "该分数只检查证据链，不能替代研究者阅读全文。",
+    evaluated_at: "2026-07-18T00:00:00+00:00",
+  };
+}
+
 async function mockWorkspace(page: Page) {
   await page.route("**/health", async (route) => {
     await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
@@ -144,6 +181,7 @@ test("full-text RAG renders validated claims and focuses the cited evidence", as
         generation_provider: "local",
         generation_model: "extractive-evidence-v1",
         external_data_transfer: false,
+        quality_assessment: qualityAssessment(),
         artifact,
         warnings: [],
       },
@@ -157,6 +195,11 @@ test("full-text RAG renders validated claims and focuses the cited evidence", as
   await expect(page.locator('[aria-label="evidence grounded rag answer"]')).toBeVisible();
   await expect(page.getByText("POPE 上 object hallucination rate 降低 12%")).toBeVisible();
   await expect(page.getByText("本次全部在本机处理")).toBeVisible();
+  await expect(page.locator('[aria-label="rag automated evidence quality"]')).toBeVisible();
+  await expect(page.getByText("96.0/100")).toBeVisible();
+  await expect(page.getByText("证据链较强")).toBeVisible();
+  await expect(page.getByText("全文覆盖").locator("..").getByText("100%")).toBeVisible();
+  await expect(page.getByText("自动检查不能验证论文结论、因果关系或实验可复现性。")).toBeVisible();
   await expect(page.getByText("PDF 全文").first()).toBeVisible();
   await expect(page.getByText("p.9", { exact: true })).toBeVisible();
   await expect(page.getByText(citation.text)).toBeVisible();
@@ -193,6 +236,7 @@ test("full-text RAG shows a refusal boundary when no chunk is reliable", async (
         generation_provider: "",
         generation_model: "",
         external_data_transfer: false,
+        quality_assessment: qualityAssessment(true),
         artifact,
         warnings: ["没有 chunk 达到最小相关性阈值 0.18；未返回低置信度证据。"],
       },
@@ -204,6 +248,9 @@ test("full-text RAG shows a refusal boundary when no chunk is reliable", async (
   await page.getByRole("button", { name: "检索原文并回答" }).click();
 
   await expect(page.getByRole("heading", { name: "当前原文索引无法可靠回答" })).toBeVisible();
+  await expect(page.getByText("拒答通过")).toBeVisible();
+  await expect(page.getByText("安全拒答")).toBeVisible();
+  await expect(page.getByText("没有可靠证据时未生成答案。")).toBeVisible();
   await expect(page.locator('[aria-label="rag no reliable hit"]')).toBeVisible();
   await expect(page.locator('[aria-label="rag validated claims"]')).toHaveCount(0);
   await expect(page.locator('[aria-label="rag citation evidence"]')).toHaveCount(0);

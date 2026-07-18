@@ -21,6 +21,7 @@ import type {
   ApiProjectCreate,
   ApiRagAnswerRequest,
   ApiRagAnswerResponse,
+  ApiRagEvaluationListResponse,
   ApiResearchDecisionRequest,
   ApiResearchDecisionResponse,
   ApiResearchMemoryQueryRequest,
@@ -321,6 +322,13 @@ export function askProjectRag(projectId: string, payload: ApiRagAnswerRequest, o
     method: "POST",
     body: JSON.stringify(payload),
   }, API_RESEARCH_TIMEOUT_MS);
+}
+
+export function listProjectRagEvaluations(projectId: string, limit = 20, options?: RequestInit) {
+  return request<ApiRagEvaluationListResponse>(
+    `/projects/${projectId}/rag-evaluations?limit=${Math.max(1, Math.min(100, Math.round(limit)))}`,
+    options,
+  );
 }
 
 export function listProjectArtifacts(projectId: string, options?: RequestInit) {

@@ -24,6 +24,7 @@ For non-sensitive bugs, use the public bug report template.
 - RAG phase 2 defaults to `SCHOLARFLOW_RAG_EMBEDDING_PROVIDER=local`, which computes deterministic hash embeddings on the same machine. If an operator explicitly selects `openrouter`, the selected paper chunks and each retrieval query are sent to the configured OpenRouter endpoint. Review the provider's retention policy, access controls, billing, and the sensitivity of the papers before enabling it.
 - Embedding vectors are derived local data and remain in SQLite until their paper index, project, or database is deleted. Rebuilding an index replaces the old chunk vectors.
 - RAG phase 3 defaults to local extractive answers. If `SCHOLARFLOW_RAG_GENERATION_PROVIDER=openrouter`, the user's question and the retrieved evidence chunks are sent to OpenRouter Chat Completions. ScholarFlow does not send stored embedding vectors, unrelated project chunks, or API keys in the prompt. Generated claims are filtered against the citation IDs and evidence text before display, but this validation is not a substitute for human review of the cited paper.
+- RAG phase 4 evaluates the already returned answer locally and stores derived metrics, checks, risks, and the linked answer artifact ID in the project SQLite database. It does not make another model request. These scores measure traceability and evidence boundaries only; they are not correctness, peer-review, or reproducibility judgments.
 
 ## Current Boundary
 

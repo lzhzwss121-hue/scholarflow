@@ -247,6 +247,29 @@ POST /projects/{project_id}/rag-answer
 
 只有在使用生成式综合、检索无降级、全部引用均为全文且没有主张被拒绝时，回答状态才可能是 `complete`。本地逐字摘录、摘要级证据或任何降级状态均显示为 `partial`。
 
+#### RAG 第四阶段：自动证据评测与回归记录
+
+第四阶段不再增加新的生成模型，而是对每次 `/rag-answer` 响应执行确定性的证据质量检查。评测只使用本次回答已经产生的 claims、citation IDs、检索分数和证据等级，不会再次调用模型，也不会发生额外的外部数据传输。
+
+自动检查包括：
+
+- `claim_traceability`：最终主张是否全部绑定当前响应中真实存在的 citation ID。
+- `citation_integrity`：已使用引用能否在 Citation Inspector 中定位，是否出现未知或被拒绝引用。
+- `full_text_coverage`：最终使用的引用中，PDF/用户全文证据所占比例。
+- `mean_retrieval_score`：已用证据的平均 hybrid score，用于暴露弱匹配。
+- 正确拒答：`no_reliable_hit` 时是否保持空答案、零主张和零引用。
+- 生成过滤：有多少候选主张因伪引用、不受支持的数字或证据不足而被拒绝。
+
+每次评测随 `rag_answer.v2` artifact 保存，同时写入项目隔离的 `rag_evaluations` 历史表。可以查询最近记录：
+
+```text
+GET /projects/{project_id}/rag-evaluations?limit=20
+```
+
+网页中的“证据质量检查”面板会显示分数、全文覆盖、风险项和修复建议。安全拒答显示为“拒答通过”，不会伪装成 `100/100`；摘要级引用即使 citation ID 完全正确，也不能获得 `strong_evidence`。所有有实际回答内容的结果仍标记为需要人工核验。
+
+这里的分数不是 scientific correctness、fact-check 或可复现性评分。它只能回答“当前输出是否可追溯、证据等级是否足够、检索是否偏弱、拒答边界是否正确”，不能判断论文结论真实与否，也不能替代阅读全文和复现实验。
+
 ### 7. Gap Board
 
 Gap Board 用于整理研究空白和潜在方向。它不会简单输出“可以改进性能”，而是尝试从以下角度找 gap：

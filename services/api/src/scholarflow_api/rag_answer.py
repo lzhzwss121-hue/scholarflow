@@ -562,6 +562,12 @@ def render_answer_text(
 
 
 def render_rag_answer_markdown(answer: dict[str, Any]) -> str:
+    quality = (
+        answer.get("quality_assessment")
+        if isinstance(answer.get("quality_assessment"), dict)
+        else {}
+    )
+    score = quality.get("score")
     lines = [
         "# Evidence-grounded RAG Answer",
         "",
@@ -574,9 +580,28 @@ def render_rag_answer_markdown(answer: dict[str, Any]) -> str:
         "",
         str(answer.get("answer") or "No reliable answer."),
         "",
-        "## Evidence",
+        "## Automated Evidence Quality",
+        "",
+        f"Quality status: {quality.get('quality_status', 'not_evaluated')}",
+        f"Evidence score: {score if score is not None else 'not_scored'}",
+        "",
+        str(quality.get("disclaimer") or "No automated quality assessment is available."),
         "",
     ]
+    for check in quality.get("checks") or []:
+        if not isinstance(check, dict):
+            continue
+        lines.append(
+            f"- [{check.get('status', 'unknown')}] "
+            f"{check.get('label', '')}: {check.get('detail', '')}"
+        )
+    lines.extend(
+        [
+            "",
+        "## Evidence",
+        "",
+        ]
+    )
     for citation in answer.get("citations") or []:
         location = " · ".join(
             item

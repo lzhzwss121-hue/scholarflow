@@ -1,5 +1,17 @@
-import { AlertTriangle, BookOpenText, ExternalLink, FileSearch, ShieldCheck } from "lucide-react";
-import type { ApiRagAnswerResponse, ApiRagSearchHit } from "@scholarflow/schemas";
+import {
+  AlertTriangle,
+  BookOpenText,
+  CheckCircle2,
+  ExternalLink,
+  FileSearch,
+  Gauge,
+  ShieldCheck,
+} from "lucide-react";
+import type {
+  ApiRagAnswerResponse,
+  ApiRagQualityAssessment,
+  ApiRagSearchHit,
+} from "@scholarflow/schemas";
 
 export function RagAnswerPanel({ result }: { result: ApiRagAnswerResponse | null }) {
   if (!result) {
@@ -31,6 +43,7 @@ export function RagAnswerPanel({ result }: { result: ApiRagAnswerResponse | null
             <li>上传关键论文 PDF，把 abstract_only 升级为 full_text。</li>
             <li>在问题中写明任务对象、数据集、指标或失败模式。</li>
           </ul>
+          <RagQualityPanel assessment={result.quality_assessment ?? null} compact />
           <WarningList title="检索状态" items={result.warnings} />
         </div>
       </section>
@@ -69,6 +82,8 @@ export function RagAnswerPanel({ result }: { result: ApiRagAnswerResponse | null
         </span>
         <span>{result.external_data_transfer ? "本次存在外部数据传输" : "本次全部在本机处理"}</span>
       </div>
+
+      <RagQualityPanel assessment={result.quality_assessment ?? null} />
 
       <div className="rag-answer-body">
         <p>{result.answer}</p>
@@ -138,6 +153,111 @@ export function RagAnswerPanel({ result }: { result: ApiRagAnswerResponse | null
         </div>
       ) : null}
       <WarningList title="RAG 状态" items={result.warnings} />
+    </section>
+  );
+}
+
+function RagQualityPanel({
+  assessment,
+  compact = false,
+}: {
+  assessment: ApiRagQualityAssessment | null;
+  compact?: boolean;
+}) {
+  if (!assessment) {
+    return null;
+  }
+  const scoreLabel =
+    assessment.score === null
+      ? assessment.quality_status === "safe_refusal"
+        ? "拒答通过"
+        : "未评分"
+      : `${assessment.score.toFixed(1)}/100`;
+  const primaryMetrics = [
+    ["主张可追溯", formatQualityMetric(assessment.metrics.claim_traceability, "ratio")],
+    ["引用完整", formatQualityMetric(assessment.metrics.citation_integrity, "ratio")],
+    ["全文覆盖", formatQualityMetric(assessment.metrics.full_text_coverage, "ratio")],
+    ["检索均值", formatQualityMetric(assessment.metrics.mean_retrieval_score, "score")],
+  ];
+  const problemChecks = assessment.checks.filter(
+    (check) => check.status === "warn" || check.status === "fail",
+  );
+  return (
+    <section
+      className={compact ? "rag-quality-panel compact" : "rag-quality-panel"}
+      aria-label="rag automated evidence quality"
+    >
+      <header>
+        <div className="rag-quality-title">
+          <Gauge size={19} />
+          <div>
+            <p className="section-kicker">Automated evidence audit</p>
+            <h3>证据质量检查</h3>
+          </div>
+        </div>
+        <div className="rag-quality-score" data-status={assessment.quality_status}>
+          <strong>{scoreLabel}</strong>
+          <span>{formatQualityStatus(assessment.quality_status)}</span>
+        </div>
+      </header>
+
+      {!compact ? (
+        <div className="rag-quality-metrics">
+          {primaryMetrics.map(([label, value]) => (
+            <div key={label}>
+              <span>{label}</span>
+              <strong>{value}</strong>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {assessment.score !== null && !compact ? (
+        <div className="rag-quality-meter" aria-label={`evidence quality score ${assessment.score}`}>
+          <span style={{ width: `${Math.max(0, Math.min(100, assessment.score))}%` }} />
+        </div>
+      ) : null}
+
+      {assessment.strengths.length ? (
+        <ul className="rag-quality-strengths">
+          {assessment.strengths.map((item) => (
+            <li key={item}>
+              <CheckCircle2 size={15} />
+              <span>{item}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {assessment.risk_flags.length ? (
+        <div className="rag-quality-risks">
+          <strong>仍需人工核验</strong>
+          <ul>
+            {assessment.risk_flags.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {problemChecks.length ? (
+        <details className="rag-quality-checks">
+          <summary>查看 {problemChecks.length} 个风险检查与修复建议</summary>
+          <div>
+            {problemChecks.map((check) => (
+              <article data-status={check.status} key={check.id}>
+                <span>{check.status === "fail" ? "失败" : "警告"}</span>
+                <div>
+                  <strong>{check.label}</strong>
+                  <p>{check.detail}</p>
+                  {check.remediation ? <small>{check.remediation}</small> : null}
+                </div>
+              </article>
+            ))}
+          </div>
+        </details>
+      ) : null}
+      <p className="rag-quality-disclaimer">{assessment.disclaimer}</p>
     </section>
   );
 }
@@ -239,4 +359,24 @@ function formatEvidenceLevel(level: string) {
     return "摘要";
   }
   return "元数据";
+}
+
+function formatQualityStatus(status: ApiRagQualityAssessment["quality_status"]) {
+  if (status === "strong_evidence") {
+    return "证据链较强";
+  }
+  if (status === "safe_refusal") {
+    return "安全拒答";
+  }
+  if (status === "insufficient_evidence") {
+    return "证据不足";
+  }
+  return "需要复核";
+}
+
+function formatQualityMetric(value: number | undefined, kind: "ratio" | "score") {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "—";
+  }
+  return kind === "ratio" ? `${Math.round(value * 100)}%` : value.toFixed(2);
 }

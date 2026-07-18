@@ -591,6 +591,27 @@ export interface ApiRagCitationValidation {
   rejected_claim_count: number;
 }
 
+export interface ApiRagQualityCheck {
+  id: string;
+  label: string;
+  status: "pass" | "warn" | "fail" | "not_applicable";
+  detail: string;
+  remediation: string;
+}
+
+export interface ApiRagQualityAssessment {
+  evaluation_id: string;
+  quality_status: "strong_evidence" | "review_required" | "safe_refusal" | "insufficient_evidence";
+  score: number | null;
+  metrics: Record<string, number>;
+  checks: ApiRagQualityCheck[];
+  strengths: string[];
+  risk_flags: string[];
+  human_review_required: boolean;
+  disclaimer: string;
+  evaluated_at: string;
+}
+
 export interface ApiRagAnswerResponse {
   question: string;
   status: "complete" | "partial" | "no_reliable_hit" | "failed";
@@ -605,8 +626,30 @@ export interface ApiRagAnswerResponse {
   generation_provider: string;
   generation_model: string;
   external_data_transfer: boolean;
+  quality_assessment?: ApiRagQualityAssessment | null;
   artifact: ApiArtifact | null;
   warnings: string[];
+}
+
+export interface ApiRagEvaluationRecord {
+  id: string;
+  project_id: string;
+  answer_artifact_id: string | null;
+  question: string;
+  answer_status: ApiRagAnswerResponse["status"];
+  answer_kind: ApiRagAnswerResponse["answer_kind"];
+  quality_status: ApiRagQualityAssessment["quality_status"];
+  score: number | null;
+  generation_provider: string;
+  generation_model: string;
+  assessment: ApiRagQualityAssessment;
+  created_at: string;
+}
+
+export interface ApiRagEvaluationListResponse {
+  project_id: string;
+  total: number;
+  evaluations: ApiRagEvaluationRecord[];
 }
 
 export interface ApiAgentPlanRequest {
