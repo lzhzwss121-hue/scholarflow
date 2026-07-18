@@ -1644,8 +1644,11 @@ test("created Chinese research workflow keeps uploaded full text after refresh a
 
   await expect(page).toHaveURL(/#paper-table/);
   await expect(page.getByRole("heading", { name: /论文表格/ })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "论文检索关键词" })).toBeVisible();
   await page.getByRole("button", { name: /重新检索/ }).click();
   await expect(page.getByText(paper.title, { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: paper.title, exact: true })).toHaveAttribute("href", paper.url);
+  await expect(page.getByRole("link", { name: `打开论文来源：${paper.title}` })).toHaveAttribute("href", paper.url);
   const technicalDetails = page.locator(".table-warning-summary .research-warning-details");
   await technicalDetails.locator("summary").click();
   await expect(technicalDetails.getByText(/mock_api_e2e/)).toBeVisible();
@@ -1656,7 +1659,7 @@ test("created Chinese research workflow keeps uploaded full text after refresh a
   await expect(page).toHaveURL(/#paper-table/);
   await expect(page.getByText(paper.title, { exact: true })).toBeVisible();
 
-  await page.getByRole("button", { name: "生成 Direction Review" }).click();
+  await page.getByRole("button", { name: "进入 Direction Review" }).click();
   await expect(page).toHaveURL(/#direction-review/);
   await page.getByRole("button", { name: "生成第 1 轮" }).click();
   await expect(page.getByRole("heading", { name: project.keyword })).toBeVisible();
@@ -2038,6 +2041,10 @@ test("hydrates real direction review and memory artifact shapes without blank vi
   await directionPaperButton.click();
   await expect(page).toHaveURL(/#paper-reader\/paper_e2e_artifact_shape\?from=direction-review/);
   await expect(page.getByTestId("direction-paper-section-heading-1")).toHaveText("研究问题与背景");
+  await expect(page.locator('[data-testid^="direction-paper-section-heading-"]')).toHaveCount(1);
+  await page.getByRole("button", { name: "第 2 节：Section 2" }).click();
+  await expect(page.getByTestId("direction-paper-section-heading-2")).toHaveText("Section 2");
+  await expect(page.locator('[data-testid^="direction-paper-section-heading-"]')).toHaveCount(1);
   await page.reload();
   await expect(page.getByText("Selected Paper Detail")).toBeVisible();
   await expect(page.getByRole("heading", { name: paper.title, exact: true })).toBeVisible();
@@ -2173,6 +2180,8 @@ test("gap and experiment views show abstract-only evidence boundaries", async ({
     created_at: "2026-07-02T00:00:00+00:00",
     updated_at: "2026-07-02T00:00:00+00:00",
   };
+  const restoredDecisionGoal =
+    "在 7 天内评估 multi-object hallucination，区别于 POPE，并且不要使用 POPE。";
   const decisionPayload = {
     gaps: [
       {
@@ -2218,6 +2227,15 @@ test("gap and experiment views show abstract-only evidence boundaries", async ({
       metadata_only_card_count: 0,
       full_text_card_count: 0,
     },
+    decision_intent: {
+      raw_goal: restoredDecisionGoal,
+      focus: "VQA evidence faithfulness",
+      required_terms: ["multi-object"],
+      contrast_terms: ["POPE"],
+      excluded_terms: ["POPE"],
+      contribution_type: "evaluation",
+      time_budget_days: 7,
+    },
     warnings: ["当前 Paper Card 主要是摘要级/元数据级证据，不是全文级深读结论。"],
   };
   const decisionArtifact = {
@@ -2252,6 +2270,7 @@ test("gap and experiment views show abstract-only evidence boundaries", async ({
   });
 
   await page.goto("/#gap-board");
+  await expect(page.getByRole("textbox", { name: "决策目标" })).toHaveValue(restoredDecisionGoal);
   await expect(page.getByText("摘要级证据，不是全文结论", { exact: true })).toBeVisible();
   await expect(page.getByText(/保守提示：当前不是确定科研结论。Only one abstract-level benchmark card supports this gap./)).toBeVisible();
 

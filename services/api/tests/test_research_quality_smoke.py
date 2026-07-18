@@ -503,6 +503,9 @@ class ResearchQualitySmokeTest(unittest.TestCase):
             self.assertTrue(all("直接证据" in paper.relation for paper in selected[:3]), query)
             self.assertEqual(determine_review_status(len(selected), 0, len(cross_domain), 10), "partial")
 
+    def test_direction_status_is_complete_when_target_is_read_even_if_noise_was_filtered(self) -> None:
+        self.assertEqual(determine_review_status(10, 36, 12, 10), "complete")
+
     def test_memory_query_returns_no_reliable_hit_for_zero_score_records(self) -> None:
         record = {
             "title": "Unrelated Language Modeling Survey",
@@ -580,7 +583,14 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertEqual(answer.reliability_status, "reliable")
         self.assertEqual(len(answer.hits), 1)
         self.assertIn("paper_id=paper_grounded", answer.answer)
-        self.assertEqual(answer.answer_summary, "当前找到 1 篇可靠命中，其中 0 篇达到全文级；证据可以定位与问题直接相关的单篇陈述，但尚未形成可跨论文复核的一致结论。")
+        self.assertEqual(
+            answer.answer_summary,
+            (
+                "当前找到 1 篇可靠命中；0 条回答证据直接来自 PDF 全文，"
+                "0 篇 Paper Card 整体达到全文级；"
+                "证据可以定位与问题直接相关的单篇陈述，但尚未形成可跨论文复核的一致结论。"
+            ),
+        )
         self.assertEqual(answer.claims[0].confidence, "low")
         self.assertEqual(answer.claims[0].evidence_refs[0]["snippet_id"], "abstract_1")
         self.assertTrue(any("第二篇独立论文" in item for item in answer.unanswered_parts))
@@ -1102,6 +1112,148 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertEqual(step.status, "partial")
         self.assertTrue(step.warnings)
         self.assertEqual(step.artifact_refs[0].title, "paper_table.md")
+
+    def test_literature_search_preserves_existing_project_papers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api.database import init_db
+                from scholarflow_api import main as main_module
+                from scholarflow_api.schemas import LiteratureSearchRequest, ProjectCreate
+
+                init_db()
+                project = main_module.create_project(
+                    ProjectCreate(title="Append-only Paper Assets", keyword="evidence faithfulness"),
+                )
+                first = literature.LiteratureSearchResult(
+                    query="first query",
+                    expanded_queries=["first query"],
+                    papers=[
+                        literature.PaperCandidate(
+                            title="First Persisted Paper",
+                            year="2025",
+                            authors="A. Researcher",
+                            abstract="A grounded evaluation paper.",
+                            type="Benchmark",
+                            venue="CVPR",
+                            source="arxiv",
+                            url="https://arxiv.org/abs/2501.00001",
+                            relation="first result",
+                            priority="High",
+                            relevance_score=1.2,
+                        ),
+                    ],
+                    errors=[],
+                )
+                second = literature.LiteratureSearchResult(
+                    query="second query",
+                    expanded_queries=["second query"],
+                    papers=[
+                        literature.PaperCandidate(
+                            title="Second Persisted Paper",
+                            year="2026",
+                            authors="B. Researcher",
+                            abstract="A second grounded evaluation paper.",
+                            type="Method",
+                            venue="arXiv cs.CV",
+                            source="arxiv",
+                            url="https://arxiv.org/abs/2601.00002",
+                            relation="second result",
+                            priority="High",
+                            relevance_score=1.3,
+                        ),
+                    ],
+                    errors=[],
+                )
+
+                with patch.object(main_module, "search_literature", side_effect=[first, second]):
+                    main_module.search_project_literature(
+                        project.id,
+                        LiteratureSearchRequest(query="first query"),
+                    )
+                    main_module.search_project_literature(
+                        project.id,
+                        LiteratureSearchRequest(query="second query"),
+                    )
+
+                titles = {paper.title for paper in main_module.list_project_papers(project.id)}
+
+        self.assertEqual(titles, {"First Persisted Paper", "Second Persisted Paper"})
+
+    def test_agent_literature_search_preserves_existing_project_papers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api.agent_core import ToolContext
+                from scholarflow_api.database import get_connection, init_db
+                from scholarflow_api import main as main_module
+                from scholarflow_api.schemas import LiteratureSearchRequest, ProjectCreate
+
+                init_db()
+                project = main_module.create_project(
+                    ProjectCreate(title="Agent Append-only Assets", keyword="object hallucination"),
+                )
+                existing = literature.LiteratureSearchResult(
+                    query=project.keyword,
+                    expanded_queries=[project.keyword],
+                    papers=[
+                        literature.PaperCandidate(
+                            title="Existing Direction Paper",
+                            year="2025",
+                            authors="A. Researcher",
+                            abstract="Object hallucination evaluation.",
+                            type="Benchmark",
+                            venue="CVPR",
+                            source="arxiv",
+                            url="https://arxiv.org/abs/2502.00001",
+                            relation="existing result",
+                            priority="High",
+                            relevance_score=1.2,
+                        ),
+                    ],
+                    errors=[],
+                )
+                incoming = literature.LiteratureSearchResult(
+                    query=project.keyword,
+                    expanded_queries=[project.keyword],
+                    papers=[
+                        literature.PaperCandidate(
+                            title="Agent Retrieved Paper",
+                            year="2026",
+                            authors="B. Researcher",
+                            abstract="Visual grounding for object hallucination.",
+                            type="Method",
+                            venue="arXiv cs.CV",
+                            source="arxiv",
+                            url="https://arxiv.org/abs/2602.00002",
+                            relation="agent result",
+                            priority="High",
+                            relevance_score=1.4,
+                        ),
+                    ],
+                    errors=[],
+                )
+
+                with patch.object(main_module, "search_literature", return_value=existing):
+                    main_module.search_project_literature(
+                        project.id,
+                        LiteratureSearchRequest(query=project.keyword),
+                    )
+
+                context = ToolContext(
+                    run_id="run_append_only",
+                    project=project.model_dump(),
+                    task="find object hallucination evidence",
+                    plan={},
+                )
+                with get_connection() as connection:
+                    registry = main_module.build_agent_tool_registry(connection)
+                    with patch.object(main_module, "search_literature", return_value=incoming):
+                        registry.run("literature_search", context)
+
+                titles = {paper.title for paper in main_module.list_project_papers(project.id)}
+
+        self.assertEqual(titles, {"Existing Direction Paper", "Agent Retrieved Paper"})
 
     def test_research_decision_response_marks_blocked_experiment_step(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

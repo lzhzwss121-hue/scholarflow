@@ -901,10 +901,6 @@ def search_project_literature(project_id: str, payload: LiteratureSearchRequest)
     with get_connection() as connection:
         project = fetch_project_dict(connection, project_id)
         session_id = ensure_active_session(connection, project, completed_at)
-        connection.execute(
-            "DELETE FROM papers WHERE project_id = ?",
-            (project_id,),
-        )
         paper_ids = insert_paper_candidates(connection, project_id, result.papers, completed_at)
         artifact = insert_artifact_row(
             connection=connection,
@@ -1924,10 +1920,6 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
         direction = infer_agent_direction(context)
         result = search_literature(direction, max_results=12, sources=["arxiv", "openalex"])
         now = utc_now()
-        connection.execute(
-            "DELETE FROM papers WHERE project_id = ?",
-            (context.project["id"],),
-        )
         paper_ids = insert_paper_candidates(connection, context.project["id"], result.papers, now)
         papers = fetch_project_papers_by_ids(connection, context.project["id"], paper_ids)
         artifact = insert_artifact_row(

@@ -144,6 +144,64 @@ POPE: Polling-based Object Probing Evaluation for Object Hallucination.
         self.assertEqual(evidence.section, "limitations")
         self.assertEqual(evidence.page, 9)
 
+    def test_unlisted_dataset_names_are_extracted_and_prior_gap_resolution_is_not_own_limitation(self) -> None:
+        from scholarflow_api.paper_card import extract_paper_signals
+
+        signals = extract_paper_signals(
+            title="Grounded Decoder for Multi-Object Hallucination",
+            abstract="We study multi-object hallucination evaluation.",
+            paper_text=(
+                "[PDF page 3]\n"
+                "[Section: introduction]\n"
+                "To address this limitation, we propose a grounded decoder.\n\n"
+                "[PDF page 8]\n"
+                "[Section: experiments]\n"
+                "We evaluate our method on OmniHall, ObjectScope, and SceneFaith-500 benchmarks. "
+                "Evaluation uses accuracy."
+            ),
+            venue="CVPR",
+        )
+
+        self.assertEqual(signals.dataset, "OmniHall, ObjectScope, SceneFaith-500")
+        self.assertIn("当前证据不足", signals.limitation)
+        evidence = signals.signal_evidence["dataset"]
+        self.assertEqual(evidence.source, "pdf.full_text")
+        self.assertEqual(evidence.page, 8)
+        self.assertIn("SceneFaith-500", evidence.quote)
+
+    def test_evidence_pack_reserves_slots_for_pdf_before_abstract_metadata(self) -> None:
+        from scholarflow_api.evidence import build_paper_evidence_pack
+
+        pack = build_paper_evidence_pack(
+            {
+                "title": "Evidence Ordering",
+                "abstract": (
+                    "Object hallucination appears in visual grounding. "
+                    "Evidence faithfulness remains difficult in evaluation."
+                ),
+                "venue": "CVPR",
+                "year": "2026",
+                "url": "https://example.org/evidence-ordering",
+                "evidence_level": "full_text",
+                "full_text": (
+                    "[PDF page 6]\n"
+                    "[Section: results]\n"
+                    "Object hallucination increases because conflicting visual grounding evidence "
+                    "causes the decoder to bind attributes to the wrong object."
+                ),
+            },
+            [
+                {"id": f"section-{index}", "title": f"Section {index}", "content": "Generated secondary analysis."}
+                for index in range(1, 5)
+            ],
+            "object hallucination visual grounding",
+        )
+
+        sources = [snippet.source for snippet in pack.snippets]
+        self.assertIn("pdf.full_text", sources)
+        self.assertLess(sources.index("pdf.full_text"), sources.index("metadata.abstract"))
+        self.assertLessEqual(len(pack.snippets), 7)
+
     def test_pdf_source_does_not_force_high_semantic_extraction_confidence(self) -> None:
         from scholarflow_api.evidence import build_paper_evidence_pack
 

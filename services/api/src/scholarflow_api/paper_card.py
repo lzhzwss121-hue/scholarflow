@@ -224,10 +224,16 @@ INSUFFICIENT_PREFIX = "当前证据不足"
 DATASET_NAMES = [
     "MMBench",
     "MMMU",
+    "MME",
     "MM-Vet",
     "POPE",
+    "CHAIR",
+    "CHAIRs",
+    "MMHal-Bench",
+    "AMBER",
     "HallusionBench",
     "LLaVA-Bench",
+    "LLaVA-Wild",
     "SEED-Bench",
     "RealWorldQA",
     "ScienceQA",
@@ -681,14 +687,22 @@ def extract_named_signal_from_segments(
                         sentence_matches.append((canonical, match.group(0)))
                         break
             if not sentence_matches:
-                continue
+                if field_name != "dataset":
+                    continue
             if not any(marker.lower() in lower for marker in context_markers):
+                continue
+            dynamic_matches = extract_dynamic_dataset_names(sentence) if field_name == "dataset" else []
+            if not sentence_matches and not dynamic_matches:
                 continue
             if first_hit is None:
                 first_hit = (segment, sentence)
             for canonical, raw_value in sentence_matches:
                 found.append(canonical)
                 raw_found.append(raw_value)
+            for dynamic_value in dynamic_matches:
+                if not any(dynamic_value.lower() == value.lower() for value in found):
+                    found.append(dynamic_value)
+                    raw_found.append(dynamic_value)
     canonical_values = unique_preserve_order(found)
     if not canonical_values or first_hit is None:
         return insufficient(missing_reason), None
@@ -702,6 +716,53 @@ def extract_named_signal_from_segments(
         quote=quote,
     )
     return value, evidence
+
+
+def extract_dynamic_dataset_names(sentence: str) -> list[str]:
+    patterns = [
+        r"\b(?:datasets?|benchmarks?|evaluation sets?)\s*(?:include|includes|are|is|used|:)\s*([^.;。！？!?]{2,180})",
+        r"\b(?:evaluate|evaluates|evaluated|evaluation)\s+(?:our\s+(?:method|model)\s+)?on\s+([^.;。！？!?]{2,180})",
+        r"\bexperiments?\s+(?:are\s+)?(?:conducted|performed|run)\s+on\s+([^.;。！？!?]{2,180})",
+    ]
+    generic_values = {
+        "benchmark",
+        "benchmarks",
+        "dataset",
+        "datasets",
+        "evaluation set",
+        "evaluation sets",
+        "multiple benchmarks",
+        "several benchmarks",
+        "standard benchmarks",
+        "various benchmarks",
+        "various datasets",
+    }
+    values: list[str] = []
+    for pattern in patterns:
+        match = re.search(pattern, sentence, flags=re.IGNORECASE)
+        if not match:
+            continue
+        raw_value = re.sub(
+            r"\b(?:datasets?|benchmarks?|evaluation sets?)\b\s*$",
+            "",
+            normalize_space(match.group(1)),
+            flags=re.IGNORECASE,
+        )
+        for candidate in re.split(r"\s*(?:,|;|\band\b|&)\s*", raw_value, flags=re.IGNORECASE):
+            cleaned = re.sub(r"^(?:the|our|three|two|several|multiple)\s+", "", candidate, flags=re.IGNORECASE)
+            cleaned = re.sub(r"\s+(?:dataset|benchmark|evaluation set)$", "", cleaned, flags=re.IGNORECASE)
+            cleaned = cleaned.strip(" ()[]{}:,-")
+            lower = cleaned.lower()
+            if (
+                not cleaned
+                or lower in generic_values
+                or len(cleaned) > 64
+                or len(cleaned.split()) > 5
+                or not re.search(r"[A-Z0-9-]", cleaned)
+            ):
+                continue
+            values.append(cleaned)
+    return unique_preserve_order(values)
 
 
 def extract_baseline_signal_from_segments(
@@ -753,8 +814,36 @@ def extract_own_limitation_signal(
             continue
         for sentence in split_sentences(segment.text):
             lower = sentence.lower()
-            explicit_section = segment.section == "limitations"
+            resolution_statement = bool(
+                re.search(
+                    r"\b(?:to|we|our (?:method|approach|model))\s+"
+                    r"(?:address|overcome|mitigate|solve|resolve|alleviate)\b.{0,60}"
+                    r"\b(?:limitation|shortcoming|issue|problem|gap)\b",
+                    lower,
+                )
+            ) or bool(
+                re.search(
+                    r"\b(?:address|overcome|mitigate|solve|resolve|alleviate)\s+"
+                    r"(?:this|the|these|such)\s+(?:limitation|shortcoming|issue|problem|gap)\b",
+                    lower,
+                )
+            )
             owned_statement = any(marker in lower for marker in OWN_LIMITATION_MARKERS)
+            if resolution_statement and not owned_statement:
+                continue
+            explicit_section = segment.section == "limitations" and any(
+                marker in lower
+                for marker in [
+                    "limitation",
+                    "limited",
+                    "cannot",
+                    "we do not",
+                    "failure",
+                    "fails",
+                    "future work",
+                    "challenge",
+                ]
+            )
             explicit_limitation = (
                 ("limitation" in lower or "limited to" in lower)
                 and any(owner in lower for owner in ["our ", "we ", "this work", "this method", "this approach", "this model"])

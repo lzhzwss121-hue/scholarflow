@@ -730,23 +730,26 @@ def build_memory_synthesis(
         for term, paper_ids in sorted(coverage.items(), key=lambda item: (-len(item[1]), item[0]))
         if len(paper_ids) >= 2
     ]
-    full_text_count = sum(1 for hit, _ in selected if memory_evidence_quality(hit.memory) == "full_text")
+    full_text_card_count = sum(1 for hit, _ in selected if memory_evidence_quality(hit.memory) == "full_text")
+    selected_pdf_count = sum(1 for _, reference in selected if reference.get("source") == "pdf.full_text")
     if shared_terms:
         answer_summary = (
             f"现有可靠证据中，{len(selected)} 篇论文的原文共同覆盖 "
-            f"`{', '.join(shared_terms[:3])}`；其中 {full_text_count} 篇达到全文级。"
+            f"`{', '.join(shared_terms[:3])}`；{selected_pdf_count} 条回答证据直接来自 PDF 全文，"
+            f"{full_text_card_count} 篇 Paper Card 整体达到全文级。"
             "这支持“这些主题在多篇文献中被直接讨论”，但不自动证明论文结论一致或已经形成方向级共识。"
         )
     else:
         answer_summary = (
-            f"当前找到 {len(selected)} 篇可靠命中，其中 {full_text_count} 篇达到全文级；"
+            f"当前找到 {len(selected)} 篇可靠命中；{selected_pdf_count} 条回答证据直接来自 PDF 全文，"
+            f"{full_text_card_count} 篇 Paper Card 整体达到全文级；"
             "证据可以定位与问题直接相关的单篇陈述，但尚未形成可跨论文复核的一致结论。"
         )
 
     claims: list[MemoryClaim] = []
     for index, (hit, reference) in enumerate(selected[:3], start=1):
         paper_id = normalize_space(hit.memory.get("paper_id", "")) or normalize_space(hit.memory.get("id", ""))
-        quality = memory_evidence_quality(hit.memory)
+        quality = "full_text" if reference.get("source") == "pdf.full_text" else "abstract_only"
         confidence = normalize_memory_claim_confidence(quality, reference.get("confidence", "low"))
         evidence_ref = {
             "paper_id": paper_id,
@@ -774,7 +777,7 @@ def build_memory_synthesis(
         unanswered_parts.append(f"原文证据尚未覆盖：{', '.join(missing_terms[:5])}。")
     if len(selected) < 2:
         unanswered_parts.append("缺少第二篇独立论文，不能判断该观察是否可复现或具有方向代表性。")
-    if full_text_count < len(selected):
+    if selected_pdf_count < len(selected):
         unanswered_parts.append("部分命中仅有摘要证据，方法、实验设置和失败边界仍需回到 PDF 核验。")
     if not shared_terms and len(selected) >= 2:
         unanswered_parts.append("多篇命中的原文没有形成共同问题词项，不能把它们合并为统一结论。")
@@ -914,15 +917,46 @@ def memory_evidence_quality(record: dict[str, Any]) -> str:
 
 def best_memory_evidence_ref(record: dict[str, Any], question: str) -> dict[str, str] | None:
     references = memory_evidence_refs(record)
+    if not references:
+        return None
     terms = memory_query_terms(question)
-    return next(
-        (
-            reference
-            for reference in references
-            if score_term_overlap(reference.get("text", ""), terms, weight=0.1, max_score=1.0).matched_terms
-        ),
-        references[0] if references else None,
+    mechanism_question = any(
+        marker in question.lower()
+        for marker in ["why", "how", "cause", "mechanism", "failure", "原因", "机制", "为何", "为什么", "导致", "失败"]
     )
+    mechanism_markers = [
+        "because",
+        "due to",
+        "caused by",
+        "results from",
+        "failure",
+        "fails",
+        "misalignment",
+        "conflict",
+        "shortcut",
+        "bias",
+        "原因",
+        "机制",
+        "导致",
+        "由于",
+        "失败",
+    ]
+    confidence_rank = {"high": 2, "medium": 1, "low": 0}
+
+    def reference_rank(reference: dict[str, str]) -> tuple[int, int, int, int]:
+        overlap = score_term_overlap(reference.get("text", ""), terms, weight=0.1, max_score=1.0)
+        text = reference.get("text", "").lower()
+        mechanism_score = sum(1 for marker in mechanism_markers if mechanism_question and marker in text)
+        source_score = 1 if reference.get("source") == "pdf.full_text" else 0
+        semantic_score = len(overlap.matched_terms) * 3 + mechanism_score * 2 + source_score
+        return (
+            1 if overlap.matched_terms else 0,
+            semantic_score,
+            source_score,
+            confidence_rank.get(reference.get("confidence", "low"), 0),
+        )
+
+    return max(references, key=reference_rank)
 
 
 def missing_memory_query_terms(records: list[dict[str, Any]], question: str) -> list[str]:

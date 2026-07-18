@@ -415,6 +415,10 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     }
     if (restored.researchDecision) {
       setResearchDecision(restored.researchDecision);
+      const restoredGoal = restored.researchDecision.decision_intent?.raw_goal?.trim();
+      if (restoredGoal) {
+        setDecisionGoal(restoredGoal);
+      }
     }
   }
 

@@ -325,8 +325,11 @@ test("full-text paper detail exposes signal source section and page", async ({ p
   await mockReaderProject(page, [artifact, fullTextArtifact]);
   await page.goto(`/#paper-reader/${paper.id}?from=direction-review`);
 
-  const signalPanel = page.locator('article[aria-label="paper evidence signals"]');
+  const signalPanel = page.locator('details[aria-label="paper evidence signals"]');
   await expect(signalPanel).toBeVisible();
+  await expect(signalPanel).not.toHaveAttribute("open", "");
+  await signalPanel.locator("summary").click();
+  await expect(signalPanel).toHaveAttribute("open", "");
   await expect(signalPanel.getByText("本论文自身 Limitation", { exact: true })).toBeVisible();
   await expect(signalPanel.getByText("已有研究不足", { exact: true })).toBeVisible();
   await expect(signalPanel.getByText("pdf.full_text · experiments · p.7 · 抽取置信度 medium", { exact: true })).toBeVisible();

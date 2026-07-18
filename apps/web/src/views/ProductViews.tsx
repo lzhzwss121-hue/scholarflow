@@ -1582,7 +1582,7 @@ export function ProductPaperTableView({
               onClick={() => onSelectView("direction-review")}
             >
               <Sparkles size={17} />
-              生成 Direction Review
+              进入 Direction Review
             </button>
           </div>
         </div>
@@ -1628,12 +1628,13 @@ export function ProductPaperTableView({
           <label className="paper-query-box">
             <Search size={20} />
             <input
+              aria-label="论文检索关键词"
               value={query}
               placeholder={activeProject?.keyword || "multimodal large language model visual question answering evidence faithfulness"}
               onChange={(event) => onQueryChange(event.target.value)}
             />
             {query ? (
-              <button type="button" onClick={() => onQueryChange("")} aria-label="clear search">
+              <button type="button" onClick={() => onQueryChange("")} aria-label="清空检索关键词">
                 <X size={19} />
               </button>
             ) : null}
@@ -1685,14 +1686,35 @@ export function ProductPaperTableView({
               {tableRows.map((paper, index) => (
                 <tr key={paper.id || `${paper.title}-${index}`}>
                   <td className="paper-title-cell" title={paper.title}>
-                    <strong>{paper.title}</strong>
+                    {paper.url ? (
+                      <a className="paper-title-link" href={paper.url} rel="noreferrer" target="_blank">
+                        <strong>{paper.title}</strong>
+                      </a>
+                    ) : (
+                      <strong>{paper.title}</strong>
+                    )}
                     <small>{paper.authors}</small>
                   </td>
                   <td>{paper.year}</td>
                   <td>
                     <span className={`paper-type type-${paper.type.toLowerCase()}`}>{paper.type || "Method"}</span>
                   </td>
-                  <td>{paper.source}</td>
+                  <td className="paper-source-cell">
+                    <span>{paper.source}</span>
+                    {paper.url ? (
+                      <a
+                        aria-label={`打开论文来源：${paper.title}`}
+                        href={paper.url}
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        原文
+                        <ArrowRight size={12} aria-hidden="true" />
+                      </a>
+                    ) : (
+                      <small>链接缺失</small>
+                    )}
+                  </td>
                   <td>
                     <span className={`priority ${paper.priority.toLowerCase()}`}>{paper.priority}</span>
                     <small>{paper.relevanceQuality ?? "medium"}</small>
@@ -3795,6 +3817,7 @@ function DirectionPaperDetail({
   onPdfUpload: (paperId: string, file: File) => void;
   reading: ApiDirectionPaperReading;
 }) {
+  const [activeSectionNumber, setActiveSectionNumber] = useState(1);
   const signals = reading.signals;
   const missingSignals = signals?.missing_signals ?? [];
   const evidenceBoundary = buildEvidenceBoundary(reading.evidence_level);
@@ -3803,11 +3826,20 @@ function DirectionPaperDetail({
     ...missingSignals.map((signal) => `缺 ${signal}`),
   ];
   const sections = reading.sections ?? [];
+  const activeSectionIndex = sections.length
+    ? Math.min(Math.max(activeSectionNumber - 1, 0), sections.length - 1)
+    : -1;
+  const activeSection = activeSectionIndex >= 0 ? sections[activeSectionIndex] : null;
   const researchSight = normalizeResearchSight(reading.research_sight);
   const evidencePack = normalizeEvidencePack(researchSight.evidence_pack);
   const critiqueEvidence = new Map(
     (researchSight.critique_evidence ?? []).map((item) => [item.field, item]),
   );
+
+  useEffect(() => {
+    setActiveSectionNumber(1);
+  }, [reading.paper?.id]);
+
   const renderCritiqueEvidence = (field: string) => {
     const evidence = critiqueEvidence.get(field);
     if (!evidence) {
@@ -3875,14 +3907,14 @@ function DirectionPaperDetail({
       ) : null}
 
       {signals ? (
-        <article className="paper-signals-panel" aria-label="paper evidence signals">
-          <div className="paper-signals-header">
+        <details className="paper-signals-panel direction-detail-disclosure" aria-label="paper evidence signals">
+          <summary className="paper-signals-header">
             <div>
               <p className="section-kicker">Paper Signals</p>
               <h3>论文证据信号</h3>
             </div>
             <FileText size={18} />
-          </div>
+          </summary>
           <div className="paper-signals-grid">
             <div>
               <strong>任务</strong>
@@ -3927,17 +3959,17 @@ function DirectionPaperDetail({
               <span>{missingSignals.length ? missingSignals.join(", ") : "none"}</span>
             </div>
           </div>
-        </article>
+        </details>
       ) : null}
 
-      <article className="research-sight-panel">
-        <div className="research-sight-header">
+      <details className="research-sight-panel direction-detail-disclosure">
+        <summary className="research-sight-header">
           <div>
             <p className="section-kicker">Research Sight</p>
             <h3>科研审美评价</h3>
           </div>
           <BrainCircuit size={18} />
-        </div>
+        </summary>
         <div className="research-sight-score-grid">
           <div>
             <strong>证据等级</strong>
@@ -4023,7 +4055,7 @@ function DirectionPaperDetail({
             )}
           </div>
         </div>
-      </article>
+      </details>
 
       <div className="direction-key-findings">
         <div>
@@ -4044,17 +4076,83 @@ function DirectionPaperDetail({
         </div>
       </div>
 
-      <div className="direction-section-list">
+      <section className="direction-section-reader" aria-label="12 段精读">
+        <div className="question-board-head">
+          <div>
+            <p className="section-kicker">Deep Paper Card</p>
+            <h2>12 段科研精读</h2>
+          </div>
+          <span>{sections.length}/12 已生成</span>
+        </div>
         {sections.length ? (
-          sections.map((section, index) => (
-            <article className="direction-detail-section" key={`${section.id}-${index}`}>
-              <span>{String(index + 1).padStart(2, "0")}</span>
-              <div>
-                <h3 data-testid={`direction-paper-section-heading-${index + 1}`}>{section.title}</h3>
-                <p>{section.content}</p>
-              </div>
-            </article>
-          ))
+          <div className="paper-reader-workspace direction-paper-section-workspace">
+            <nav className="paper-reader-toc" aria-label="独立 Paper Card 精读目录">
+              <ol>
+                {sections.map((section, index) => {
+                  const isActive = activeSectionIndex === index;
+                  return (
+                    <li key={`${section.id}-${index}`}>
+                      <button
+                        aria-controls={isActive ? `direction-paper-section-${index + 1}` : undefined}
+                        aria-current={isActive ? true : undefined}
+                        aria-label={`第 ${index + 1} 节：${section.title}`}
+                        className="paper-reader-toc-item"
+                        type="button"
+                        onClick={() => setActiveSectionNumber(index + 1)}
+                      >
+                        <span aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
+                        <strong>{formatPaperCardSectionTitle(section.title)}</strong>
+                        <Check size={14} aria-hidden="true" />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ol>
+            </nav>
+
+            {activeSection ? (
+              <article
+                className="paper-reader-section direction-active-section"
+                id={`direction-paper-section-${activeSectionIndex + 1}`}
+                tabIndex={-1}
+              >
+                <header>
+                  <span>
+                    Section {String(activeSectionIndex + 1).padStart(2, "0")} / {sections.length}
+                  </span>
+                  <h3 data-testid={`direction-paper-section-heading-${activeSectionIndex + 1}`}>
+                    {formatPaperCardSectionTitle(activeSection.title)}
+                  </h3>
+                </header>
+                <div className="paper-reader-section-body direction-active-section-body">
+                  {splitPaperCardSectionParagraphs(activeSection.content).map((paragraph, index) => (
+                    <p key={`${activeSection.id}-paragraph-${index}`}>{paragraph}</p>
+                  ))}
+                </div>
+                <footer className="paper-reader-section-nav" aria-label="独立 Paper Card 章节切换">
+                  <button
+                    disabled={activeSectionIndex <= 0}
+                    type="button"
+                    onClick={() => setActiveSectionNumber(activeSectionIndex)}
+                  >
+                    <ChevronLeft size={15} />
+                    上一节
+                  </button>
+                  <span aria-live="polite">
+                    {activeSectionIndex + 1} / {sections.length}
+                  </span>
+                  <button
+                    disabled={activeSectionIndex >= sections.length - 1}
+                    type="button"
+                    onClick={() => setActiveSectionNumber(activeSectionIndex + 2)}
+                  >
+                    下一节
+                    <ArrowRight size={15} />
+                  </button>
+                </footer>
+              </article>
+            ) : null}
+          </div>
         ) : (
           <article className="direction-detail-section empty">
             <span>00</span>
@@ -4064,7 +4162,7 @@ function DirectionPaperDetail({
             </div>
           </article>
         )}
-      </div>
+      </section>
     </section>
   );
 }

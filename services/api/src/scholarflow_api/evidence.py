@@ -85,10 +85,14 @@ def build_paper_evidence_snippets(
     sections: list[dict[str, Any]],
     direction: str,
 ) -> list[EvidenceSnippet]:
-    snippets: list[EvidenceSnippet] = []
+    title_snippets: list[EvidenceSnippet] = []
+    abstract_snippets: list[EvidenceSnippet] = []
+    provenance_snippets: list[EvidenceSnippet] = []
+    full_text_snippets: list[EvidenceSnippet] = []
+    generated_snippets: list[EvidenceSnippet] = []
     title = normalize_space(paper.get("title", ""))
     if title:
-        snippets.append(
+        title_snippets.append(
             EvidenceSnippet(
                 id="title",
                 source="metadata.title",
@@ -101,7 +105,7 @@ def build_paper_evidence_snippets(
 
     abstract = normalize_space(paper.get("abstract", ""))
     for index, sentence in enumerate(select_relevant_sentences(abstract, direction), start=1):
-        snippets.append(
+        abstract_snippets.append(
             EvidenceSnippet(
                 id=f"abstract_{index}",
                 source="metadata.abstract",
@@ -115,7 +119,7 @@ def build_paper_evidence_snippets(
     venue = normalize_space(paper.get("venue", "") or paper.get("source", ""))
     year = normalize_space(str(paper.get("year", "")))
     if venue or year:
-        snippets.append(
+        provenance_snippets.append(
             EvidenceSnippet(
                 id="venue_year",
                 source="metadata.venue_year",
@@ -128,7 +132,7 @@ def build_paper_evidence_snippets(
 
     full_text = str(paper.get("full_text", "") or "")
     for index, located in enumerate(select_full_text_sentences(full_text, direction), start=1):
-        snippets.append(
+        full_text_snippets.append(
             EvidenceSnippet(
                 id=f"pdf_full_text_{index}",
                 source="pdf.full_text",
@@ -146,7 +150,7 @@ def build_paper_evidence_snippets(
         content = normalize_space(section.get("content", ""))
         if not content:
             continue
-        snippets.append(
+        generated_snippets.append(
             EvidenceSnippet(
                 id=f"paper_card_{section.get('id', title_text).lower()}",
                 source="generated.paper_card",
@@ -156,9 +160,19 @@ def build_paper_evidence_snippets(
                 confidence="low",
             ),
         )
-        if len(snippets) >= 7:
+        if len(generated_snippets) >= 4:
             break
 
+    # Keep the pack compact without allowing title/abstract metadata to consume
+    # every slot before PDF evidence is added.
+    snippets = [
+        *title_snippets[:1],
+        *full_text_snippets[:3],
+        *abstract_snippets[:2],
+        *provenance_snippets[:1],
+    ]
+    if len(snippets) < 7:
+        snippets.extend(generated_snippets[: 7 - len(snippets)])
     return snippets[:7]
 
 

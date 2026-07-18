@@ -96,6 +96,22 @@ class PhaseThreeDecisionMemoryContractTest(unittest.TestCase):
         self.assertIn("pope", [term.lower() for term in intent.contrast_terms])
         self.assertIn("pope", [term.lower() for term in intent.excluded_terms])
 
+    def test_complex_chinese_goal_keeps_research_constraints_without_action_fragments(self) -> None:
+        intent = parse_decision_intent(
+            (
+                "在 7 天内设计一个区别于 POPE 的 multi-object hallucination 证据忠实性评估；"
+                "明确不要使用 POPE，并给出可复现数据集、指标、baseline 与失败判据。"
+            ),
+            "VLM hallucination",
+        )
+
+        self.assertEqual(intent.time_budget_days, 7)
+        self.assertEqual(intent.contribution_type, "evaluation")
+        self.assertEqual([term.lower() for term in intent.contrast_terms], ["pope"])
+        self.assertEqual([term.lower() for term in intent.excluded_terms], ["pope"])
+        self.assertTrue({"multi-object", "证据忠实性", "数据集", "指标", "baseline", "失败判据"}.issubset(intent.required_terms))
+        self.assertFalse(any("使用" in term or "天内" in term or "给出" in term for term in intent.required_terms))
+
     def test_experiment_anchor_must_match_goal_and_respect_exclusions(self) -> None:
         pope = make_paper("paper_pope", "POPE Object Hallucination Evaluation", "POPE benchmark.")
         multi = make_paper(
@@ -189,6 +205,43 @@ class PhaseThreeDecisionMemoryContractTest(unittest.TestCase):
         self.assertEqual(answer.claims[0].evidence_refs[0]["page"], "7")
         self.assertTrue(any("摘要证据" in item for item in answer.unanswered_parts))
         self.assertNotIn("方向级共识。可追溯证据", answer.answer_summary)
+
+    def test_memory_prefers_relevant_pdf_reference_over_earlier_abstract_reference(self) -> None:
+        record = make_memory_record("paper_mixed", "metadata.abstract", "full_text")
+        sight = json.loads(str(record["research_sight_json"]))
+        sight["evidence_pack"]["snippets"].append(
+            {
+                "id": "pdf_mechanism",
+                "source": "pdf.full_text",
+                "section": "results",
+                "page": 9,
+                "text": (
+                    "Object hallucination increases because conflicting visual grounding evidence "
+                    "causes incorrect attribute binding."
+                ),
+                "confidence": "high",
+            },
+        )
+        record["research_sight_json"] = json.dumps(sight)
+
+        with patch.object(research_memory_module, "backfill_project_research_memory", return_value=0), patch.object(
+            research_memory_module,
+            "fetch_memory_records",
+            return_value=[record],
+        ), patch.object(research_memory_module, "fetch_direction_memory_snapshot", return_value=None):
+            answer = query_research_memory(
+                connection=None,
+                project_id="project_phase3",
+                question="Why does object hallucination increase when visual grounding evidence conflicts?",
+                top_k=5,
+                now="2026-07-17T00:00:00Z",
+            )
+
+        reference = answer.claims[0].evidence_refs[0]
+        self.assertEqual(reference["source"], "pdf.full_text")
+        self.assertEqual(reference["page"], "9")
+        self.assertIn("1 条回答证据直接来自 PDF 全文", answer.answer_summary)
+        self.assertFalse(any("摘要证据" in item for item in answer.unanswered_parts))
 
 
 if __name__ == "__main__":

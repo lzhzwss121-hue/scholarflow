@@ -417,13 +417,12 @@ def determine_review_status(
     off_topic_count: int,
     target_paper_count: int,
 ) -> str:
+    del low_relevance_count, off_topic_count
     if relevant_read_count <= 0:
         return "blocked"
     # A direction round has a ten-paper target. Do not turn a smaller but clean
     # set into a completed review merely because it passed the five-paper minimum.
     if relevant_read_count < target_paper_count:
-        return "partial"
-    if low_relevance_count + off_topic_count > relevant_read_count * 2:
         return "partial"
     return "complete"
 

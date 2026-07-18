@@ -24,6 +24,7 @@ KNOWN_BASELINES = [
 
 GOAL_GENERIC_TERMS = {
     "build",
+    "design",
     "day",
     "days",
     "experiment",
@@ -38,8 +39,27 @@ GOAL_GENERIC_TERMS = {
     "week",
     "weeks",
     "实验",
+    "七天",
     "计划",
     "缺口",
+}
+
+GOAL_ACTION_MARKERS = {
+    "不要",
+    "不使用",
+    "区别",
+    "区别于",
+    "可复现",
+    "天内",
+    "并给出",
+    "使用",
+    "依赖",
+    "明确",
+    "给出",
+    "设计",
+    "采用",
+    "排除",
+    "避免",
 }
 
 
@@ -1022,15 +1042,17 @@ def parse_decision_intent(goal: str, focus: str) -> DecisionIntent:
     contrast_terms = extract_goal_clause_terms(
         raw_goal,
         [
-            r"(?:different from|different than|contrast with|versus|vs\.?)\s+([^,;。；]+)",
-            r"(?:区别于|不同于|对比|相比)\s*([^,，;；。]+)",
+            r"(?:different from|different than|contrast with|versus|vs\.?)\s+"
+            r"([A-Za-z][A-Za-z0-9._-]*(?:\s+[A-Z0-9][A-Za-z0-9._-]*){0,3})",
+            r"(?:区别于|不同于|对比|相比)\s*([A-Za-z][A-Za-z0-9._-]*(?:\s+[A-Za-z0-9._-]+){0,3})",
         ],
     )
     excluded_terms = extract_goal_clause_terms(
         raw_goal,
         [
-            r"(?:do not use|don't use|without|avoid|exclude)\s+([^,;。；]+)",
-            r"(?:不使用|不要|排除|避免)\s*([^,，;；。]+)",
+            r"(?:do not use|don't use|without|avoid|exclude)\s+"
+            r"([A-Za-z][A-Za-z0-9._-]*(?:\s+[A-Z0-9][A-Za-z0-9._-]*){0,3})",
+            r"(?:不使用|不要(?:使用|采用|依赖)?|排除|避免)\s*([A-Za-z][A-Za-z0-9._-]*(?:\s+[A-Za-z0-9._-]+){0,3})",
         ],
     )
     known_phrases = [
@@ -1048,6 +1070,10 @@ def parse_decision_intent(goal: str, focus: str) -> DecisionIntent:
             "证据忠实性",
             "视觉定位",
             "反例评测",
+            "数据集",
+            "指标",
+            "baseline",
+            "失败判据",
         ]
         if phrase.lower() in raw_goal.lower()
     ]
@@ -1058,7 +1084,7 @@ def parse_decision_intent(goal: str, focus: str) -> DecisionIntent:
             *[
                 term
                 for term in extract_terms(raw_goal, limit=18)
-                if term.lower() not in GOAL_GENERIC_TERMS
+                if is_goal_constraint_term(term)
                 and term.lower() not in excluded_keys
                 and term.lower() not in {"different", "contrast", "versus", "without", "avoid", "exclude"}
             ],
@@ -1080,9 +1106,30 @@ def extract_goal_clause_terms(goal: str, patterns: list[str]) -> list[str]:
     for pattern in patterns:
         for match in re.finditer(pattern, goal, flags=re.IGNORECASE):
             clause = normalize_space(match.group(1))
-            values.extend(extract_terms(clause, limit=5, include_domain_phrases=True))
+            clause = re.sub(
+                r"^(?:use|using|adopt|depend on|使用|采用|依赖)\s+",
+                "",
+                clause,
+                flags=re.IGNORECASE,
+            )
+            values.extend(
+                term
+                for term in extract_terms(clause, limit=5, include_domain_phrases=True)
+                if is_goal_constraint_term(term)
+            )
             values.extend(re.findall(r"\b[A-Z][A-Za-z0-9._-]{2,}\b", clause))
     return unique_preserve_order(values)
+
+
+def is_goal_constraint_term(term: str) -> bool:
+    normalized = normalize_space(term)
+    lower = normalized.lower()
+    if not normalized or lower in GOAL_GENERIC_TERMS or lower.isdigit():
+        return False
+    if re.fullmatch(r"[\u4e00-\u9fff]+", normalized):
+        if len(normalized) > 8 or any(marker in normalized for marker in GOAL_ACTION_MARKERS):
+            return False
+    return True
 
 
 def infer_goal_contribution_type(goal: str) -> str:
