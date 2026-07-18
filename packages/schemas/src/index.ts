@@ -523,6 +523,92 @@ export interface ApiResearchMemoryQueryResponse {
   workflow_steps?: ApiWorkflowStepState[];
 }
 
+export interface ApiRagAnswerRequest {
+  query: string;
+  top_k?: number;
+  paper_ids?: string[];
+  evidence_levels?: ApiEvidenceLevel[];
+  sections?: string[];
+  min_score?: number;
+  max_chunks_per_paper?: number;
+  refresh_embeddings?: boolean;
+  language?: "zh-CN" | "en";
+}
+
+export interface ApiRagSearchHit {
+  rank: number;
+  citation_id: string;
+  paper_id: string;
+  paper_title: string;
+  paper_authors: string;
+  paper_year: string;
+  paper_venue: string;
+  paper_url: string;
+  chunk_id: string;
+  chunk_index: number;
+  chunk_hash: string;
+  source: string;
+  source_origin: string;
+  evidence_level: ApiEvidenceLevel;
+  section: string;
+  page_start: number | null;
+  page_end: number | null;
+  text: string;
+  lexical_score: number;
+  vector_score: number;
+  hybrid_score: number;
+}
+
+export interface ApiRagSearchResponse {
+  query: string;
+  status: "complete" | "partial" | "no_reliable_hit" | "failed";
+  retrieval_mode: "hybrid" | "lexical_only";
+  provider: string;
+  embedding_model: string;
+  embedding_dimensions: number;
+  external_data_transfer: boolean;
+  candidate_chunks: number;
+  vector_ready_chunks: number;
+  returned_hits: number;
+  top_k: number;
+  min_score: number;
+  hits: ApiRagSearchHit[];
+  warnings: string[];
+}
+
+export interface ApiRagAnswerClaim {
+  id: string;
+  statement: string;
+  citation_ids: string[];
+  confidence: "low" | "medium" | "high";
+  evidence_level: ApiEvidenceLevel;
+}
+
+export interface ApiRagCitationValidation {
+  available_citation_ids: string[];
+  used_citation_ids: string[];
+  rejected_citation_ids: string[];
+  rejected_claim_count: number;
+}
+
+export interface ApiRagAnswerResponse {
+  question: string;
+  status: "complete" | "partial" | "no_reliable_hit" | "failed";
+  answer_kind: "grounded_synthesis" | "extractive_evidence" | "no_answer";
+  answer: string;
+  claims: ApiRagAnswerClaim[];
+  unanswered_parts: string[];
+  limitations: string[];
+  retrieval: ApiRagSearchResponse;
+  citations: ApiRagSearchHit[];
+  citation_validation: ApiRagCitationValidation;
+  generation_provider: string;
+  generation_model: string;
+  external_data_transfer: boolean;
+  artifact: ApiArtifact | null;
+  warnings: string[];
+}
+
 export interface ApiAgentPlanRequest {
   project_id: string;
   task: string;

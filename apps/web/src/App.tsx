@@ -158,6 +158,8 @@ export function App() {
             memoryQuestion={viewModel.memoryQuestion}
             memoryResult={viewModel.memoryResult}
             memoryTopK={viewModel.memoryTopK}
+            ragAnswer={viewModel.ragAnswer}
+            ragBusy={viewModel.busy.rag}
             projectDraft={viewModel.projectDraft}
             onAgentTaskChange={actions.onAgentTaskChange}
             onCancelAgentRun={actions.onCancelAgentRun}
@@ -177,6 +179,7 @@ export function App() {
             onPaperCardInputChange={actions.onPaperCardInputChange}
             onPaperPdfUpload={actions.onPaperPdfUpload}
             onQueryResearchMemory={actions.onQueryResearchMemory}
+            onQueryRag={actions.onQueryRag}
             onProjectDraftChange={actions.onProjectDraftChange}
             onSearchLiterature={actions.onSearchLiterature}
             onExitDirectionPaper={closeDirectionPaper}

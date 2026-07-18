@@ -8,11 +8,13 @@ import type {
   ApiPaper,
   ApiPaperCard,
   ApiProject,
+  ApiRagAnswerResponse,
   ApiResearchDecisionResponse,
   ApiResearchMemoryQueryResponse,
   ApiWorkflowStepState,
 } from "@scholarflow/schemas";
 import {
+  askProjectRag,
   cancelAgentRun,
   createAgentPlan,
   createDirectionReview,
@@ -74,6 +76,7 @@ type RequestScope =
   | "direction"
   | "paper-card"
   | "memory"
+  | "rag"
   | "decision";
 
 type RequestGuard = {
@@ -143,6 +146,8 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
   const [memoryTopK, setMemoryTopK] = useState(5);
   const [memoryBusy, setMemoryBusy] = useState(false);
   const [memoryResult, setMemoryResult] = useState<ApiResearchMemoryQueryResponse | null>(null);
+  const [ragBusy, setRagBusy] = useState(false);
+  const [ragAnswer, setRagAnswer] = useState<ApiRagAnswerResponse | null>(null);
   const [selectedPaperId, setSelectedPaperId] = useState("");
   const [paperCardInput, setPaperCardInput] = useState("");
   const [paperCardBusy, setPaperCardBusy] = useState(false);
@@ -166,6 +171,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     direction: { id: 0, controller: null },
     "paper-card": { id: 0, controller: null },
     memory: { id: 0, controller: null },
+    rag: { id: 0, controller: null },
     decision: { id: 0, controller: null },
   });
   const agentPollingRef = useRef<number | null>(null);
@@ -301,6 +307,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
         literatureErrors,
         directionReview,
         memoryResult,
+        ragAnswer,
         agentRunWarnings,
         researchDecision,
       }),
@@ -312,6 +319,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       literatureErrors,
       directionReview,
       memoryResult,
+      ragAnswer,
       researchDecision,
     ],
   );
@@ -407,6 +415,9 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     if (restored.memoryResult) {
       setMemoryResult(restored.memoryResult);
     }
+    if (restored.ragAnswer) {
+      setRagAnswer(restored.ragAnswer);
+    }
     if (restored.paperCard) {
       // A refresh can hydrate an older abstract card for the same paper. Do not
       // downgrade a verified uploaded-PDF card while project resources reload.
@@ -435,6 +446,8 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     setDirectionBusy(false);
     setMemoryResult(null);
     setMemoryBusy(false);
+    setRagAnswer(null);
+    setRagBusy(false);
     setResearchDecision(null);
     setDecisionBusy(false);
     setLatestPaperCard(null);
@@ -1021,6 +1034,62 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     }
   }
 
+  async function handleQueryRag() {
+    if (!activeProject) {
+      setApiMessage("没有可检索的后端项目，请先创建或启动 API。");
+      return;
+    }
+    if (isDemoProject(activeProject.id)) {
+      blockDemoProjectAction();
+      return;
+    }
+
+    const projectId = activeProject.id;
+    const guard = beginRequest("rag");
+    setRagBusy(true);
+    const stopProgress = startProgressMessages([
+      `原文 RAG: 正在检索最多 ${memoryTopK} 个项目内论文 chunk...`,
+      "原文 RAG: 正在核对 section、页码、证据等级与 citation ID...",
+      "原文 RAG: 正在校验每条主张是否具有有效引用...",
+    ]);
+    try {
+      const result = await askProjectRag(
+        projectId,
+        {
+          query: memoryQuestion,
+          top_k: memoryTopK,
+          evidence_levels: ["abstract_only", "full_text"],
+          min_score: 0.18,
+          max_chunks_per_paper: 3,
+          refresh_embeddings: true,
+          language: "zh-CN",
+        },
+        { signal: guard.signal },
+      );
+      if (!guard.isCurrent() || activeProjectIdRef.current !== projectId) {
+        return;
+      }
+      setRagAnswer(result);
+      if (result.artifact) {
+        setLastSavedArtifact(result.artifact);
+      }
+      setApiMessage(
+        result.status === "no_reliable_hit"
+          ? "原文索引没有达到门槛的证据，系统已拒绝生成回答。"
+          : `原文 RAG 已返回 ${result.citations.length} 条引用、${result.claims.length} 条通过校验的主张。`,
+      );
+      await loadProjectResources(projectId, guard);
+    } catch (error) {
+      if (!isAbortError(error) && guard.isCurrent()) {
+        setApiMessage(formatApiFailure(error, "原文 RAG 问答失败，请检查索引、embedding 配置或 API 日志。"));
+      }
+    } finally {
+      stopProgress();
+      setRagBusy(false);
+      guard.finish();
+    }
+  }
+
   async function handleCreateResearchDecision() {
     if (!activeProject) {
       setApiMessage("没有可写入的后端项目，请先创建或启动 API。");
@@ -1086,7 +1155,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
 
   function cancelLongRequests() {
     stopAgentPolling();
-    (["resources", "literature", "direction", "paper-card", "memory", "decision", "agent"] as RequestScope[]).forEach(
+    (["resources", "literature", "direction", "paper-card", "memory", "rag", "decision", "agent"] as RequestScope[]).forEach(
       (scope) => {
         requestStateRef.current[scope].controller?.abort("project-switch");
         requestStateRef.current[scope].controller = null;
@@ -1226,6 +1295,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       literature: literatureBusy,
       memory: memoryBusy,
       paperCard: paperCardBusy,
+      rag: ragBusy,
     },
     decisionGoal,
     directionInput,
@@ -1239,6 +1309,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     memoryQuestion,
     memoryResult,
     memoryTopK,
+    ragAnswer,
     paperCardInput,
     paperRows,
     projectCount: projects.length,
@@ -1274,6 +1345,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     onPaperPdfUpload: handlePaperPdfUpload,
     onProjectDraftChange: setProjectDraft,
     onQueryResearchMemory: handleQueryResearchMemory,
+    onQueryRag: handleQueryRag,
     onSaveArtifact: handleSaveArtifact,
     onSearchLiterature: handleSearchLiterature,
     onSelectProject: handleSelectProject,
@@ -1699,6 +1771,7 @@ function buildWorkflowWarnings(input: {
   literatureErrors: string[];
   directionReview: ApiDirectionReviewResponse | null;
   memoryResult: ApiResearchMemoryQueryResponse | null;
+  ragAnswer: ApiRagAnswerResponse | null;
   researchDecision: ApiResearchDecisionResponse | null;
 }): WorkflowNotice[] {
   const notices: WorkflowNotice[] = [];
@@ -1723,6 +1796,9 @@ function buildWorkflowWarnings(input: {
   });
   input.memoryResult?.warnings.forEach((message, index) => {
     notices.push({ id: `memory-${index}`, kind: "warning", message });
+  });
+  input.ragAnswer?.warnings.forEach((message, index) => {
+    notices.push({ id: `rag-${index}`, kind: "warning", message });
   });
   input.researchDecision?.experiment?.unblock_suggestions.forEach((message, index) => {
     notices.push({ id: `experiment-unblock-${index}`, kind: "warning", message });

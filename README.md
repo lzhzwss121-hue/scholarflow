@@ -213,6 +213,40 @@ curl -X POST http://127.0.0.1:8000/projects/PROJECT_ID/rag-search \
 
 `complete` 仅表示本次混合检索所需向量齐全且存在过阈值证据，不表示论文结论正确，也不表示系统已生成或验证答案。`partial` 表示降级到关键词检索、embedding 失败或存在其他警告。
 
+#### RAG 第三阶段：证据约束回答与 Citation Inspector
+
+第三阶段在混合检索之上增加独立的原文问答接口：
+
+```text
+POST /projects/{project_id}/rag-answer
+```
+
+请求参数沿用 `/rag-search`，并额外支持 `language=zh-CN|en`。后端执行顺序为：
+
+```text
+项目隔离的 chunk 检索
+  -> 相关性阈值过滤
+  -> 选取上下文并保留 citation_id
+  -> 本地逐字摘录或 OpenRouter 综合
+  -> 校验所有 citation_id
+  -> 拒绝无引用、未知引用和不受证据支持的数字主张
+  -> 保存 rag_answer artifact
+```
+
+默认 `SCHOLARFLOW_RAG_GENERATION_PROVIDER=local`，只从命中 chunk 中选择与问题最相关的原句，不会把摘录扩写成新的科研结论。设为 `openrouter` 后才会把问题和选中的证据块发送给 OpenRouter Chat Completions；向量、未命中的论文内容和其他项目数据不会进入 prompt。OpenRouter 不可用、未配置 Key 或回答没有通过引用校验时，系统降级为本地逐字证据。
+
+响应包含：
+
+- `answer_kind=grounded_synthesis|extractive_evidence|no_answer`。
+- 每条 claim 的 `citation_ids`、confidence 和 evidence level。
+- Citation Inspector 所需的论文标题、原文、section、页码与检索分数。
+- `unanswered_parts`、`limitations` 和 citation rejection 统计。
+- embedding、回答模型以及是否发生外部数据传输。
+
+网页 Paper Memory 工作区保留原有“检索记忆并回答”，同时新增“检索原文并回答”。点击 claim 下方的 citation 按钮会定位到对应原文卡片，用户可以直接核对 PDF 页码、章节和来源。没有可靠 chunk 时显示拒答页，不生成空泛回答。
+
+只有在使用生成式综合、检索无降级、全部引用均为全文且没有主张被拒绝时，回答状态才可能是 `complete`。本地逐字摘录、摘要级证据或任何降级状态均显示为 `partial`。
+
 ### 7. Gap Board
 
 Gap Board 用于整理研究空白和潜在方向。它不会简单输出“可以改进性能”，而是尝试从以下角度找 gap：
@@ -589,6 +623,7 @@ Direction Review 会独立检索候选并尝试并发下载开放 PDF，通常�
 | `OPENROUTER_API_KEY` | 空 | 为空时使用本地确定性 Research Plan；非空时调用 OpenRouter |
 | `OPENROUTER_MODEL` | `minimax/minimax-m2.5` | OpenRouter Chat Completions 使用的模型 |
 | `OPENROUTER_RAG_MODEL` | `qwen/qwen3-embedding-8b` | 仅在 RAG embedding provider 为 OpenRouter 时使用 |
+| `OPENROUTER_RAG_ANSWER_MODEL` | `minimax/minimax-m2.5` | 仅在 RAG generation provider 为 OpenRouter 时使用 |
 | `OPENROUTER_TIMEOUT_SECONDS` | 示例为 `25` | OpenRouter 后端超时；应低于前端普通请求的 30 秒超时 |
 | `OPENALEX_API_KEY` | 空 | 正常使用 OpenAlex 时强烈建议配置的免费 Key；匿名额度很小 |
 | `SCHOLARFLOW_DB_PATH` | `services/api/.data/scholarflow.sqlite3` | 手动模式 SQLite 路径；CLI 会覆盖它 |
@@ -603,6 +638,8 @@ Direction Review 会独立检索候选并尝试并发下载开放 PDF，通常�
 | `SCHOLARFLOW_RAG_EMBEDDING_PROVIDER` | `local` | `local` 本机 hash embedding、`openrouter` 外部语义 embedding、`disabled` 仅关键词 |
 | `SCHOLARFLOW_RAG_LOCAL_DIMENSIONS` | `384` | 本地 hash embedding 维度，限制在 64-2048 |
 | `SCHOLARFLOW_RAG_EMBEDDING_BATCH_SIZE` | `16` | OpenRouter 每批发送的 chunk 数，限制在 1-64 |
+| `SCHOLARFLOW_RAG_GENERATION_PROVIDER` | `local` | `local` 逐字证据、`openrouter` 引用校验后的综合回答 |
+| `SCHOLARFLOW_RAG_MAX_CONTEXT_CHARS` | `12000` | 单次 RAG 回答可发送或处理的证据字符上限，限制在 2000-50000 |
 
 当前未实现直接 DeepSeek/OpenAI HTTP provider，也未实现 Semantic Scholar/Crossref 检索。相关预留变量即使写入 `.env` 也不会启用这些服务。
 

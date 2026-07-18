@@ -84,6 +84,7 @@ from scholarflow_api.rag_index import (
     paper_index_status,
     project_index_status,
 )
+from scholarflow_api.rag_answer import answer_project_rag, render_rag_answer_markdown
 from scholarflow_api.rag_retrieval import (
     EmbeddingError,
     embed_project_chunks,
@@ -117,6 +118,8 @@ from scholarflow_api.schemas import (
     Project,
     ProjectCreate,
     ProjectRagIndexStatus,
+    RagAnswerRequest,
+    RagAnswerResponse,
     RagEmbeddingRequest,
     RagEmbeddingStatus,
     RagSearchRequest,
@@ -1252,6 +1255,84 @@ def search_project_rag(
             refresh_embeddings=payload.refresh_embeddings,
         )
     return RagSearchResponse.model_validate(result)
+
+
+@app.post(
+    "/projects/{project_id}/rag-answer",
+    response_model=RagAnswerResponse,
+    status_code=201,
+)
+def create_project_rag_answer(
+    project_id: str,
+    payload: RagAnswerRequest,
+) -> RagAnswerResponse:
+    now = utc_now()
+    with get_connection() as connection:
+        project = fetch_project_dict(connection, project_id)
+        session_id = ensure_active_session(connection, project, now)
+        insert_tool_event(
+            connection,
+            session_id,
+            "rag.retrieve",
+            "running",
+            f"正在从项目原文索引检索最多 {payload.top_k} 个证据 chunk。",
+            now,
+        )
+        answer = answer_project_rag(
+            connection,
+            project_id=project_id,
+            question=payload.query,
+            language=payload.language,
+            top_k=payload.top_k,
+            paper_ids=payload.paper_ids,
+            evidence_levels=payload.evidence_levels,
+            sections=payload.sections,
+            min_score=payload.min_score,
+            max_chunks_per_paper=payload.max_chunks_per_paper,
+            refresh_embeddings=payload.refresh_embeddings,
+        )
+        artifact_payload = {
+            "schema_version": "rag_answer.v1",
+            **answer,
+        }
+        artifact = insert_artifact_row(
+            connection=connection,
+            project_id=project_id,
+            title=f"rag_answer_{paper_slug(payload.query)}.md",
+            kind="markdown",
+            content_markdown=render_rag_answer_markdown(answer),
+            content_json=json.dumps(artifact_payload, ensure_ascii=False, indent=2),
+            diff=(
+                "+ Retrieved traceable paper chunks\n"
+                "+ Validated claim citation IDs\n"
+                "+ Saved evidence-grounded RAG answer"
+            ),
+            now=now,
+        )
+        answer["artifact"] = artifact
+        insert_tool_event(
+            connection,
+            session_id,
+            "rag.retrieve",
+            "done" if answer["citations"] else "partial",
+            (
+                f"返回 {len(answer['citations'])} 个可追溯引用；"
+                f"状态 {answer['status']}。"
+            ),
+            now,
+        )
+        insert_tool_event(
+            connection,
+            session_id,
+            "rag.answer",
+            "done" if answer["claims"] else "partial",
+            (
+                f"生成 {len(answer['claims'])} 条通过引用校验的主张；"
+                f"模式 {answer['answer_kind']}。"
+            ),
+            now,
+        )
+    return RagAnswerResponse.model_validate(answer)
 
 
 @app.get(

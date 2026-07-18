@@ -19,6 +19,8 @@ import type {
   ApiPaperFullTextExtractResponse,
   ApiProject,
   ApiProjectCreate,
+  ApiRagAnswerRequest,
+  ApiRagAnswerResponse,
   ApiResearchDecisionRequest,
   ApiResearchDecisionResponse,
   ApiResearchMemoryQueryRequest,
@@ -311,6 +313,14 @@ export function queryResearchMemory(projectId: string, payload: ApiResearchMemor
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export function askProjectRag(projectId: string, payload: ApiRagAnswerRequest, options?: RequestInit) {
+  return request<ApiRagAnswerResponse>(`/projects/${projectId}/rag-answer`, {
+    ...options,
+    method: "POST",
+    body: JSON.stringify(payload),
+  }, API_RESEARCH_TIMEOUT_MS);
 }
 
 export function listProjectArtifacts(projectId: string, options?: RequestInit) {

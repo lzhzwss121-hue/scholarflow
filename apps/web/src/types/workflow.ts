@@ -6,6 +6,7 @@ import type {
   ApiDirectionReviewResponse,
   ApiPaperCard,
   ApiProject,
+  ApiRagAnswerResponse,
   ApiResearchDecisionResponse,
   ApiResearchMemoryQueryResponse,
   ApiWorkflowStepState,
@@ -46,6 +47,7 @@ export type WorkflowBusyStates = {
   literature: boolean;
   memory: boolean;
   paperCard: boolean;
+  rag: boolean;
 };
 
 export type WorkflowViewModel = {
@@ -73,6 +75,7 @@ export type WorkflowViewModel = {
   memoryQuestion: string;
   memoryResult: ApiResearchMemoryQueryResponse | null;
   memoryTopK: number;
+  ragAnswer: ApiRagAnswerResponse | null;
   paperCardInput: string;
   paperRows: PaperRow[];
   projectCount: number;
@@ -108,6 +111,7 @@ export type WorkflowActions = {
   onPaperPdfUpload: (paperId: string, file: File) => void;
   onProjectDraftChange: (draft: ProjectDraft) => void;
   onQueryResearchMemory: () => void;
+  onQueryRag: () => void;
   onSaveArtifact: () => void;
   onSearchLiterature: () => void;
   onSelectProject: (projectId: string) => void;

@@ -1,0 +1,242 @@
+import { AlertTriangle, BookOpenText, ExternalLink, FileSearch, ShieldCheck } from "lucide-react";
+import type { ApiRagAnswerResponse, ApiRagSearchHit } from "@scholarflow/schemas";
+
+export function RagAnswerPanel({ result }: { result: ApiRagAnswerResponse | null }) {
+  if (!result) {
+    return (
+      <section className="rag-intro-panel" aria-label="rag answer introduction">
+        <FileSearch size={21} />
+        <div>
+          <p className="section-kicker">Full-text RAG</p>
+          <h2>直接查询论文摘要与 PDF 原文索引</h2>
+          <p>
+            系统先检索 chunk，再校验每条主张的 citation ID。没有过阈值证据时会拒答；
+            摘要命中不会显示成全文结论。
+          </p>
+        </div>
+      </section>
+    );
+  }
+
+  if (result.status === "no_reliable_hit" || result.answer_kind === "no_answer") {
+    return (
+      <section className="rag-empty-panel" aria-label="rag no reliable hit">
+        <AlertTriangle size={22} />
+        <div>
+          <p className="section-kicker">No reliable chunk</p>
+          <h2>当前原文索引无法可靠回答</h2>
+          <p>{result.unanswered_parts[0] || "没有 chunk 达到相关性门槛，系统未生成答案。"}</p>
+          <ul>
+            <li>先在 Paper Table 检索更直接相关的论文。</li>
+            <li>上传关键论文 PDF，把 abstract_only 升级为 full_text。</li>
+            <li>在问题中写明任务对象、数据集、指标或失败模式。</li>
+          </ul>
+          <WarningList title="检索状态" items={result.warnings} />
+        </div>
+      </section>
+    );
+  }
+
+  const usedCitations = new Set(result.citation_validation.used_citation_ids);
+  return (
+    <section className="rag-answer-workspace" aria-label="evidence grounded rag answer">
+      <header className="rag-answer-heading">
+        <div>
+          <p className="section-kicker">Evidence-grounded RAG</p>
+          <h2>{result.question}</h2>
+          <p>
+            {result.answer_kind === "grounded_synthesis"
+              ? "已生成通过 citation 校验的综合回答。"
+              : "当前显示逐字证据摘录，没有把摘录扩写成未经支持的结论。"}
+          </p>
+        </div>
+        <div className="rag-status-cluster" aria-label="rag answer status">
+          <span data-status={result.status}>{result.status}</span>
+          <span>{result.retrieval.retrieval_mode}</span>
+          <span>{result.citations.length} citations</span>
+          <span>{result.claims.length} claims</span>
+        </div>
+      </header>
+
+      <div className="rag-provenance-strip">
+        <ShieldCheck size={16} />
+        <span>
+          生成：{result.generation_provider || "未调用"}
+          {result.generation_model ? ` / ${result.generation_model}` : ""}
+        </span>
+        <span>
+          向量：{result.retrieval.provider || "未启用"} / {result.retrieval.embedding_model || "lexical only"}
+        </span>
+        <span>{result.external_data_transfer ? "本次存在外部数据传输" : "本次全部在本机处理"}</span>
+      </div>
+
+      <div className="rag-answer-body">
+        <p>{result.answer}</p>
+      </div>
+
+      <div className="rag-claim-grid" aria-label="rag validated claims">
+        {result.claims.map((claim, index) => (
+          <article key={claim.id}>
+            <div className="rag-claim-header">
+              <span>{String(index + 1).padStart(2, "0")}</span>
+              <strong>{formatEvidenceLevel(claim.evidence_level)}</strong>
+              <small>{claim.confidence} confidence</small>
+            </div>
+            <p>{claim.statement}</p>
+            <div className="rag-citation-buttons">
+              {claim.citation_ids.map((citationId) => (
+                <button
+                  key={citationId}
+                  type="button"
+                  onClick={() => focusCitation(citationId)}
+                >
+                  [{shortCitation(citationId)}]
+                </button>
+              ))}
+            </div>
+          </article>
+        ))}
+      </div>
+
+      {result.unanswered_parts.length || result.limitations.length ? (
+        <div className="rag-boundary-grid">
+          <BoundaryList title="当前仍不能回答" items={result.unanswered_parts} />
+          <BoundaryList title="证据与生成边界" items={result.limitations} />
+        </div>
+      ) : null}
+
+      <div className="rag-evidence-heading">
+        <div>
+          <BookOpenText size={18} />
+          <div>
+            <p className="section-kicker">Citation inspector</p>
+            <h3>逐条核对引用原文</h3>
+          </div>
+        </div>
+        <span>
+          used {usedCitations.size} / available {result.citation_validation.available_citation_ids.length}
+        </span>
+      </div>
+
+      <div className="rag-evidence-list" aria-label="rag citation evidence">
+        {result.citations.map((citation) => (
+          <CitationEvidenceCard
+            citation={citation}
+            isUsed={usedCitations.has(citation.citation_id)}
+            key={citation.citation_id}
+          />
+        ))}
+      </div>
+
+      {result.citation_validation.rejected_claim_count > 0 ? (
+        <div className="rag-validation-warning">
+          <AlertTriangle size={17} />
+          <span>
+            已拒绝 {result.citation_validation.rejected_claim_count} 条未通过证据校验的模型主张；
+            它们没有进入上方回答。
+          </span>
+        </div>
+      ) : null}
+      <WarningList title="RAG 状态" items={result.warnings} />
+    </section>
+  );
+}
+
+function CitationEvidenceCard({
+  citation,
+  isUsed,
+}: {
+  citation: ApiRagSearchHit;
+  isUsed: boolean;
+}) {
+  const pageLabel =
+    citation.page_start === null
+      ? "页码未知"
+      : citation.page_start === citation.page_end
+        ? `p.${citation.page_start}`
+        : `pp.${citation.page_start}-${citation.page_end}`;
+  return (
+    <article
+      className="rag-evidence-card"
+      data-used={isUsed ? "true" : "false"}
+      id={citationDomId(citation.citation_id)}
+      tabIndex={-1}
+    >
+      <div className="rag-evidence-meta">
+        <span>{isUsed ? "已引用" : "候选证据"}</span>
+        <span>{formatEvidenceLevel(citation.evidence_level)}</span>
+        <span>{citation.section || "section unknown"}</span>
+        <span>{pageLabel}</span>
+        <span>score {citation.hybrid_score.toFixed(2)}</span>
+      </div>
+      <h4>{citation.paper_title}</h4>
+      <p>{citation.text}</p>
+      <footer>
+        <code>{citation.citation_id}</code>
+        {citation.paper_url ? (
+          <a href={citation.paper_url} rel="noreferrer" target="_blank">
+            论文来源
+            <ExternalLink size={13} />
+          </a>
+        ) : null}
+      </footer>
+    </article>
+  );
+}
+
+function BoundaryList({ title, items }: { title: string; items: string[] }) {
+  if (!items.length) {
+    return null;
+  }
+  return (
+    <section>
+      <strong>{title}</strong>
+      <ul>
+        {items.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function WarningList({ title, items }: { title: string; items: string[] }) {
+  if (!items.length) {
+    return null;
+  }
+  return (
+    <details className="rag-warning-list">
+      <summary>{title}（{items.length}）</summary>
+      <ul>
+        {items.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+function focusCitation(citationId: string) {
+  const target = document.getElementById(citationDomId(citationId));
+  target?.scrollIntoView({ behavior: "smooth", block: "center" });
+  target?.focus({ preventScroll: true });
+}
+
+function citationDomId(citationId: string) {
+  return `rag-evidence-${citationId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
+function shortCitation(citationId: string) {
+  const parts = citationId.split(":");
+  return parts.slice(1).join(":") || citationId;
+}
+
+function formatEvidenceLevel(level: string) {
+  if (level === "full_text") {
+    return "PDF 全文";
+  }
+  if (level === "abstract_only") {
+    return "摘要";
+  }
+  return "元数据";
+}

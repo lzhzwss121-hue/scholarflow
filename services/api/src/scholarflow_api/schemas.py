@@ -444,6 +444,43 @@ class RagSearchResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class RagAnswerRequest(RagSearchRequest):
+    language: Literal["zh-CN", "en"] = "zh-CN"
+
+
+class RagAnswerClaim(BaseModel):
+    id: str
+    statement: str
+    citation_ids: list[str] = Field(default_factory=list)
+    confidence: Literal["low", "medium", "high"] = "low"
+    evidence_level: EvidenceLevel = "metadata_only"
+
+
+class RagCitationValidation(BaseModel):
+    available_citation_ids: list[str] = Field(default_factory=list)
+    used_citation_ids: list[str] = Field(default_factory=list)
+    rejected_citation_ids: list[str] = Field(default_factory=list)
+    rejected_claim_count: int = 0
+
+
+class RagAnswerResponse(BaseModel):
+    question: str
+    status: Literal["complete", "partial", "no_reliable_hit", "failed"]
+    answer_kind: Literal["grounded_synthesis", "extractive_evidence", "no_answer"]
+    answer: str = ""
+    claims: list[RagAnswerClaim] = Field(default_factory=list)
+    unanswered_parts: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    retrieval: RagSearchResponse
+    citations: list[RagSearchHit] = Field(default_factory=list)
+    citation_validation: RagCitationValidation = Field(default_factory=RagCitationValidation)
+    generation_provider: str = ""
+    generation_model: str = ""
+    external_data_transfer: bool = False
+    artifact: Artifact | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
 class DirectionReviewRequest(BaseModel):
     direction: str = Field(min_length=1, max_length=500)
     round: int = Field(default=1, ge=1, le=3)

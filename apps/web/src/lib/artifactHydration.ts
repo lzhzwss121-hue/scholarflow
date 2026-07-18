@@ -14,6 +14,7 @@ import type {
   ApiPaperSignals,
   ApiResearchDecisionResponse,
   ApiResearchMemoryQueryResponse,
+  ApiRagAnswerResponse,
   ApiResearchSight,
   ApiToolEvent,
 } from "@scholarflow/schemas";
@@ -24,6 +25,7 @@ export type HydratedWorkflowState = {
   directionReview: ApiDirectionReviewResponse | null;
   literatureCoverage: Record<string, number>;
   memoryResult: ApiResearchMemoryQueryResponse | null;
+  ragAnswer: ApiRagAnswerResponse | null;
   paperCard: ApiPaperCard | null;
   researchDecision: ApiResearchDecisionResponse | null;
 };
@@ -41,6 +43,7 @@ export function hydrateWorkflowStateFromArtifacts(items: ApiArtifact[]): Hydrate
     directionReview: hydrateDirectionReview(items),
     literatureCoverage: hydrateLiteratureCoverage(items),
     memoryResult: hydrateResearchMemory(items),
+    ragAnswer: hydrateRagAnswer(items),
     paperCard: hydratePaperCard(items),
     researchDecision: hydrateResearchDecision(items),
   };
@@ -78,6 +81,7 @@ function selectHydrationArtifactIds(summaries: ApiArtifactSummary[]): string[] {
     ["direction_review"],
     ["paper_table", "literature_search"],
     ["research_memory_answer"],
+    ["rag_answer"],
     ["gap_board", "idea_validation", "experiment_plan"],
     ["paper_card"],
   ];
@@ -588,6 +592,43 @@ function hydrateResearchMemory(items: ApiArtifact[]): ApiResearchMemoryQueryResp
   };
 }
 
+function hydrateRagAnswer(items: ApiArtifact[]): ApiRagAnswerResponse | null {
+  const artifact = findArtifactPayload(
+    items,
+    (title) => title.includes("rag_answer"),
+    (payload) => isRecord(payload.retrieval) && Array.isArray(payload.citations),
+  );
+  if (!artifact) {
+    return null;
+  }
+  const payload = artifact.payload;
+  const status = asString(payload.status);
+  const answerKind = asString(payload.answer_kind);
+  return {
+    ...(payload as unknown as ApiRagAnswerResponse),
+    question: asString(payload.question),
+    status:
+      status === "complete" || status === "no_reliable_hit" || status === "failed"
+        ? status
+        : "partial",
+    answer_kind:
+      answerKind === "grounded_synthesis" || answerKind === "extractive_evidence"
+        ? answerKind
+        : "no_answer",
+    answer: asString(payload.answer),
+    claims: Array.isArray(payload.claims)
+      ? (payload.claims as ApiRagAnswerResponse["claims"])
+      : [],
+    unanswered_parts: asStringArray(payload.unanswered_parts),
+    limitations: asStringArray(payload.limitations),
+    citations: Array.isArray(payload.citations)
+      ? (payload.citations as ApiRagAnswerResponse["citations"])
+      : [],
+    artifact: artifact.artifact,
+    warnings: asStringArray(payload.warnings),
+  };
+}
+
 function normalizeMemoryClaims(value: unknown): NonNullable<ApiResearchMemoryQueryResponse["claims"]> {
   if (!Array.isArray(value)) {
     return [];
@@ -1048,7 +1089,7 @@ const artifactPatternsByView: Record<ViewId, string[]> = {
   "new-project": [],
   "paper-table": ["paper_table", "literature_search"],
   "direction-review": ["direction_review", "baseline_map"],
-  "paper-memory": ["research_memory_answer", "direction_memory"],
+  "paper-memory": ["rag_answer", "research_memory_answer", "direction_memory"],
   "paper-reader": ["paper_card"],
   "gap-board": ["gap_board", "idea_validation"],
   "experiment-planner": ["experiment_plan"],

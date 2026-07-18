@@ -23,6 +23,7 @@ For non-sensitive bugs, use the public bug report template.
 - Parsed paper text is stored locally as traceable chunks in the configured ScholarFlow SQLite database. The original uploaded PDF is not persisted, but deleting the PDF file does not delete already indexed chunks; call `DELETE /projects/{project_id}/papers/{paper_id}/rag-index` or remove the local database when the derived text must be erased.
 - RAG phase 2 defaults to `SCHOLARFLOW_RAG_EMBEDDING_PROVIDER=local`, which computes deterministic hash embeddings on the same machine. If an operator explicitly selects `openrouter`, the selected paper chunks and each retrieval query are sent to the configured OpenRouter endpoint. Review the provider's retention policy, access controls, billing, and the sensitivity of the papers before enabling it.
 - Embedding vectors are derived local data and remain in SQLite until their paper index, project, or database is deleted. Rebuilding an index replaces the old chunk vectors.
+- RAG phase 3 defaults to local extractive answers. If `SCHOLARFLOW_RAG_GENERATION_PROVIDER=openrouter`, the user's question and the retrieved evidence chunks are sent to OpenRouter Chat Completions. ScholarFlow does not send stored embedding vectors, unrelated project chunks, or API keys in the prompt. Generated claims are filtered against the citation IDs and evidence text before display, but this validation is not a substitute for human review of the cited paper.
 
 ## Current Boundary
 

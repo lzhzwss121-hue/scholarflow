@@ -47,6 +47,7 @@ import {
   type ApiFullTextProvenance,
   type ApiPaperCard,
   type ApiProject,
+  type ApiRagAnswerResponse,
   type ApiResearchDecisionResponse,
   type ApiResearchMemoryQueryResponse,
   type ApiSignalEvidence,
@@ -61,6 +62,7 @@ import {
   type ViewId,
 } from "../mockData";
 import { ApiOfflineNotice } from "../components/ApiOfflineNotice";
+import { RagAnswerPanel } from "../components/RagAnswerPanel";
 import { isRetrievalWarning } from "../apiClient";
 import {
   normalizeEvidencePack,
@@ -875,6 +877,8 @@ interface ActiveViewProps {
   memoryQuestion: string;
   memoryResult: ApiResearchMemoryQueryResponse | null;
   memoryTopK: number;
+  ragAnswer: ApiRagAnswerResponse | null;
+  ragBusy: boolean;
   projectDraft: ProjectDraft;
   onAgentTaskChange: (task: string) => void;
   onCreateAgentPlan: () => void;
@@ -896,6 +900,7 @@ interface ActiveViewProps {
   onPaperPdfUpload: (paperId: string, file: File) => void;
   onProjectDraftChange: (draft: ProjectDraft) => void;
   onQueryResearchMemory: () => void;
+  onQueryRag: () => void;
   onSearchLiterature: () => void;
   onSelectedDirectionPaperChange: (paperId: string) => void;
   onSelectedPaperChange: (paperId: string) => void;
@@ -935,6 +940,8 @@ export function ActiveView({
   memoryQuestion,
   memoryResult,
   memoryTopK,
+  ragAnswer,
+  ragBusy,
   projectDraft,
   onAgentTaskChange,
   onCancelAgentRun,
@@ -956,6 +963,7 @@ export function ActiveView({
   onPaperPdfUpload,
   onProjectDraftChange,
   onQueryResearchMemory,
+  onQueryRag,
   onSearchLiterature,
   onSelectedDirectionPaperChange,
   onSelectedPaperChange,
@@ -1068,12 +1076,15 @@ export function ActiveView({
             apiStatus={apiStatus}
             direction={directionInput}
             isQuerying={memoryBusy}
+            isRagQuerying={ragBusy}
             onQuestionChange={onMemoryQuestionChange}
             onQuery={onQueryResearchMemory}
+            onQueryRag={onQueryRag}
             onSelectView={onSelectView}
             onTopKChange={onMemoryTopKChange}
             question={memoryQuestion}
             result={memoryResult}
+            ragResult={ragAnswer}
             topK={memoryTopK}
           />
         </>
@@ -4172,11 +4183,14 @@ export function ResearchMemoryView({
   apiStatus,
   direction,
   isQuerying,
+  isRagQuerying,
   onQuestionChange,
   onQuery,
+  onQueryRag,
   onSelectView,
   onTopKChange,
   question,
+  ragResult,
   result,
   topK,
 }: {
@@ -4184,15 +4198,19 @@ export function ResearchMemoryView({
   apiStatus: ApiStatus;
   direction: string;
   isQuerying: boolean;
+  isRagQuerying: boolean;
   onQuestionChange: (question: string) => void;
   onQuery: () => void;
+  onQueryRag: () => void;
   onSelectView: (view: ViewId) => void;
   onTopKChange: (topK: number) => void;
   question: string;
+  ragResult: ApiRagAnswerResponse | null;
   result: ApiResearchMemoryQueryResponse | null;
   topK: number;
 }) {
-  const canQuery = apiStatus === "online" && !isQuerying && question.trim().length > 0;
+  const queryBusy = isQuerying || isRagQuerying;
+  const canQuery = apiStatus === "online" && !queryBusy && question.trim().length > 0;
   const memoryHits = result?.hits ?? [];
   const memoryEvidenceBoundary = buildMemoryEvidenceBoundary(memoryHits);
   const memoryUnavailable = result?.reliability_status === "no_reliable_hit" || result?.reliability_status === "no_memory";
@@ -4205,12 +4223,18 @@ export function ResearchMemoryView({
         <div className="memory-control-header">
           <div>
             <p className="section-kicker">Paper Memory Bank</p>
-            <h2>基于已读论文的长期记忆问答</h2>
+            <h2>原文证据与结构化记忆问答</h2>
           </div>
-          <button className="secondary-command" disabled={!canQuery} type="button" onClick={onQuery}>
-            <Search size={17} />
-            {isQuerying ? "检索中" : "检索记忆并回答"}
-          </button>
+          <div className="memory-query-actions">
+            <button className="primary-command" disabled={!canQuery} type="button" onClick={onQueryRag}>
+              <ShieldCheck size={17} />
+              {isRagQuerying ? "核对原文中" : "检索原文并回答"}
+            </button>
+            <button className="secondary-command" disabled={!canQuery} type="button" onClick={onQuery}>
+              <BrainCircuit size={17} />
+              {isQuerying ? "检索记忆中" : "检索记忆并回答"}
+            </button>
+          </div>
         </div>
 
         <div className="memory-control-grid">
@@ -4230,12 +4254,14 @@ export function ResearchMemoryView({
 
         <div className="memory-chip-row">
           <span>当前方向：{direction || "未指定"}</span>
-          <span>每轮 10 篇</span>
-          <span>30 篇上限</span>
-          <span>检索 3-8 篇后回答</span>
+          <span>原文 RAG：chunk + citation</span>
+          <span>Paper Memory：Paper Card + ResearchSight</span>
+          <span>无可靠证据则拒答</span>
         </div>
-        {isQuerying ? <OperationStatusNote apiStatus={apiStatus} message={apiMessage} /> : null}
+        {queryBusy ? <OperationStatusNote apiStatus={apiStatus} message={apiMessage} /> : null}
       </section>
+
+      <RagAnswerPanel result={ragResult} />
 
       {result && memoryUnavailable ? (
         <section className="memory-empty-state" aria-label="memory reliability boundary">
@@ -4422,14 +4448,14 @@ export function ResearchMemoryView({
         </>
       ) : null}
 
-      {!result ? (
+      {!result && !ragResult ? (
         <section className="memory-empty-state">
           <BrainCircuit size={22} />
           <div>
-            <h2>先执行方向精读，再提问</h2>
+            <h2>先检索论文，再选择问答方式</h2>
             <p>
-              Paper Memory Bank 会从方向精读生成的论文卡片中提取结构化记忆。用户提问时，系统只检索最相关的
-              3-8 篇论文，再基于这些命中回答。
+              原文 RAG 可以直接查询已索引的摘要或 PDF chunk；结构化记忆需要先执行方向精读，
+              再从 Paper Card、ResearchSight 和 direction memory 中召回。
             </p>
           </div>
         </section>
