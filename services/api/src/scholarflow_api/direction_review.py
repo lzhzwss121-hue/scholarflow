@@ -76,6 +76,7 @@ class DirectionPaperReading:
     why_selected: str
     venue_signal: str
     self_read_priority: bool
+    source_text: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -252,6 +253,7 @@ def build_direction_readings(
                 why_selected=build_selection_reason(paper_for_evidence, direction, card),
                 venue_signal=detect_venue_signal(paper.get("venue", "")),
                 self_read_priority=False,
+                source_text=full_text.text if full_text.is_extracted else "",
             ),
         )
     recommended_keys = {

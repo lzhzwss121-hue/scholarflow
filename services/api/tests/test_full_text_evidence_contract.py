@@ -487,6 +487,8 @@ POPE: Polling-based Object Probing Evaluation for Object Hallucination.
         self.assertEqual(len(readings), 1)
         serialized = readings[0].to_dict()
         self.assertEqual(serialized["evidence_level"], "full_text")
+        self.assertEqual(readings[0].source_text, extracted_text)
+        self.assertNotIn("source_text", serialized)
         self.assertEqual(serialized["full_text"]["status"], "extracted")
         self.assertEqual(serialized["full_text"]["page_count"], 11)
         self.assertEqual(serialized["full_text"]["character_count"], len(extracted_text))

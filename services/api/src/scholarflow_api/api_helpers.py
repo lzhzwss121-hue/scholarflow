@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from scholarflow_api.agent_core import ToolContext
 from scholarflow_api.database import get_connection, new_id, row_to_dict, utc_now
+from scholarflow_api.rag_index import index_paper_abstract
 from scholarflow_api.schemas import (
     BaselineMap,
     DirectionMemory,
@@ -575,6 +576,16 @@ def insert_paper_candidates(connection, project_id: str, papers: list, now: str)
                 now,
             ),
         )
+        abstract = str(paper.abstract or "").strip()
+        if abstract:
+            index_paper_abstract(
+                connection,
+                project_id=project_id,
+                paper_id=paper_id,
+                abstract=abstract,
+                source_origin=str(paper.source or ""),
+                now=now,
+            )
     return paper_ids
 
 

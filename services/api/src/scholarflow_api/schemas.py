@@ -309,6 +309,60 @@ class PaperFullTextExtractResponse(BaseModel):
     artifact: Artifact | None = None
 
 
+class PaperChunk(BaseModel):
+    id: str
+    project_id: str
+    paper_id: str
+    chunk_index: int
+    source: str
+    source_origin: str = ""
+    evidence_level: EvidenceLevel = "metadata_only"
+    section: str = "unknown"
+    page_start: int | None = None
+    page_end: int | None = None
+    chunk_text: str
+    char_count: int
+    token_count: int
+    chunk_hash: str
+    index_version: str
+    embedding_model: str = ""
+    embedding_dimensions: int = 0
+    created_at: str
+    updated_at: str
+
+
+class PaperChunkIndexRequest(BaseModel):
+    paper_text: str = Field(default="", max_length=50000)
+
+
+class PaperChunkIndexStatus(BaseModel):
+    paper_id: str
+    status: Literal["indexed", "not_indexed", "failed"]
+    chunk_count: int = 0
+    evidence_level: EvidenceLevel = "metadata_only"
+    source: str = ""
+    source_origin: str = ""
+    sections: list[str] = Field(default_factory=list)
+    page_numbers: list[int] = Field(default_factory=list)
+    indexed_at: str = ""
+    index_version: str = "paper_chunks.v1"
+    embedding_status: Literal["not_started", "partial", "ready"] = "not_started"
+    message: str = ""
+
+
+class ProjectRagIndexStatus(BaseModel):
+    project_id: str
+    total_papers: int = 0
+    indexed_papers: int = 0
+    total_chunks: int = 0
+    full_text_chunks: int = 0
+    abstract_chunks: int = 0
+    unindexed_paper_ids: list[str] = Field(default_factory=list)
+    latest_indexed_at: str = ""
+    index_version: str = "paper_chunks.v1"
+    embedding_status: Literal["not_started", "partial", "ready"] = "not_started"
+
+
 class DirectionReviewRequest(BaseModel):
     direction: str = Field(min_length=1, max_length=500)
     round: int = Field(default=1, ge=1, le=3)

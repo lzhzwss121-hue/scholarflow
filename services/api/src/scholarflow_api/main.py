@@ -77,6 +77,13 @@ from scholarflow_api.research_memory import (
     upsert_direction_memory_snapshot,
     upsert_direction_reading_memories,
 )
+from scholarflow_api.rag_index import (
+    delete_paper_chunks,
+    fetch_paper_chunks,
+    index_paper_full_text,
+    paper_index_status,
+    project_index_status,
+)
 from scholarflow_api.schemas import (
     AgentExecuteRequest,
     AgentExecuteResponse,
@@ -97,9 +104,13 @@ from scholarflow_api.schemas import (
     PaperCard,
     PaperCardCreateRequest,
     PaperCardResponse,
+    PaperChunk,
+    PaperChunkIndexRequest,
+    PaperChunkIndexStatus,
     PaperFullTextExtractResponse,
     Project,
     ProjectCreate,
+    ProjectRagIndexStatus,
     ResearchSight,
     ResearchDecisionRequest,
     ResearchDecisionResponse,
@@ -1073,6 +1084,15 @@ def persist_project_paper_card(
                 now,
             ),
         )
+        if payload.paper_id and full_text.is_extracted:
+            index_paper_full_text(
+                connection,
+                project_id=project_id,
+                paper_id=payload.paper_id,
+                text=full_text.text,
+                source_origin=full_text.source,
+                now=now,
+            )
         insert_tool_event(
             connection,
             session_id,
@@ -1153,6 +1173,99 @@ def extract_project_paper_full_text(
         card=generated.card if generated else None,
         artifact=generated.artifact if generated else None,
     )
+
+
+@app.get("/projects/{project_id}/rag-index", response_model=ProjectRagIndexStatus)
+def get_project_rag_index_status(project_id: str) -> ProjectRagIndexStatus:
+    ensure_project_exists(project_id)
+    with get_connection() as connection:
+        status = project_index_status(connection, project_id)
+    return ProjectRagIndexStatus.model_validate(status)
+
+
+@app.get(
+    "/projects/{project_id}/papers/{paper_id}/rag-index",
+    response_model=PaperChunkIndexStatus,
+)
+def get_paper_rag_index_status(project_id: str, paper_id: str) -> PaperChunkIndexStatus:
+    with get_connection() as connection:
+        fetch_paper_dict(connection, project_id, paper_id)
+        status = paper_index_status(connection, project_id, paper_id)
+    return PaperChunkIndexStatus.model_validate(status)
+
+
+@app.get(
+    "/projects/{project_id}/papers/{paper_id}/chunks",
+    response_model=list[PaperChunk],
+)
+def list_project_paper_chunks(project_id: str, paper_id: str) -> list[PaperChunk]:
+    with get_connection() as connection:
+        fetch_paper_dict(connection, project_id, paper_id)
+        chunks = fetch_paper_chunks(connection, project_id, paper_id)
+    return [PaperChunk.model_validate(chunk) for chunk in chunks]
+
+
+@app.post(
+    "/projects/{project_id}/papers/{paper_id}/rag-index",
+    response_model=PaperChunkIndexStatus,
+)
+def rebuild_project_paper_rag_index(
+    project_id: str,
+    paper_id: str,
+    payload: PaperChunkIndexRequest,
+) -> PaperChunkIndexStatus:
+    with get_connection() as connection:
+        paper = fetch_paper_dict(connection, project_id, paper_id)
+    result = provided_full_text(payload.paper_text) if payload.paper_text else resolve_open_full_text(paper)
+    if not result.is_extracted:
+        with get_connection() as connection:
+            status = paper_index_status(
+                connection,
+                project_id,
+                paper_id,
+                message=(
+                    f"全文索引未重建：{result.error or '输入文本没有达到全文证据阈值'} "
+                    "已有高等级索引未被删除。"
+                ),
+            )
+        if status["status"] == "not_indexed":
+            status["status"] = "failed"
+        return PaperChunkIndexStatus.model_validate(status)
+
+    now = utc_now()
+    with get_connection() as connection:
+        index_paper_full_text(
+            connection,
+            project_id=project_id,
+            paper_id=paper_id,
+            text=result.text,
+            source_origin=result.source,
+            now=now,
+        )
+        status = paper_index_status(
+            connection,
+            project_id,
+            paper_id,
+            message="已从真实全文重建可追溯 chunk；embedding 尚未执行。",
+        )
+    return PaperChunkIndexStatus.model_validate(status)
+
+
+@app.delete(
+    "/projects/{project_id}/papers/{paper_id}/rag-index",
+    response_model=PaperChunkIndexStatus,
+)
+def delete_project_paper_rag_index(project_id: str, paper_id: str) -> PaperChunkIndexStatus:
+    with get_connection() as connection:
+        fetch_paper_dict(connection, project_id, paper_id)
+        deleted_count = delete_paper_chunks(connection, project_id, paper_id)
+        status = paper_index_status(
+            connection,
+            project_id,
+            paper_id,
+            message=f"已清除 {deleted_count} 个本地原文 chunk；论文、Paper Card 与 Memory 保持不变。",
+        )
+    return PaperChunkIndexStatus.model_validate(status)
 
 
 @app.post("/projects/{project_id}/direction-reviews", response_model=DirectionReviewResponse, status_code=201)
@@ -1254,6 +1367,15 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
                     completed_at,
                 ),
             )
+            if reading.source_text and reading.paper.get("id"):
+                index_paper_full_text(
+                    connection,
+                    project_id=project_id,
+                    paper_id=str(reading.paper["id"]),
+                    text=reading.source_text,
+                    source_origin=str(reading.full_text.get("source") or ""),
+                    now=completed_at,
+                )
 
         upsert_direction_reading_memories(
             connection,
@@ -2043,6 +2165,15 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
                     now,
                 ),
             )
+            if reading.source_text and reading.paper.get("id"):
+                index_paper_full_text(
+                    connection,
+                    project_id=context.project["id"],
+                    paper_id=str(reading.paper["id"]),
+                    text=reading.source_text,
+                    source_origin=str(reading.full_text.get("source") or ""),
+                    now=now,
+                )
 
         upsert_direction_reading_memories(
             connection,

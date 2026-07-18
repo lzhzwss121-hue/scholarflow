@@ -20,7 +20,8 @@ For non-sensitive bugs, use the public bug report template.
 - Do not upload unpublished papers, private lab materials, transcripts, or application documents as examples.
 - External API integrations must preserve source URLs and warnings so users can audit where data came from.
 - Future model-provider integrations should make external data transfer explicit and configurable.
+- Parsed paper text is stored locally as traceable chunks in the configured ScholarFlow SQLite database. The original uploaded PDF is not persisted, but deleting the PDF file does not delete already indexed chunks; call `DELETE /projects/{project_id}/papers/{paper_id}/rag-index` or remove the local database when the derived text must be erased.
 
 ## Current Boundary
 
-The v0.1.0 preview does not provide authentication, cloud hosting, paid workspaces, or lab multi-user collaboration. Do not deploy it as a shared service without adding authentication, access control, rate limits, logging review, and a data retention policy.
+The v0.1.0 preview does not provide authentication, cloud hosting, paid workspaces, or lab multi-user collaboration. RAG index and chunk endpoints expose locally stored paper text to any client that can reach the API. Do not deploy it as a shared service without adding authentication, access control, rate limits, logging review, and a data retention policy.

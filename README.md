@@ -149,6 +149,30 @@ ScholarFlow 会把已读论文转成结构化记忆，而不是依赖聊天窗�
 - 回答可以指出依据来自哪些论文记忆。
 - 长期项目可以持续积累方向理解。
 
+#### RAG 第一阶段：可追溯原文索引
+
+ScholarFlow 会把真实摘要或已验证 PDF 文本切成项目隔离的 `paper_chunks`，为后续混合检索和向量 RAG 提供底座。每个 chunk 保留：
+
+- `project_id` 与 `paper_id`。
+- `metadata.abstract`、`pdf.full_text` 或 `user_provided.full_text` 证据来源。
+- PDF section、起止页码和原文内容。
+- chunk 顺序、字符数、token 估算和 SHA-256 校验值。
+- 索引版本以及尚未填充的 embedding 模型、维度和向量字段。
+
+论文刚进入 Paper Table 时，存在真实摘要就建立 `abstract_only` 索引；开放 PDF、上传 PDF 或绑定论文的手动正文成功达到全文阈值后，会原子替换为 `full_text` 索引。重复检索不会把已经建立的全文索引降级为摘要索引。当前阶段尚未计算 embedding，也尚未用大模型生成 RAG 回答，`embedding_status=not_started` 是正常状态。
+
+可以通过 OpenAPI 文档调用以下接口：
+
+```text
+GET  /projects/{project_id}/rag-index
+GET  /projects/{project_id}/papers/{paper_id}/rag-index
+GET  /projects/{project_id}/papers/{paper_id}/chunks
+POST /projects/{project_id}/papers/{paper_id}/rag-index
+DELETE /projects/{project_id}/papers/{paper_id}/rag-index
+```
+
+手动重建时，POST body 可以提供 `{"paper_text": "..."}`；留空则重新尝试获取论文的开放 PDF。失败的重建不会删除已有的高等级索引。`DELETE` 只清除该论文的本地 chunks，不会删除论文记录、Paper Card 或 Memory。
+
 ### 7. Gap Board
 
 Gap Board 用于整理研究空白和潜在方向。它不会简单输出“可以改进性能”，而是尝试从以下角度找 gap：
@@ -532,6 +556,9 @@ Direction Review 会独立检索候选并尝试并发下载开放 PDF，通常�
 | `SCHOLARFLOW_PDF_MAX_PAGES` | `80` | 最多处理的 PDF 页数 |
 | `SCHOLARFLOW_PDF_MAX_TEXT_CHARS` | `50000` | 最多保留的正文证据字符数 |
 | `SCHOLARFLOW_PDF_MIN_TEXT_CHARS` | `1200` | PDF 升级为全文证据所需的最少字符数 |
+| `SCHOLARFLOW_RAG_CHUNK_SIZE` | `1400` | RAG 第一阶段单个原文 chunk 的目标字符上限 |
+| `SCHOLARFLOW_RAG_CHUNK_OVERLAP` | `180` | 相邻 chunk 的字符重叠，最大不会超过 chunk size 的三分之一 |
+| `SCHOLARFLOW_RAG_MIN_CHUNK_CHARS` | `120` | 多 chunk 文本中需要合并的过短尾段阈值 |
 
 当前未实现直接 DeepSeek/OpenAI HTTP provider，也未实现 Semantic Scholar/Crossref 检索。相关预留变量即使写入 `.env` 也不会启用这些服务。
 
@@ -616,7 +643,7 @@ CLI 默认工作区：
 | arXiv/OpenAlex 检索 | 将检索词发送给对应公开服务，并把短期结果缓存到当前 SQLite |
 | 开放 PDF 自动获取 | 从论文元数据提供的公网 URL 下载 PDF，在本地解析 |
 | OpenRouter Research Plan | 只要 `OPENROUTER_API_KEY` 非空就会尝试发送任务，以及项目标题、描述、关键词、领域、语言和 workflow；无效 Key 也会产生一次失败请求 |
-| 本地 PDF 上传 | PDF bytes 在本地 API 内存中解析；原 PDF 和完整提取文本不落盘，派生 Paper Card、provenance 与必要证据摘录写入 SQLite |
+| 本地 PDF 上传 | PDF bytes 只在本地 API 内存中解析，原 PDF 不落盘；选取的正文文本会按 section/page 切块写入当前 SQLite 的 `paper_chunks`，同时保存 Paper Card、provenance 与必要证据摘录 |
 
 将项目用于敏感研究前，请阅读 [`SECURITY.md`](SECURITY.md)，并自行确认第三方 API 的隐私条款。
 

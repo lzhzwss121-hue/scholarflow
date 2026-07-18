@@ -153,6 +153,31 @@ def init_db() -> None:
                 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS paper_chunks (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                paper_id TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                source_origin TEXT NOT NULL DEFAULT '',
+                evidence_level TEXT NOT NULL DEFAULT 'metadata_only',
+                section TEXT NOT NULL DEFAULT 'unknown',
+                page_start INTEGER,
+                page_end INTEGER,
+                chunk_text TEXT NOT NULL,
+                char_count INTEGER NOT NULL DEFAULT 0,
+                token_count INTEGER NOT NULL DEFAULT 0,
+                chunk_hash TEXT NOT NULL,
+                index_version TEXT NOT NULL DEFAULT 'paper_chunks.v1',
+                embedding_model TEXT NOT NULL DEFAULT '',
+                embedding_dimensions INTEGER NOT NULL DEFAULT 0,
+                embedding_json TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
@@ -209,6 +234,10 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_paper_memories_project_id ON paper_memories(project_id);
             CREATE INDEX IF NOT EXISTS idx_paper_memories_direction ON paper_memories(project_id, direction);
             CREATE INDEX IF NOT EXISTS idx_direction_memories_project_id ON direction_memories(project_id);
+            CREATE INDEX IF NOT EXISTS idx_paper_chunks_project_id ON paper_chunks(project_id);
+            CREATE INDEX IF NOT EXISTS idx_paper_chunks_paper_id ON paper_chunks(project_id, paper_id, chunk_index);
+            CREATE INDEX IF NOT EXISTS idx_paper_chunks_locator ON paper_chunks(project_id, section, page_start);
+            CREATE INDEX IF NOT EXISTS idx_paper_chunks_hash ON paper_chunks(project_id, paper_id, chunk_hash);
             CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id);
             CREATE INDEX IF NOT EXISTS idx_agent_runs_project_id ON agent_runs(project_id);
             CREATE INDEX IF NOT EXISTS idx_agent_runs_session_id ON agent_runs(session_id);
