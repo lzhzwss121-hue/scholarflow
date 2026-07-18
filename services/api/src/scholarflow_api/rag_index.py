@@ -365,6 +365,16 @@ def paper_index_status(
     )
     evidence_level = "full_text" if "full_text" in levels else ("abstract_only" if rows else "metadata_only")
     embedded_count = sum(1 for row in rows if str(row.get("embedding_json") or ""))
+    embedding_models = {
+        str(row.get("embedding_model") or "")
+        for row in rows
+        if str(row.get("embedding_json") or "")
+    }
+    embedding_dimensions = {
+        int(row.get("embedding_dimensions") or 0)
+        for row in rows
+        if str(row.get("embedding_json") or "")
+    }
     embedding_status = (
         "ready"
         if rows and embedded_count == len(rows)
@@ -382,6 +392,17 @@ def paper_index_status(
         "indexed_at": max((str(row.get("updated_at") or "") for row in rows), default=""),
         "index_version": str(rows[0].get("index_version") or "") if rows else RAG_INDEX_VERSION,
         "embedding_status": embedding_status,
+        "embedded_chunks": embedded_count,
+        "embedding_model": (
+            next(iter(embedding_models))
+            if len(embedding_models) == 1
+            else ("mixed" if embedding_models else "")
+        ),
+        "embedding_dimensions": (
+            next(iter(embedding_dimensions))
+            if len(embedding_dimensions) == 1
+            else 0
+        ),
         "message": message,
     }
 
@@ -399,6 +420,10 @@ def project_index_status(connection: sqlite3.Connection, project_id: str) -> dic
             SUM(CASE WHEN evidence_level = 'full_text' THEN 1 ELSE 0 END) AS full_text_chunks,
             SUM(CASE WHEN evidence_level = 'abstract_only' THEN 1 ELSE 0 END) AS abstract_chunks,
             SUM(CASE WHEN embedding_json <> '' THEN 1 ELSE 0 END) AS embedded_chunks,
+            COUNT(DISTINCT CASE WHEN embedding_json <> '' THEN embedding_model END) AS embedding_models,
+            MIN(CASE WHEN embedding_json <> '' THEN embedding_model END) AS embedding_model,
+            COUNT(DISTINCT CASE WHEN embedding_json <> '' THEN embedding_dimensions END) AS embedding_dimension_counts,
+            MIN(CASE WHEN embedding_json <> '' THEN embedding_dimensions END) AS embedding_dimensions,
             MAX(updated_at) AS latest_indexed_at
         FROM paper_chunks
         WHERE project_id = ?
@@ -431,6 +456,17 @@ def project_index_status(connection: sqlite3.Connection, project_id: str) -> dic
         "latest_indexed_at": str(aggregate["latest_indexed_at"] or ""),
         "index_version": RAG_INDEX_VERSION,
         "embedding_status": embedding_status,
+        "embedded_chunks": embedded_chunks,
+        "embedding_model": (
+            str(aggregate["embedding_model"] or "")
+            if int(aggregate["embedding_models"] or 0) <= 1
+            else "mixed"
+        ),
+        "embedding_dimensions": (
+            int(aggregate["embedding_dimensions"] or 0)
+            if int(aggregate["embedding_dimension_counts"] or 0) <= 1
+            else 0
+        ),
     }
 
 

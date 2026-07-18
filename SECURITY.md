@@ -21,6 +21,8 @@ For non-sensitive bugs, use the public bug report template.
 - External API integrations must preserve source URLs and warnings so users can audit where data came from.
 - Future model-provider integrations should make external data transfer explicit and configurable.
 - Parsed paper text is stored locally as traceable chunks in the configured ScholarFlow SQLite database. The original uploaded PDF is not persisted, but deleting the PDF file does not delete already indexed chunks; call `DELETE /projects/{project_id}/papers/{paper_id}/rag-index` or remove the local database when the derived text must be erased.
+- RAG phase 2 defaults to `SCHOLARFLOW_RAG_EMBEDDING_PROVIDER=local`, which computes deterministic hash embeddings on the same machine. If an operator explicitly selects `openrouter`, the selected paper chunks and each retrieval query are sent to the configured OpenRouter endpoint. Review the provider's retention policy, access controls, billing, and the sensitivity of the papers before enabling it.
+- Embedding vectors are derived local data and remain in SQLite until their paper index, project, or database is deleted. Rebuilding an index replaces the old chunk vectors.
 
 ## Current Boundary
 

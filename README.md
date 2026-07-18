@@ -157,9 +157,9 @@ ScholarFlow 会把真实摘要或已验证 PDF 文本切成项目隔离的 `pape
 - `metadata.abstract`、`pdf.full_text` 或 `user_provided.full_text` 证据来源。
 - PDF section、起止页码和原文内容。
 - chunk 顺序、字符数、token 估算和 SHA-256 校验值。
-- 索引版本以及尚未填充的 embedding 模型、维度和向量字段。
+- 索引版本以及 embedding 模型、维度和向量字段。
 
-论文刚进入 Paper Table 时，存在真实摘要就建立 `abstract_only` 索引；开放 PDF、上传 PDF 或绑定论文的手动正文成功达到全文阈值后，会原子替换为 `full_text` 索引。重复检索不会把已经建立的全文索引降级为摘要索引。当前阶段尚未计算 embedding，也尚未用大模型生成 RAG 回答，`embedding_status=not_started` 是正常状态。
+论文刚进入 Paper Table 时，存在真实摘要就建立 `abstract_only` 索引；开放 PDF、上传 PDF 或绑定论文的手动正文成功达到全文阈值后，会原子替换为 `full_text` 索引。重复检索不会把已经建立的全文索引降级为摘要索引。新建或重建 chunk 后，`embedding_status=not_started` 是正常状态；第二阶段的检索或显式 embedding 接口会补齐向量。
 
 可以通过 OpenAPI 文档调用以下接口：
 
@@ -172,6 +172,46 @@ DELETE /projects/{project_id}/papers/{paper_id}/rag-index
 ```
 
 手动重建时，POST body 可以提供 `{"paper_text": "..."}`；留空则重新尝试获取论文的开放 PDF。失败的重建不会删除已有的高等级索引。`DELETE` 只清除该论文的本地 chunks，不会删除论文记录、Paper Card 或 Memory。
+
+#### RAG 第二阶段：本地向量与证据级混合检索
+
+第二阶段只负责“找出可引用的证据”，尚不让大模型根据这些证据生成回答。这样可以先单独检查召回质量，避免把低相关 chunk 包装成可信科研结论。
+
+默认 `SCHOLARFLOW_RAG_EMBEDDING_PROVIDER=local`，使用确定性的本地 hash embedding：
+
+- 不需要 API key，论文文本和查询不会离开本机。
+- 同时使用中英文词元、中文字符/二元组和英文词组，适合作为零配置 lexical-semantic fallback。
+- 它不是训练得到的语义模型，跨术语改写的召回能力有限；需要更强语义检索时可显式切换 OpenRouter。
+
+设为 `openrouter` 后，系统调用 OpenRouter 的 `/embeddings`，默认模型是 `qwen/qwen3-embedding-8b`。此时待生成向量的论文 chunk 和用户查询会发送给外部服务，可能产生费用；私有论文启用前应先检查数据策略。设为 `disabled` 时仍可使用关键词检索，但响应会明确标记为 `partial` 和 `lexical_only`。
+
+可用接口：
+
+```text
+POST /projects/{project_id}/rag-index/embeddings
+POST /projects/{project_id}/papers/{paper_id}/rag-index/embeddings
+POST /projects/{project_id}/rag-search
+```
+
+embedding 请求 body 默认为 `{"force": false}`，只处理缺失或模型不匹配的向量；`force=true` 会重算选定范围。检索会默认惰性补齐缺失向量，也可以传 `refresh_embeddings=false` 只使用已有向量和关键词。
+
+最小检索示例：
+
+```bash
+curl -X POST http://127.0.0.1:8000/projects/PROJECT_ID/rag-search \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query": "哪些证据支持该方法能降低 object hallucination？",
+    "top_k": 6,
+    "evidence_levels": ["abstract_only", "full_text"],
+    "min_score": 0.18,
+    "max_chunks_per_paper": 3
+  }'
+```
+
+每个 hit 都返回 `paper_id`、论文元数据、chunk hash、原文、证据等级、section、页码、`lexical_score`、`vector_score`、`hybrid_score` 和稳定的 `citation_id`。检索严格限制在当前 `project_id`，还可以通过 `paper_ids`、`evidence_levels`、`sections` 缩小范围。低于 `min_score` 的候选不会返回；没有可靠证据时状态为 `no_reliable_hit`，`hits=[]`。
+
+`complete` 仅表示本次混合检索所需向量齐全且存在过阈值证据，不表示论文结论正确，也不表示系统已生成或验证答案。`partial` 表示降级到关键词检索、embedding 失败或存在其他警告。
 
 ### 7. Gap Board
 
@@ -548,6 +588,7 @@ Direction Review 会独立检索候选并尝试并发下载开放 PDF，通常�
 | --- | --- | --- |
 | `OPENROUTER_API_KEY` | 空 | 为空时使用本地确定性 Research Plan；非空时调用 OpenRouter |
 | `OPENROUTER_MODEL` | `minimax/minimax-m2.5` | OpenRouter Chat Completions 使用的模型 |
+| `OPENROUTER_RAG_MODEL` | `qwen/qwen3-embedding-8b` | 仅在 RAG embedding provider 为 OpenRouter 时使用 |
 | `OPENROUTER_TIMEOUT_SECONDS` | 示例为 `25` | OpenRouter 后端超时；应低于前端普通请求的 30 秒超时 |
 | `OPENALEX_API_KEY` | 空 | 正常使用 OpenAlex 时强烈建议配置的免费 Key；匿名额度很小 |
 | `SCHOLARFLOW_DB_PATH` | `services/api/.data/scholarflow.sqlite3` | 手动模式 SQLite 路径；CLI 会覆盖它 |
@@ -559,6 +600,9 @@ Direction Review 会独立检索候选并尝试并发下载开放 PDF，通常�
 | `SCHOLARFLOW_RAG_CHUNK_SIZE` | `1400` | RAG 第一阶段单个原文 chunk 的目标字符上限 |
 | `SCHOLARFLOW_RAG_CHUNK_OVERLAP` | `180` | 相邻 chunk 的字符重叠，最大不会超过 chunk size 的三分之一 |
 | `SCHOLARFLOW_RAG_MIN_CHUNK_CHARS` | `120` | 多 chunk 文本中需要合并的过短尾段阈值 |
+| `SCHOLARFLOW_RAG_EMBEDDING_PROVIDER` | `local` | `local` 本机 hash embedding、`openrouter` 外部语义 embedding、`disabled` 仅关键词 |
+| `SCHOLARFLOW_RAG_LOCAL_DIMENSIONS` | `384` | 本地 hash embedding 维度，限制在 64-2048 |
+| `SCHOLARFLOW_RAG_EMBEDDING_BATCH_SIZE` | `16` | OpenRouter 每批发送的 chunk 数，限制在 1-64 |
 
 当前未实现直接 DeepSeek/OpenAI HTTP provider，也未实现 Semantic Scholar/Crossref 检索。相关预留变量即使写入 `.env` 也不会启用这些服务。
 

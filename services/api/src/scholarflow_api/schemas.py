@@ -347,6 +347,9 @@ class PaperChunkIndexStatus(BaseModel):
     indexed_at: str = ""
     index_version: str = "paper_chunks.v1"
     embedding_status: Literal["not_started", "partial", "ready"] = "not_started"
+    embedded_chunks: int = 0
+    embedding_model: str = ""
+    embedding_dimensions: int = 0
     message: str = ""
 
 
@@ -361,6 +364,84 @@ class ProjectRagIndexStatus(BaseModel):
     latest_indexed_at: str = ""
     index_version: str = "paper_chunks.v1"
     embedding_status: Literal["not_started", "partial", "ready"] = "not_started"
+    embedded_chunks: int = 0
+    embedding_model: str = ""
+    embedding_dimensions: int = 0
+
+
+class RagEmbeddingRequest(BaseModel):
+    force: bool = False
+
+
+class RagEmbeddingStatus(BaseModel):
+    scope: Literal["project", "paper"]
+    project_id: str
+    paper_id: str | None = None
+    provider: str = ""
+    model: str = ""
+    dimensions: int = 0
+    requested_chunks: int = 0
+    embedded_chunks: int = 0
+    skipped_chunks: int = 0
+    failed_chunks: int = 0
+    status: Literal["not_started", "ready", "partial", "failed"] = "not_started"
+    external_data_transfer: bool = False
+    warnings: list[str] = Field(default_factory=list)
+
+
+class RagSearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=1000)
+    top_k: int = Field(default=6, ge=1, le=20)
+    paper_ids: list[str] = Field(default_factory=list, max_length=100)
+    evidence_levels: list[EvidenceLevel] = Field(
+        default_factory=lambda: ["abstract_only", "full_text"],
+        max_length=3,
+    )
+    sections: list[str] = Field(default_factory=list, max_length=30)
+    min_score: float = Field(default=0.18, ge=0.0, le=1.0)
+    max_chunks_per_paper: int = Field(default=3, ge=1, le=10)
+    refresh_embeddings: bool = True
+
+
+class RagSearchHit(BaseModel):
+    rank: int
+    citation_id: str
+    paper_id: str
+    paper_title: str
+    paper_authors: str = ""
+    paper_year: str = ""
+    paper_venue: str = ""
+    paper_url: str = ""
+    chunk_id: str
+    chunk_index: int
+    chunk_hash: str
+    source: str
+    source_origin: str = ""
+    evidence_level: EvidenceLevel
+    section: str
+    page_start: int | None = None
+    page_end: int | None = None
+    text: str
+    lexical_score: float
+    vector_score: float
+    hybrid_score: float
+
+
+class RagSearchResponse(BaseModel):
+    query: str
+    status: Literal["complete", "partial", "no_reliable_hit", "failed"]
+    retrieval_mode: Literal["hybrid", "lexical_only"]
+    provider: str = ""
+    embedding_model: str = ""
+    embedding_dimensions: int = 0
+    external_data_transfer: bool = False
+    candidate_chunks: int = 0
+    vector_ready_chunks: int = 0
+    returned_hits: int = 0
+    top_k: int
+    min_score: float
+    hits: list[RagSearchHit] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class DirectionReviewRequest(BaseModel):

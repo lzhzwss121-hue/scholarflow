@@ -84,6 +84,12 @@ from scholarflow_api.rag_index import (
     paper_index_status,
     project_index_status,
 )
+from scholarflow_api.rag_retrieval import (
+    EmbeddingError,
+    embed_project_chunks,
+    get_embedding_provider,
+    retrieve_project_chunks,
+)
 from scholarflow_api.schemas import (
     AgentExecuteRequest,
     AgentExecuteResponse,
@@ -111,6 +117,10 @@ from scholarflow_api.schemas import (
     Project,
     ProjectCreate,
     ProjectRagIndexStatus,
+    RagEmbeddingRequest,
+    RagEmbeddingStatus,
+    RagSearchRequest,
+    RagSearchResponse,
     ResearchSight,
     ResearchDecisionRequest,
     ResearchDecisionResponse,
@@ -1183,6 +1193,67 @@ def get_project_rag_index_status(project_id: str) -> ProjectRagIndexStatus:
     return ProjectRagIndexStatus.model_validate(status)
 
 
+@app.post(
+    "/projects/{project_id}/rag-index/embeddings",
+    response_model=RagEmbeddingStatus,
+)
+def embed_project_rag_index(
+    project_id: str,
+    payload: RagEmbeddingRequest,
+) -> RagEmbeddingStatus:
+    ensure_project_exists(project_id)
+    try:
+        provider = get_embedding_provider()
+    except EmbeddingError as error:
+        with get_connection() as connection:
+            chunk_count = int(project_index_status(connection, project_id)["total_chunks"])
+        return RagEmbeddingStatus(
+            scope="project",
+            project_id=project_id,
+            status="failed",
+            requested_chunks=chunk_count,
+            failed_chunks=chunk_count,
+            warnings=[str(error)],
+        )
+    with get_connection() as connection:
+        run = embed_project_chunks(
+            connection,
+            project_id=project_id,
+            force=payload.force,
+            provider=provider,
+        )
+    return RagEmbeddingStatus(
+        scope="project",
+        project_id=project_id,
+        **run.to_dict(),
+    )
+
+
+@app.post(
+    "/projects/{project_id}/rag-search",
+    response_model=RagSearchResponse,
+)
+def search_project_rag(
+    project_id: str,
+    payload: RagSearchRequest,
+) -> RagSearchResponse:
+    ensure_project_exists(project_id)
+    with get_connection() as connection:
+        result = retrieve_project_chunks(
+            connection,
+            project_id=project_id,
+            query=payload.query,
+            top_k=payload.top_k,
+            paper_ids=payload.paper_ids,
+            evidence_levels=payload.evidence_levels,
+            sections=payload.sections,
+            min_score=payload.min_score,
+            max_chunks_per_paper=payload.max_chunks_per_paper,
+            refresh_embeddings=payload.refresh_embeddings,
+        )
+    return RagSearchResponse.model_validate(result)
+
+
 @app.get(
     "/projects/{project_id}/papers/{paper_id}/rag-index",
     response_model=PaperChunkIndexStatus,
@@ -1192,6 +1263,47 @@ def get_paper_rag_index_status(project_id: str, paper_id: str) -> PaperChunkInde
         fetch_paper_dict(connection, project_id, paper_id)
         status = paper_index_status(connection, project_id, paper_id)
     return PaperChunkIndexStatus.model_validate(status)
+
+
+@app.post(
+    "/projects/{project_id}/papers/{paper_id}/rag-index/embeddings",
+    response_model=RagEmbeddingStatus,
+)
+def embed_project_paper_rag_index(
+    project_id: str,
+    paper_id: str,
+    payload: RagEmbeddingRequest,
+) -> RagEmbeddingStatus:
+    with get_connection() as connection:
+        fetch_paper_dict(connection, project_id, paper_id)
+    try:
+        provider = get_embedding_provider()
+    except EmbeddingError as error:
+        with get_connection() as connection:
+            chunk_count = int(paper_index_status(connection, project_id, paper_id)["chunk_count"])
+        return RagEmbeddingStatus(
+            scope="paper",
+            project_id=project_id,
+            paper_id=paper_id,
+            status="failed",
+            requested_chunks=chunk_count,
+            failed_chunks=chunk_count,
+            warnings=[str(error)],
+        )
+    with get_connection() as connection:
+        run = embed_project_chunks(
+            connection,
+            project_id=project_id,
+            paper_id=paper_id,
+            force=payload.force,
+            provider=provider,
+        )
+    return RagEmbeddingStatus(
+        scope="paper",
+        project_id=project_id,
+        paper_id=paper_id,
+        **run.to_dict(),
+    )
 
 
 @app.get(
