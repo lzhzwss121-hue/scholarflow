@@ -237,6 +237,20 @@ export interface ApiResearchSightJudgment {
   rationale: string;
 }
 
+export interface ApiBaselineVerification {
+  evidence_level: string;
+  selection_basis: string;
+  citation_status: string;
+  citation_note: string;
+  code_status: string;
+  code_url: string;
+  code_source: string;
+  reproduction_status: string;
+  checks: Record<string, string>;
+  missing_evidence: string[];
+  summary: string;
+}
+
 export interface ApiBaselineReference {
   title: string;
   year: string;
@@ -244,12 +258,14 @@ export interface ApiBaselineReference {
   source: string;
   url: string;
   category: string;
+  method_family?: string;
   reason: string;
   strengths: string;
   risks: string;
   evidence_snippets: ApiEvidenceSnippet[];
   confidence: string;
   evidence_gap: string;
+  verification?: ApiBaselineVerification;
 }
 
 export interface ApiBaselineMap {

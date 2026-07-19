@@ -229,6 +229,20 @@ class ResearchSightJudgment(BaseModel):
     rationale: str = ""
 
 
+class BaselineVerification(BaseModel):
+    evidence_level: str = "metadata_only"
+    selection_basis: str = "metadata_candidate"
+    citation_status: str = "not_checked"
+    citation_note: str = ""
+    code_status: str = "not_found"
+    code_url: str = ""
+    code_source: str = ""
+    reproduction_status: str = "blocked"
+    checks: dict[str, str] = Field(default_factory=dict)
+    missing_evidence: list[str] = Field(default_factory=list)
+    summary: str = ""
+
+
 class BaselineReference(BaseModel):
     title: str
     year: str
@@ -236,12 +250,14 @@ class BaselineReference(BaseModel):
     source: str
     url: str
     category: str
+    method_family: str = ""
     reason: str
     strengths: str
     risks: str
     evidence_snippets: list[EvidenceSnippet] = Field(default_factory=list)
     confidence: str = ""
     evidence_gap: str = ""
+    verification: BaselineVerification = Field(default_factory=BaselineVerification)
 
 
 class BaselineMap(BaseModel):

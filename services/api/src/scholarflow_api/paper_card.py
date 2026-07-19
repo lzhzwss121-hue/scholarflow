@@ -255,6 +255,7 @@ DATASET_NAMES = [
     "Urban100",
     "Manga109",
     "DIV2K",
+    "EndoVis-18",
 ]
 
 METRIC_NAMES = [
@@ -303,6 +304,25 @@ METRIC_ALIASES = {
 }
 
 DATASET_ALIASES = {name: [name] for name in DATASET_NAMES}
+DATASET_ALIASES.pop("CHAIRs", None)
+DATASET_ALIASES["CHAIR"] = ["CHAIR", "CHAIRs"]
+DATASET_ALIASES["MMHal-Bench"] = ["MMHal-Bench", "MMHalBench"]
+DATASET_ALIASES["LLaVA-Bench"] = ["LLaVA-Bench", "LLaV A-Bench"]
+
+BASELINE_ALIASES = {
+    "LLaVA-1.5": ["LLaVA-1.5", "LLaVA 1.5", "LLaV A-1.5", "LLaV A 1.5"],
+    "LLaVA": ["LLaVA", "LLaV A"],
+    "InstructBLIP": ["InstructBLIP", "Instruct-BLIP"],
+    "BLIP-2": ["BLIP-2", "BLIP2"],
+    "MiniGPT-4": ["MiniGPT-4", "MiniGPT4"],
+    "GPT-4V": ["GPT-4V", "GPT4V"],
+    "GPT-4o": ["GPT-4o", "GPT4o"],
+    "Qwen2.5-VL": ["Qwen2.5-VL", "Qwen2.5 VL"],
+    "Qwen2-VL": ["Qwen2-VL", "Qwen2 VL"],
+    "Qwen-VL": ["Qwen-VL", "Qwen VL"],
+    "mPLUG-Owl": ["mPLUG-Owl"],
+    "CLIPScore": ["CLIPScore", "CLIP Score"],
+}
 
 METHOD_MARKERS = [
     "we propose",
@@ -640,9 +660,9 @@ def extract_method_signal_from_segments(
             "综述/调研型贡献：主要方法应是组织、比较和归纳已有文献，而不是提出可训练模型。",
             None,
         )
-    hit = find_segment_sentence(
+    hit = find_ranked_own_sentence(
         segments,
-        METHOD_MARKERS,
+        purpose="method",
         allowed_sections={"abstract", "method", "experiments", "unknown"},
     )
     if hit:
@@ -650,9 +670,9 @@ def extract_method_signal_from_segments(
         value = f"方法证据：{sentence}"
         return value, make_signal_evidence("method", value, sentence, segment)
     if contribution_type == "benchmark":
-        hit = find_segment_sentence(
+        hit = find_ranked_own_sentence(
             segments,
-            ["we construct", "we build", "we introduce", "benchmark", "dataset", "evaluation protocol"],
+            purpose="benchmark",
             allowed_sections={"abstract", "method", "experiments", "unknown"},
         )
         if hit:
@@ -778,13 +798,24 @@ def extract_baseline_signal_from_segments(
     for segment in segments:
         if segment.section not in {"abstract", "method", "experiments", "results", "unknown"}:
             continue
+        searchable_text = re.sub(r"(?<=\d)\.(?=\d)", "__DECIMAL_DOT__", segment.text)
         for pattern in patterns:
-            match = re.search(pattern, segment.text)
+            match = re.search(pattern, searchable_text)
             if match:
-                raw_value = truncate_text(match.group(1), 180)
+                raw_value = truncate_text(match.group(1).replace("__DECIMAL_DOT__", "."), 180)
+                baseline_names = extract_baseline_names(raw_value)
+                if not baseline_names:
+                    continue
                 quote = sentence_containing_offset(segment.text, match.start())
-                value = f"Baseline evidence: {raw_value}"
-                return value, make_signal_evidence("baseline", value, raw_value, segment, quote=quote)
+                canonical_value = ", ".join(baseline_names)
+                value = f"Baseline evidence: {canonical_value}"
+                return value, make_signal_evidence(
+                    "baseline",
+                    value,
+                    canonical_value,
+                    segment,
+                    quote=quote,
+                )
     return insufficient("未发现 Baseline:, compared with, outperform, vs. 或 comparison 等对照信号"), None
 
 
@@ -792,9 +823,9 @@ def extract_claim_signal_from_segments(
     segments: list[EvidenceSegment],
     title: str,
 ) -> tuple[str, SignalEvidence | None]:
-    hit = find_segment_sentence(
+    hit = find_ranked_own_sentence(
         segments,
-        CLAIM_MARKERS,
+        purpose="claim",
         allowed_sections={"abstract", "results", "conclusion", "unknown"},
     )
     if hit:
@@ -884,6 +915,181 @@ def find_segment_sentence(
     return None
 
 
+def find_ranked_own_sentence(
+    segments: list[EvidenceSegment],
+    *,
+    purpose: str,
+    allowed_sections: set[str],
+) -> tuple[EvidenceSegment, str] | None:
+    title = next((segment.text for segment in segments if segment.source == "metadata.title"), "")
+    title_identifiers = {
+        token.lower()
+        for token in re.findall(r"(?<![A-Za-z0-9])[A-Z][A-Z0-9-]{3,}(?![A-Za-z0-9])", title)
+        if token.lower() not in {"this", "with", "from"}
+    }
+    ranked: list[tuple[int, int, EvidenceSegment, str]] = []
+    for segment_index, segment in enumerate(segments):
+        if segment.section not in allowed_sections:
+            continue
+        for sentence in split_sentences(segment.text):
+            lower = sentence.lower()
+            if re.search(
+                r"\bwe\s+(?:first\s+)?(?:introduce|present|provide|describe)\b"
+                r".{0,50}\b(?:experimental|implementation)\s+(?:setup|details?|settings?|results?)\b",
+                lower,
+            ):
+                continue
+            own_method = bool(
+                re.search(
+                    r"\b(?:we|this (?:paper|work)|our (?:method|approach|framework|model|system|algorithm))\b"
+                    r".{0,80}\b(?:propose|introduce|present|develop|design|build|construct|use|employ|consist|comprise)",
+                    lower,
+                )
+            ) or bool(
+                re.search(
+                    r"\bwe\s+(?:propose|introduce|present|develop|design|build|construct)\b",
+                    lower,
+                )
+            )
+            own_claim = bool(
+                re.search(
+                    r"\bwe\s+(?:show|demonstrate|find|reveal|observe|achieve|outperform)\b",
+                    lower,
+                )
+            ) or bool(
+                re.search(
+                    r"\bour (?:method|approach|framework|model|system|algorithm)\b"
+                    r".{0,100}\b(?:improves?|outperforms?|achieves?|reduces?|mitigates?)\b",
+                    lower,
+                )
+            )
+            benchmark_ownership = bool(
+                re.search(
+                    r"\bwe\s+(?:introduce|present|build|construct|release|develop)\b"
+                    r".{0,120}\b(?:benchmark|dataset|evaluation (?:protocol|suite|set))\b",
+                    lower,
+                )
+            )
+            prior_work = is_prior_work_sentence(sentence)
+            if purpose == "method":
+                relevant = own_method and not benchmark_ownership
+            elif purpose == "benchmark":
+                relevant = benchmark_ownership
+            else:
+                relevant = own_claim
+            if not relevant or prior_work:
+                continue
+            score = 8
+            if segment.section == "method" and purpose == "method":
+                score += 5
+            if segment.section in {"results", "conclusion"} and purpose == "claim":
+                score += 5
+            if segment.section == "abstract":
+                score += 3
+            if purpose == "method":
+                if re.search(r"\b(?:propose|introduce|develop|design)\b", lower):
+                    score += 4
+                elif re.search(r"\b(?:present|build|construct)\b", lower):
+                    score += 3
+                if re.search(r"\b(?:use|employ)\b", lower):
+                    score -= 2
+                if any(
+                    re.search(r"(?<![a-z0-9])" + re.escape(identifier) + r"(?![a-z0-9])", lower)
+                    for identifier in title_identifiers
+                ):
+                    score += 6
+            if re.search(r"\[[0-9,\s-]+\]", sentence):
+                score -= 2
+            ranked.append((score, -segment_index, segment, truncate_text(sentence)))
+    if not ranked:
+        return None
+    _score, _order, segment, sentence = max(ranked, key=lambda item: (item[0], item[1]))
+    return segment, sentence
+
+
+def is_prior_work_sentence(sentence: str) -> bool:
+    lower = normalize_space(sentence).lower()
+    prior_subjects = [
+        "existing method",
+        "existing approach",
+        "previous method",
+        "previous approach",
+        "prior work",
+        "prior method",
+        "other method",
+        "several approach",
+        "recent method",
+        "current method",
+        "conventional method",
+    ]
+    background_openers = [
+        "although several",
+        "although existing",
+        "while existing",
+        "despite recent",
+        "methods such as",
+        "approaches such as",
+    ]
+    return any(marker in lower for marker in [*prior_subjects, *background_openers])
+
+
+def extract_baseline_names(raw_value: str) -> list[str]:
+    normalized = normalize_space(raw_value)
+    normalized = re.sub(r"\bLLaV\s+A(?=[-\s]?\d|\b)", "LLaVA", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\[[0-9,\s-]+\]", " ", normalized)
+    found: list[tuple[int, str]] = []
+    occupied: list[tuple[int, int]] = []
+    aliases = sorted(
+        (
+            (canonical, alias)
+            for canonical, variants in BASELINE_ALIASES.items()
+            for alias in variants
+        ),
+        key=lambda item: len(item[1]),
+        reverse=True,
+    )
+    for canonical, alias in aliases:
+        pattern = r"(?<![A-Za-z0-9])" + re.escape(alias) + r"(?![A-Za-z0-9.-])"
+        for match in re.finditer(pattern, normalized, flags=re.IGNORECASE):
+            if any(start < match.end() and match.start() < end for start, end in occupied):
+                continue
+            found.append((match.start(), canonical))
+            occupied.append((match.start(), match.end()))
+
+    dataset_keys = {name.lower() for name in DATASET_NAMES}
+    generic_tokens = {
+        "baseline",
+        "baselines",
+        "method",
+        "methods",
+        "model",
+        "models",
+        "accuracy",
+        "margin",
+        "score",
+        "state-of-the-art",
+        "vlm",
+        "vlms",
+        "lvlm",
+        "lvlms",
+    }
+    for match in re.finditer(
+        r"(?<![A-Za-z0-9])(?:[A-Z]{2,}[A-Za-z0-9.-]*|[A-Z][a-z]+[A-Z][A-Za-z0-9.-]*)(?![A-Za-z0-9])",
+        normalized,
+    ):
+        token = match.group(0).strip(".,:;()[]")
+        lower = token.lower()
+        if (
+            not token
+            or lower in dataset_keys
+            or lower in generic_tokens
+            or re.fullmatch(r"\d+(?:\.\d+)?", token)
+        ):
+            continue
+        found.append((match.start(), token))
+    return unique_preserve_order([value for _offset, value in sorted(found, key=lambda item: item[0])])[:8]
+
+
 def make_signal_evidence(
     field_name: str,
     canonical_value: str,
@@ -945,35 +1151,69 @@ def infer_contribution_type(title: str, abstract: str, paper_text: str, venue: s
             if any(re.search(pattern, sentence, flags=re.IGNORECASE) for pattern in survey_self_description_patterns):
                 return "survey", f"{source_name}证据：{truncate_text(sentence)}"
 
-    # The abstract is the paper's concise self-description. Prefer it over a
-    # body-wide keyword hit, where related-work citations can otherwise look
-    # like the paper's own contribution.
-    evidence_sources = [abstract_text, body_text, title_text, normalize_space(venue)]
-    benchmark_evidence = find_first_evidence_sentence(
-        evidence_sources,
-        ["benchmark", "dataset", "evaluation protocol", "evaluation suite"],
-    )
-    if benchmark_evidence:
-        return "benchmark", benchmark_evidence
+    evidence_sources = [abstract_text, body_text]
+    title_type_patterns = [
+        ("benchmark", [r"\bbenchmark\b", r"\bdataset\b"]),
+        (
+            "analysis",
+            [
+                r"\banalysis\b",
+                r"\bunderstanding\b",
+                r"\binvestigat(?:e|ing|ion)\b",
+                r"\bcharacteriz",
+                r"\bcircuits?\b",
+                r"\bwhat makes\b",
+            ],
+        ),
+        ("system", [r"\bagent\b", r"\bworkflow\b", r"\bsystem\b"]),
+    ]
+    for contribution_type, patterns in title_type_patterns:
+        if any(re.search(pattern, title_lower) for pattern in patterns):
+            evidence = find_owned_contribution_evidence(evidence_sources, contribution_type)
+            return contribution_type, evidence or f"标题证据：{truncate_text(title_text)}"
 
-    method_evidence = find_first_evidence_sentence(
-        evidence_sources,
-        ["we propose", "we introduce", "we present", "our method", "our framework", "architecture", "algorithm"],
-    )
+    method_evidence = find_owned_contribution_evidence(evidence_sources, "method")
+    benchmark_evidence = find_owned_contribution_evidence(evidence_sources, "benchmark")
+    analysis_evidence = find_owned_contribution_evidence(evidence_sources, "analysis")
+    system_evidence = find_owned_contribution_evidence(evidence_sources, "system")
     if method_evidence:
         return "method", method_evidence
-
-    analysis_evidence = find_first_evidence_sentence(
-        evidence_sources,
-        ["analysis", "analyze", "analyse", "investigate", "characterize", "study"],
-    )
+    if benchmark_evidence:
+        return "benchmark", benchmark_evidence
     if analysis_evidence:
         return "analysis", analysis_evidence
-
-    system_evidence = find_first_evidence_sentence(evidence_sources, ["agent", "workflow", "system"])
     if system_evidence:
         return "system", system_evidence
     return "unknown", "未发现可定位的贡献类型证据。"
+
+
+def find_owned_contribution_evidence(texts: list[str], contribution_type: str) -> str:
+    patterns = {
+        "method": [
+            r"\bwe\s+(?:propose|introduce|present|develop|design)\b"
+            r"(?![^.!?]{0,100}\b(?:benchmark|dataset|evaluation (?:protocol|suite|set))\b)",
+            r"\bour\s+(?:method|approach|framework|model|algorithm|intervention)\b",
+        ],
+        "benchmark": [
+            r"\bwe\s+(?:introduce|present|build|construct|release|develop)\b"
+            r".{0,120}\b(?:benchmark|dataset|evaluation (?:protocol|suite|set))\b",
+        ],
+        "analysis": [
+            r"\bwe\s+(?:analyze|analyse|investigate|characterize|study|examine)\b",
+            r"\bthis (?:paper|work)\s+(?:analyzes|analyses|investigates|characterizes|studies|examines)\b",
+        ],
+        "system": [
+            r"\bwe\s+(?:build|develop|introduce|present)\b.{0,100}\b(?:agent|workflow|system)\b",
+            r"\bour\s+(?:agent|workflow|system)\b",
+        ],
+    }
+    for text in texts:
+        for sentence in split_sentences(text):
+            if is_prior_work_sentence(sentence):
+                continue
+            if any(re.search(pattern, sentence, flags=re.IGNORECASE) for pattern in patterns[contribution_type]):
+                return f"贡献证据：{truncate_text(sentence)}"
+    return ""
 
 
 def find_first_evidence_sentence(texts: list[str], markers: list[str]) -> str:

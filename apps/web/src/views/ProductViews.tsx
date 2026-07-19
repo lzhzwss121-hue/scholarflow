@@ -3720,6 +3720,34 @@ function buildDirectionSummaryPreview(value: string, maxLength = 340): string {
   return `${candidate.slice(0, cutoff).trimEnd()}…`;
 }
 
+const baselineCheckLabels: Record<string, string> = {
+  full_text: "PDF 全文",
+  method: "方法证据",
+  dataset: "数据集",
+  metric: "指标",
+  baseline: "对照方法",
+  code: "代码仓库",
+};
+
+function formatBaselineVerificationValue(value: string): string {
+  return (
+    {
+      ready: "已具备",
+      partial: "部分具备",
+      blocked: "阻塞",
+      missing: "缺失",
+      unverified: "未核验",
+      not_checked: "未检查",
+      link_present: "已发现链接",
+      claimed_unverified: "仅有声明",
+      not_found: "未发现",
+      full_text: "PDF 全文",
+      abstract_only: "仅摘要",
+      metadata_only: "仅元数据",
+    }[value] ?? value.replace(/_/g, " ")
+  );
+}
+
 function BaselineReferenceList({
   references,
   title,
@@ -3732,11 +3760,56 @@ function BaselineReferenceList({
       <strong>{title}</strong>
       {references.length ? (
         references.slice(0, 3).map((reference, index) => (
-          <article key={`${title}-${reference.title}-${reference.year}-${index}`}>
-            <span>{reference.year || "year unknown"} · {reference.confidence || "unknown"} confidence</span>
+          <article
+            data-testid={`baseline-reference-${reference.category}-${index}`}
+            key={`${title}-${reference.title}-${reference.year}-${index}`}
+          >
+            <span>
+              {reference.year || "year unknown"} · {reference.method_family || reference.category} ·{" "}
+              {reference.confidence || "unknown"} confidence
+            </span>
             <h4>{reference.title}</h4>
             <p>{reference.reason}</p>
             <small>{reference.evidence_gap}</small>
+            {reference.verification ? (
+              <details
+                className="baseline-verification"
+                aria-label={`验证与复现条件：${reference.title}`}
+              >
+                <summary>
+                  <span>验证与复现条件</span>
+                  <strong data-status={reference.verification.reproduction_status}>
+                    {formatBaselineVerificationValue(reference.verification.reproduction_status)}
+                  </strong>
+                </summary>
+                <div className="baseline-verification-body">
+                  <p>{reference.verification.summary}</p>
+                  <dl>
+                    {Object.entries(reference.verification.checks).map(([check, status]) => (
+                      <div key={check}>
+                        <dt>{baselineCheckLabels[check] ?? check}</dt>
+                        <dd data-status={status}>{formatBaselineVerificationValue(status)}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <p>
+                    引用关系：{formatBaselineVerificationValue(reference.verification.citation_status)}。
+                    {reference.verification.citation_note}
+                  </p>
+                  {reference.verification.code_url ? (
+                    <p>
+                      代码来源：{reference.verification.code_source || "unknown"} ·{" "}
+                      <a href={reference.verification.code_url} rel="noreferrer" target="_blank">
+                        打开代码仓库
+                      </a>
+                    </p>
+                  ) : null}
+                  {reference.verification.missing_evidence.length ? (
+                    <p>仍缺少：{reference.verification.missing_evidence.join("、")}。</p>
+                  ) : null}
+                </div>
+              </details>
+            ) : null}
           </article>
         ))
       ) : (
@@ -4635,8 +4708,9 @@ export function GapBoardView({
             <strong>系统识别的目标约束</strong>
             <span>研究类型：{decision.decision_intent.contribution_type}</span>
             <span>
-              目标关键词（锚点至少命中一项）：{decision.decision_intent.required_terms.join(" / ") || "未指定"}
+              候选匹配术语：{decision.decision_intent.required_terms.join(" / ") || "未指定"}
             </span>
+            <span>显式硬约束会在实验计划中逐项校验，缺少任意一项都不会标记为 ready。</span>
             <span>
               对照对象：{decision.decision_intent.contrast_terms.join(" / ") || "未指定"}
             </span>
@@ -4761,7 +4835,15 @@ export function ExperimentPlannerView({
         <div className="decision-header">
           <div>
             <p className="section-kicker">Experiment Plan</p>
-            <h2>{plan ? (isBlocked ? "缺少可复现实验 anchor" : "One-week Minimal Experiment") : "从 gap 生成实验计划"}</h2>
+            <h2>
+              {plan
+                ? isBlocked
+                  ? plan.anchor_paper_title
+                    ? "实验约束尚未满足"
+                    : "缺少可复现实验 anchor"
+                  : "One-week Minimal Experiment"
+                : "从 gap 生成实验计划"}
+            </h2>
           </div>
           <button
             className="secondary-command"
@@ -4805,7 +4887,7 @@ export function ExperimentPlannerView({
         <section className="experiment-blocked-banner" role="status" aria-label="experiment blocked reason">
           <AlertTriangle size={18} />
           <div>
-            <strong>实验计划已阻塞，不会生成伪计划</strong>
+            <strong>{plan.anchor_paper_title ? "实验硬约束未满足，不会标记为 ready" : "实验计划已阻塞，不会生成伪计划"}</strong>
             <p>
               {plan.anchor_paper_title
                 ? `锚点论文：${plan.anchor_paper_title}。`
@@ -4869,7 +4951,7 @@ export function ExperimentPlannerView({
                 {Object.entries(plan.readiness_checks).map(([key, value]) => (
                   <div key={key}>
                     <dt>{key}</dt>
-                    <dd className={value.startsWith("unknown:") ? "unknown" : "ready"}>{value}</dd>
+                    <dd className={value.startsWith("ready:") ? "ready" : "unknown"}>{value}</dd>
                   </div>
                 ))}
               </dl>
@@ -4928,10 +5010,16 @@ export function ExperimentPlannerView({
 
 function formatDecisionValue(value: unknown): string {
   if (Array.isArray(value)) {
-    return value.length ? value.map(String).join(" / ") : "无";
+    return value.length ? value.map(formatDecisionValue).join(" / ") : "无";
   }
   if (value === null || value === undefined || value === "") {
     return "未指定";
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    return entries.length
+      ? entries.map(([key, nestedValue]) => `${key}: ${formatDecisionValue(nestedValue)}`).join("；")
+      : "无";
   }
   return String(value);
 }

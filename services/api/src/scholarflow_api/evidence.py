@@ -180,7 +180,7 @@ def infer_missing_evidence(paper: dict[str, Any], sections: list[dict[str, Any]]
     missing: list[str] = []
     if not normalize_space(paper.get("abstract", "")):
         missing.append("缺少 abstract，当前判断只能基于标题和来源元数据。")
-    if not sections:
+    if not sections and not normalize_space(paper.get("full_text", "")):
         missing.append("缺少 12 条 paper card 或全文片段，方法和实验判断需要补充。")
     if "arxiv" in normalize_space(paper.get("venue", "")).lower() or "arxiv" in normalize_space(paper.get("source", "")).lower():
         missing.append("venue 仍是 arXiv/source 信号，顶会顶刊结论需要后续 metadata 验证。")

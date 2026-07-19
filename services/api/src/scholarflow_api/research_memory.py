@@ -453,10 +453,25 @@ def query_research_memory(
     direction: str = "",
 ) -> ResearchMemoryAnswer:
     backfill_project_research_memory(connection, project_id, now)
-    records = fetch_memory_records(connection, project_id, direction)
+    requested_direction = normalize_space(direction)
+    records = fetch_memory_records(connection, project_id, requested_direction)
+    resolved_direction = requested_direction
+    direction_fallback_used = False
+    if requested_direction and not records:
+        project_records = fetch_memory_records(connection, project_id)
+        available_directions = unique_memory_directions(project_records)
+        if len(available_directions) == 1:
+            records = project_records
+            resolved_direction = available_directions[0]
+            direction_fallback_used = True
     ranked_hits = search_memory_records(records, question, top_k)
-    snapshot = fetch_direction_memory_snapshot(connection, project_id, direction)
+    snapshot = fetch_direction_memory_snapshot(connection, project_id, resolved_direction)
     warnings: list[str] = []
+    if direction_fallback_used:
+        warnings.append(
+            f"请求方向 `{requested_direction}` 没有精确匹配；项目仅有一个记忆方向，"
+            f"已安全回退到 `{resolved_direction}`。"
+        )
     reliability_status = "reliable"
     reliability_reason = "命中至少一篇具有问题词项证据的 paper memory。"
     if not records:
@@ -505,6 +520,19 @@ def query_research_memory(
         claims=claims,
         unanswered_parts=unanswered_parts,
     )
+
+
+def unique_memory_directions(records: list[dict[str, Any]]) -> list[str]:
+    directions: list[str] = []
+    seen: set[str] = set()
+    for record in records:
+        direction = normalize_space(record.get("direction", ""))
+        key = direction.casefold()
+        if not direction or key in seen:
+            continue
+        seen.add(key)
+        directions.append(direction)
+    return directions
 
 
 def fetch_memory_records(connection, project_id: str, direction: str = "") -> list[dict[str, Any]]:

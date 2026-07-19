@@ -136,6 +136,37 @@ class PhaseThreeDecisionMemoryContractTest(unittest.TestCase):
         self.assertEqual(bundle.experiment.readiness_checks["code_or_api"], "unknown: 未发现可验证代码仓库或 API 权限信息")
         self.assertTrue(bundle.experiment.timeline[0].startswith("Day 1"))
 
+    def test_experiment_is_blocked_when_explicit_hard_constraints_are_missing(self) -> None:
+        paper = make_paper(
+            "paper_partial_anchor",
+            "DAMRO Object Hallucination Evaluation",
+            "A method for object hallucination evaluation with GPU inference.",
+        )
+        bundle = generate_research_decisions(
+            project={"title": "Hard constraint decision", "keyword": "object hallucination"},
+            papers=[paper],
+            paper_cards=[make_anchor_card("paper_partial_anchor", str(paper["title"]), "POPE")],
+            goal=(
+                "在 7 天内设计一个可在单张 24GB GPU 上完成的实验，"
+                "比较 attention-grounding 根因假设与 language-prior 根因假设；"
+                "必须包含 POPE 或 CHAIR、强 baseline、失败样本切片和证据忠实性指标。"
+            ),
+        )
+
+        self.assertEqual(bundle.experiment.status, "blocked")
+        self.assertEqual(bundle.experiment.anchor_paper_id, "paper_partial_anchor")
+        self.assertEqual(bundle.experiment.goal_alignment["status"], "mismatch")
+        self.assertIn("24GB", bundle.experiment.goal_alignment["missing_hard_constraints"])
+        self.assertIn("single GPU", bundle.experiment.goal_alignment["missing_hard_constraints"])
+        self.assertIn("attention-grounding", bundle.experiment.goal_alignment["missing_hard_constraints"])
+        self.assertIn("language-prior", bundle.experiment.goal_alignment["missing_hard_constraints"])
+        self.assertIn("failure sample slices", bundle.experiment.goal_alignment["missing_hard_constraints"])
+        self.assertIn("evidence faithfulness metric", bundle.experiment.goal_alignment["missing_hard_constraints"])
+        self.assertEqual(bundle.experiment.goal_alignment["hard_constraint_checks"]["POPE / CHAIR"], "ready")
+        self.assertEqual(bundle.experiment.goal_alignment["hard_constraint_checks"]["strong baseline"], "ready")
+        self.assertTrue(bundle.experiment.readiness_checks["goal_constraints"].startswith("blocked:"))
+        self.assertEqual(bundle.decision_status, "partial")
+
     def test_gap_evidence_uses_the_limitation_quote_and_locator(self) -> None:
         paper = make_paper("paper_grounded", "Grounded Limitation Paper", "A benchmark paper.")
         card = {
@@ -242,6 +273,58 @@ class PhaseThreeDecisionMemoryContractTest(unittest.TestCase):
         self.assertEqual(reference["page"], "9")
         self.assertIn("1 条回答证据直接来自 PDF 全文", answer.answer_summary)
         self.assertFalse(any("摘要证据" in item for item in answer.unanswered_parts))
+
+    def test_memory_query_safely_falls_back_to_the_only_saved_direction(self) -> None:
+        record = make_memory_record("paper_only_direction", "pdf.full_text", "full_text")
+        with patch.object(research_memory_module, "backfill_project_research_memory", return_value=0), patch.object(
+            research_memory_module,
+            "fetch_memory_records",
+            side_effect=[[], [record]],
+        ) as fetch_records, patch.object(
+            research_memory_module,
+            "fetch_direction_memory_snapshot",
+            return_value=None,
+        ) as fetch_snapshot:
+            answer = query_research_memory(
+                connection=None,
+                project_id="project_phase3",
+                question="What evidence explains object hallucination under visual grounding conflict?",
+                top_k=5,
+                now="2026-07-17T00:00:00Z",
+                direction="stale project keyword",
+            )
+
+        self.assertEqual(answer.total_memories, 1)
+        self.assertEqual(answer.reliability_status, "reliable")
+        self.assertTrue(any("已安全回退到 `object hallucination`" in warning for warning in answer.warnings))
+        self.assertEqual(fetch_records.call_count, 2)
+        fetch_snapshot.assert_called_once_with(None, "project_phase3", "object hallucination")
+
+    def test_memory_query_does_not_merge_multiple_directions_on_stale_filter(self) -> None:
+        first = make_memory_record("paper_direction_a", "pdf.full_text", "full_text")
+        second = make_memory_record("paper_direction_b", "pdf.full_text", "full_text")
+        second["direction"] = "medical hallucination"
+        with patch.object(research_memory_module, "backfill_project_research_memory", return_value=0), patch.object(
+            research_memory_module,
+            "fetch_memory_records",
+            side_effect=[[], [first, second]],
+        ), patch.object(
+            research_memory_module,
+            "fetch_direction_memory_snapshot",
+            return_value=None,
+        ):
+            answer = query_research_memory(
+                connection=None,
+                project_id="project_phase3",
+                question="What evidence explains object hallucination?",
+                top_k=5,
+                now="2026-07-17T00:00:00Z",
+                direction="stale project keyword",
+            )
+
+        self.assertEqual(answer.total_memories, 0)
+        self.assertEqual(answer.reliability_status, "no_memory")
+        self.assertFalse(any("已安全回退" in warning for warning in answer.warnings))
 
 
 if __name__ == "__main__":

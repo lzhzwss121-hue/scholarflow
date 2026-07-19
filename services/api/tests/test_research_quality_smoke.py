@@ -881,7 +881,31 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                     ],
                     errors=[],
                 )
-                with patch.object(direction_review_module, "search_literature", return_value=fake_result):
+                from scholarflow_api.full_text import FullTextResult
+
+                extracted_text = (
+                    "[PDF page 3]\n[Section: method]\n"
+                    "We introduce the CounterFaith benchmark and its paired-image evaluation protocol.\n"
+                    "[PDF page 7]\n[Section: experiments]\n"
+                    "Dataset: POPE. Metric: accuracy. Baselines include LLaVA and InstructBLIP.\n"
+                ) * 8
+                extracted = FullTextResult(
+                    status="extracted",
+                    pdf_url="https://arxiv.org/pdf/2601.00002.pdf",
+                    source="arxiv_pdf",
+                    page_count=8,
+                    character_count=len(extracted_text),
+                    text=extracted_text,
+                )
+                with patch.object(
+                    direction_review_module,
+                    "search_literature",
+                    return_value=fake_result,
+                ), patch.object(
+                    direction_review_module,
+                    "resolve_open_full_texts",
+                    return_value=[extracted],
+                ):
                     response = main_module.create_project_direction_review(
                         project.id,
                         DirectionReviewRequest(direction=project.keyword, round=1),
@@ -889,9 +913,14 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                 review_ref = next(artifact for artifact in response.artifact_refs if "direction_review" in artifact.title)
                 artifact = main_module.get_artifact(review_ref.id)
                 payload = json.loads(artifact.content_json)
+                baseline_ref = next(artifact for artifact in response.artifact_refs if "baseline_map" in artifact.title)
+                baseline_artifact = main_module.get_artifact(baseline_ref.id)
+                baseline_payload = json.loads(baseline_artifact.content_json)
 
         self.assertEqual(payload["schema_version"], "direction_review.v2")
         self.assertEqual(payload["round_read_count"], 1)
+        self.assertIn("full_text=1", baseline_payload["evidence_summary"])
+        self.assertNotIn("尚未接入 citation graph、全文 PDF", baseline_payload["evidence_summary"])
         self.assertIn("papers", payload)
         self.assertIn("sections", payload["papers"][0])
         self.assertEqual(len(payload["papers"][0]["sections"]), 12)

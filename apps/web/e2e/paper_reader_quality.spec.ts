@@ -561,6 +561,51 @@ test("paper memory shows a no-reliable-hit boundary instead of invented evidence
   await expect(page.getByRole("button", { name: "返回 Literature Search" })).toBeVisible();
 });
 
+test("paper memory refresh queries the persisted review direction instead of the project keyword", async ({ page }) => {
+  const persistedDirection = "多模态视觉问答中的对象幻觉与证据忠实性";
+  const refreshedDirectionPayload = {
+    ...directionPayload,
+    direction: persistedDirection,
+  };
+  const refreshedDirectionArtifact = {
+    ...artifact,
+    id: "artifact_e2e_memory_direction_refresh",
+    content_json: JSON.stringify(refreshedDirectionPayload),
+  };
+  let requestedDirection = "";
+
+  await mockReaderProject(page, [refreshedDirectionArtifact]);
+  await page.route(`**/projects/${project.id}/research-memory/query`, async (route) => {
+    const payload = JSON.parse(route.request().postData() ?? "{}") as { direction?: string };
+    requestedDirection = payload.direction ?? "";
+    await route.fulfill({
+      status: 201,
+      json: {
+        question: "对象幻觉的证据是什么？",
+        top_k: 5,
+        answer: "当前记忆没有可靠证据回答此问题。",
+        hits: [],
+        direction_memory: null,
+        total_memories: 1,
+        reliability_status: "no_reliable_hit",
+        reliability_reason: "测试方向身份恢复。",
+        answer_summary: "",
+        claims: [],
+        unanswered_parts: [],
+        artifact: refreshedDirectionArtifact,
+        warnings: [],
+        workflow_steps: [],
+      },
+    });
+  });
+
+  await page.goto("/#paper-memory");
+  await page.getByLabel("用户问题").fill("对象幻觉的证据是什么？");
+  await page.getByRole("button", { name: "检索记忆并回答" }).click();
+
+  await expect.poll(() => requestedDirection).toBe(persistedDirection);
+});
+
 test("paper memory prioritizes synthesis and collapses per-paper research notes", async ({ page }) => {
   const memoryPayload = {
     schema_version: "research_memory_answer.v3",

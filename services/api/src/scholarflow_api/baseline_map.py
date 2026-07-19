@@ -30,17 +30,6 @@ TOP_VENUE_KEYWORDS = [
     "ijcv",
 ]
 
-METHOD_FAMILIES = {
-    "transformer": ["transformer", "attention", "swin", "vit"],
-    "state-space": ["mamba", "state space", "ssm", "selective scan"],
-    "diffusion": ["diffusion", "score-based", "denoising"],
-    "retrieval": ["retrieval", "rag", "memory", "search"],
-    "alignment": ["alignment", "preference", "rlhf", "dpo"],
-    "evaluation": ["benchmark", "evaluation", "metric", "assessment"],
-    "agent": ["agent", "tool", "workflow", "planning"],
-    "dataset": ["dataset", "data", "corpus", "annotation"],
-}
-
 COMMON_BENCHMARK_TERMS = [
     "imagenet",
     "coco",
@@ -60,6 +49,36 @@ COMMON_BENCHMARK_TERMS = [
 
 
 @dataclass
+class BaselineVerification:
+    evidence_level: str
+    selection_basis: str
+    citation_status: str
+    citation_note: str
+    code_status: str
+    code_url: str
+    code_source: str
+    reproduction_status: str
+    checks: dict[str, str]
+    missing_evidence: list[str]
+    summary: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "evidence_level": self.evidence_level,
+            "selection_basis": self.selection_basis,
+            "citation_status": self.citation_status,
+            "citation_note": self.citation_note,
+            "code_status": self.code_status,
+            "code_url": self.code_url,
+            "code_source": self.code_source,
+            "reproduction_status": self.reproduction_status,
+            "checks": self.checks,
+            "missing_evidence": self.missing_evidence,
+            "summary": self.summary,
+        }
+
+
+@dataclass
 class BaselineReference:
     title: str
     year: str
@@ -67,12 +86,14 @@ class BaselineReference:
     source: str
     url: str
     category: str
+    method_family: str
     reason: str
     strengths: str
     risks: str
     evidence_snippets: list[EvidenceSnippet]
     confidence: str
     evidence_gap: str
+    verification: BaselineVerification
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -82,12 +103,14 @@ class BaselineReference:
             "source": self.source,
             "url": self.url,
             "category": self.category,
+            "method_family": self.method_family,
             "reason": self.reason,
             "strengths": self.strengths,
             "risks": self.risks,
             "evidence_snippets": [snippet.to_dict() for snippet in self.evidence_snippets],
             "confidence": self.confidence,
             "evidence_gap": self.evidence_gap,
+            "verification": self.verification.to_dict(),
         }
 
 
@@ -123,7 +146,9 @@ class BaselineMap:
 
 def build_baseline_map(direction: str, candidate_papers: list[dict[str, Any]], selected_papers: list[dict[str, Any]]) -> BaselineMap:
     normalized_direction = normalize_space(direction)
-    papers = dedupe_papers([*candidate_papers, *selected_papers])
+    # The selected papers may contain verified PDF text and structured Paper
+    # Card signals. Keep those richer records ahead of metadata-only candidates.
+    papers = dedupe_papers([*selected_papers, *candidate_papers])
     scored = sorted(papers, key=lambda paper: score_reference_candidate(paper, normalized_direction), reverse=True)
     family_buckets = group_by_method_family(scored)
     recent = select_recent_strong_baselines(scored, normalized_direction, limit=5)
@@ -146,8 +171,10 @@ def build_baseline_map(direction: str, candidate_papers: list[dict[str, Any]], s
         generated_from=generated_from,
         evidence_summary=build_baseline_evidence_summary(scored, recent, classic, alternatives),
         curator_notes=(
-            "BaselineMap 当前由检索候选池和本轮入选论文启发式生成；它是可追溯的方向背景包，"
-            "后续可替换为引用追踪、Best Paper 先验库和向量检索。"
+            "BaselineMap 优先使用本轮已解析 PDF 和 Paper Card 的本文方法证据，再补充检索候选池元数据。"
+            "异质范式只在标题、摘要自述或 method 证据明确支持时标注。"
+            "代码链接可从 paper metadata 或 PDF 文本提取，但 link_present 不代表仓库可访问、官方归属或代码可运行；"
+            "引用关系仍需 citation graph 复核。"
         ),
     )
 
@@ -186,6 +213,12 @@ def render_reference_list(references: list[BaselineReference]) -> str:
                 f"- **{item.title}** ({item.year or 'year unknown'}, {item.venue or item.source or 'source unknown'}):",
                 item.reason,
                 f"Confidence: {item.confidence}.",
+                (
+                    f"Verification: {item.verification.evidence_level}; "
+                    f"citation={item.verification.citation_status}; "
+                    f"code={item.verification.code_status}; "
+                    f"reproduction={item.verification.reproduction_status}."
+                ),
                 f"Evidence gap: {item.evidence_gap}",
             ],
         )
@@ -233,10 +266,6 @@ def select_classic_baselines(
         for paper in papers
         if normalize_title_key(paper.get("title", "")) not in recent_titles and parse_year(paper.get("year", "")) <= 2023
     ]
-    if len(older_or_foundational) < limit:
-        older_or_foundational.extend(
-            paper for paper in papers if normalize_title_key(paper.get("title", "")) not in recent_titles
-        )
     return [
         to_reference(
             paper,
@@ -257,7 +286,20 @@ def select_alternative_paradigms(
 ) -> list[BaselineReference]:
     used = {normalize_title_key(item.title) for item in [*recent, *classic]}
     output: list[BaselineReference] = []
-    for family, papers in family_buckets.items():
+    if not family_buckets:
+        return output
+    dominant_family = max(
+        family_buckets,
+        key=lambda family: (len(family_buckets[family]), family),
+    )
+    ordered_families = sorted(
+        family_buckets,
+        key=lambda family: (-len(family_buckets[family]), family),
+    )
+    for family in ordered_families:
+        if family == dominant_family:
+            continue
+        papers = family_buckets[family]
         for paper in papers:
             key = normalize_title_key(paper.get("title", ""))
             if key in used:
@@ -268,6 +310,7 @@ def select_alternative_paradigms(
                     "alternative_paradigm",
                     f"代表 `{family}` 路线，可用于检查目标论文是否只是同范式内微调，或是否存在降维打击角度。",
                     direction,
+                    method_family=family,
                 ),
             )
             used.add(key)
@@ -280,14 +323,224 @@ def select_alternative_paradigms(
 def group_by_method_family(papers: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     buckets: dict[str, list[dict[str, Any]]] = {}
     for paper in papers:
-        text = paper_text(paper)
-        family = "general"
-        for name, terms in METHOD_FAMILIES.items():
-            if any(term in text for term in terms):
-                family = name
-                break
+        family = infer_method_family(paper)
+        if not family:
+            continue
         buckets.setdefault(family, []).append(paper)
     return buckets
+
+
+def infer_method_family(paper: dict[str, Any]) -> str:
+    title = normalize_space(paper.get("title", ""))
+    abstract = normalize_space(paper.get("abstract", ""))
+    signals = paper.get("paper_signals") if isinstance(paper.get("paper_signals"), dict) else {}
+    method = normalize_space(signals.get("method", ""))
+    contribution_type = normalize_space(signals.get("contribution_type", "")).lower()
+    owned_text = normalize_space(f"{title}. {method or select_owned_method_text(abstract, paper.get('full_text', ''))}")
+    lower = owned_text.lower()
+    title_lower = title.lower()
+
+    if (
+        contribution_type in {"benchmark", "evaluation"}
+        and any(marker in lower for marker in ["metric", "score", "benchmark", "evaluation", "protocol"])
+    ) or (
+        re.search(r"\b(?:[a-z0-9-]*score|metric)\b", title_lower)
+        and re.search(r"\b(?:evaluation|metric|faithful|hallucination)\b", lower)
+    ):
+        return "evaluation-metric"
+    if re.search(r"\b(?:visual prompt|prompt engineering|prompt tuning)\b", lower):
+        return "visual-prompting"
+    if re.search(r"\bcircuits?\b", title_lower):
+        return "mechanistic-analysis"
+    if re.search(r"\bdistractors?\b", title_lower):
+        return "evaluation-protocol"
+    if (
+        re.search(r"\b(?:mamba|state[- ]space|selective scan)\b", title_lower)
+        or re.search(r"\b(?:mamba|state[- ]space|selective scan)\s+(?:model|architecture|backbone)\b", lower)
+    ):
+        return "state-space"
+    if (
+        re.search(r"\bdiffusion\b", title_lower)
+        or re.search(r"\b(?:diffusion|score-based)\s+(?:model|architecture|framework|process)\b", lower)
+    ):
+        return "diffusion"
+    if (
+        re.search(r"\b(?:retrieval-augmented|rag)\b", title_lower)
+        or re.search(r"\b(?:retrieval-augmented|rag|retrieve and)\b", lower)
+    ):
+        return "retrieval"
+    if (
+        re.search(r"\b(?:agent|workflow)\b", title_lower)
+        or re.search(r"\b(?:agent|tool-using|workflow)\s+(?:system|framework|architecture)\b", lower)
+    ):
+        return "agent"
+    if re.search(r"\b(?:rlhf|dpo|preference optimization|alignment objective)\b", lower):
+        return "alignment"
+    if re.search(r"\b(?:logit|decoding|calibration|contrastive decoding)\b", lower):
+        return "decoding-intervention"
+    if re.search(r"\battention\b", lower) and re.search(
+        r"\b(?:intervention|steering|manipulation|reweight|boost|suppress|mitigat|reduc)\w*\b",
+        lower,
+    ):
+        return "attention-intervention"
+    if re.search(r"\b(?:visual grounding|grounded|grounding)\b", lower):
+        return "grounding"
+    if (
+        re.search(r"\b(?:transformer|swin|vision transformer|vit)\b", title_lower)
+        or re.search(r"\b(?:transformer|swin|vision transformer|vit)\s+(?:model|architecture|backbone)\b", lower)
+    ):
+        return "transformer"
+    if contribution_type == "benchmark":
+        return "evaluation-protocol"
+    return ""
+
+
+def build_baseline_verification(
+    paper: dict[str, Any],
+    method_family: str,
+) -> BaselineVerification:
+    signals_value = paper.get("paper_signals")
+    if isinstance(signals_value, dict):
+        signals = signals_value
+    elif hasattr(signals_value, "to_dict"):
+        signals = signals_value.to_dict()
+    else:
+        signals = {}
+
+    provenance = paper.get("full_text_provenance") if isinstance(paper.get("full_text_provenance"), dict) else {}
+    full_text = normalize_space(paper.get("full_text", ""))
+    full_text_ready = bool(full_text) and (
+        not provenance or normalize_space(provenance.get("status", "")).lower() == "extracted"
+    )
+    explicit_level = normalize_space(paper.get("evidence_level", "")).lower().replace("-", "_")
+    if full_text_ready:
+        evidence_level = "full_text"
+    elif explicit_level in {"metadata_only", "abstract_only"}:
+        evidence_level = explicit_level
+    elif normalize_space(paper.get("abstract", "")):
+        evidence_level = "abstract_only"
+    else:
+        evidence_level = "metadata_only"
+
+    method_ready = signal_is_available(signals.get("method", "")) or bool(method_family)
+    dataset_ready = signal_is_available(signals.get("dataset", ""))
+    metric_ready = signal_is_available(signals.get("metric", ""))
+    baseline_ready = signal_is_available(signals.get("baseline", ""))
+    code_value = normalize_space(paper.get("code", ""))
+    code_url = extract_repository_url(code_value)
+    code_source = "metadata.code" if code_url else ""
+    if not code_url and full_text_ready:
+        code_url = extract_repository_url(full_text)
+        code_source = "pdf.full_text" if code_url else ""
+    if code_url:
+        code_status = "link_present"
+    elif code_value.lower() not in {"", "unknown", "none", "n/a", "no", "false"}:
+        code_status = "claimed_unverified"
+    else:
+        code_status = "not_found"
+
+    checks = {
+        "full_text": "ready" if full_text_ready else "missing",
+        "method": "ready" if method_ready else "missing",
+        "dataset": "ready" if dataset_ready else "missing",
+        "metric": "ready" if metric_ready else "missing",
+        "baseline": "ready" if baseline_ready else "missing",
+        "code": "ready" if code_url else ("unverified" if code_status == "claimed_unverified" else "missing"),
+    }
+    if all(value == "ready" for value in checks.values()):
+        reproduction_status = "ready"
+    elif full_text_ready and sum(
+        checks[name] == "ready" for name in ["method", "dataset", "metric", "baseline"]
+    ) >= 3:
+        reproduction_status = "partial"
+    else:
+        reproduction_status = "blocked"
+
+    missing_labels = {
+        "full_text": "可定位的 PDF 全文",
+        "method": "可定位的方法证据",
+        "dataset": "明确 dataset/benchmark",
+        "metric": "明确评价指标",
+        "baseline": "明确对照方法",
+        "code": "可核验的代码仓库链接",
+    }
+    missing_evidence = [
+        label
+        for key, label in missing_labels.items()
+        if checks[key] != "ready"
+    ]
+    if full_text_ready and method_ready:
+        selection_basis = "full_text_method_evidence"
+    elif full_text_ready:
+        selection_basis = "full_text_topic_evidence"
+    elif evidence_level == "abstract_only" and method_ready:
+        selection_basis = "abstract_method_evidence"
+    elif evidence_level == "abstract_only":
+        selection_basis = "abstract_topic_evidence"
+    else:
+        selection_basis = "metadata_candidate"
+
+    status_label = {
+        "ready": "具备最小复现入口",
+        "partial": "只具备部分复现条件",
+        "blocked": "复现仍被关键证据阻塞",
+    }[reproduction_status]
+    return BaselineVerification(
+        evidence_level=evidence_level,
+        selection_basis=selection_basis,
+        citation_status="not_checked",
+        citation_note="尚未运行引用图或参考文献关系验证；当前只能确认候选论文自身的方向与方法证据。",
+        code_status=code_status,
+        code_url=code_url,
+        code_source=code_source or ("metadata.code" if code_status == "claimed_unverified" else ""),
+        reproduction_status=reproduction_status,
+        checks=checks,
+        missing_evidence=missing_evidence,
+        summary=f"{status_label}；缺口：{'、'.join(missing_evidence) if missing_evidence else '无'}。",
+    )
+
+
+def signal_is_available(value: Any) -> bool:
+    text = normalize_space(value)
+    return bool(text) and not text.startswith(("当前证据不足", "未发现", "无法判断"))
+
+
+def extract_repository_url(value: str) -> str:
+    match = re.search(
+        r"https?://(?:www\.)?(?:github\.com|gitlab\.com|bitbucket\.org)/[^\s)\]}>,'\"]+",
+        value,
+        flags=re.IGNORECASE,
+    )
+    return match.group(0).rstrip(".,;:") if match else ""
+
+
+def select_owned_method_text(abstract: str, full_text: Any) -> str:
+    candidates: list[str] = []
+    for source in [abstract, extract_method_sections(str(full_text or ""))]:
+        for sentence in split_sentences(source):
+            lower = sentence.lower()
+            if re.search(
+                r"\bwe\s+(?:propose|introduce|present|develop|design|build|construct)\b"
+                r"|\bour\s+(?:method|approach|framework|model|system|algorithm)\b",
+                lower,
+            ):
+                candidates.append(sentence)
+    return " ".join(candidates[:3])
+
+
+def extract_method_sections(text: str) -> str:
+    if not normalize_space(text):
+        return ""
+    current_section = "unknown"
+    selected: list[str] = []
+    for line in str(text).splitlines():
+        section_match = re.fullmatch(r"\[Section: ([a-z_]+)\]", line.strip())
+        if section_match:
+            current_section = section_match.group(1)
+            continue
+        if current_section in {"abstract", "method"} and line.strip():
+            selected.append(line.strip())
+    return " ".join(selected)
 
 
 def infer_common_benchmarks(direction: str, papers: list[dict[str, Any]]) -> list[str]:
@@ -328,15 +581,24 @@ def infer_open_questions(direction: str, alternatives: list[BaselineReference], 
         "如果把评价从平均分数改成失败模式定位，当前方法是否仍然成立？",
     ]
     if alternatives:
-        questions.append(f"与 `{alternatives[0].category}` 路线相比，目标方法的优势是否来自核心机制，而不是实验设置？")
+        family = alternatives[0].method_family or "异质范式"
+        questions.append(f"与 `{family}` 路线相比，目标方法的优势是否来自核心机制，而不是实验设置？")
     if risks:
         questions.append("能否设计一个反例 benchmark，专门打穿当前方法最依赖的假设？")
     return questions[:5]
 
 
-def to_reference(paper: dict[str, Any], category: str, reason: str, direction: str) -> BaselineReference:
+def to_reference(
+    paper: dict[str, Any],
+    category: str,
+    reason: str,
+    direction: str,
+    *,
+    method_family: str = "",
+) -> BaselineReference:
     text = paper_text(paper)
     snippets, confidence, gap = build_baseline_reference_evidence(paper, direction, category)
+    resolved_method_family = method_family or infer_method_family(paper)
     return BaselineReference(
         title=normalize_space(paper.get("title", "")) or "Untitled paper",
         year=normalize_space(str(paper.get("year", ""))),
@@ -344,12 +606,14 @@ def to_reference(paper: dict[str, Any], category: str, reason: str, direction: s
         source=normalize_space(paper.get("source", "")),
         url=normalize_space(paper.get("url", "")),
         category=category,
+        method_family=resolved_method_family,
         reason=reason,
         strengths=build_strength_signal(text),
         risks=build_risk_signal(text),
         evidence_snippets=snippets,
         confidence=confidence,
         evidence_gap=gap,
+        verification=build_baseline_verification(paper, resolved_method_family),
     )
 
 
@@ -359,15 +623,35 @@ def build_baseline_evidence_summary(
     classic: list[BaselineReference],
     alternatives: list[BaselineReference],
 ) -> str:
-    reference_count = len(recent) + len(classic) + len(alternatives)
+    references = [*recent, *classic, *alternatives]
+    reference_count = len(references)
     confidence_counts: dict[str, int] = {"high": 0, "medium": 0, "low": 0}
-    for reference in [*recent, *classic, *alternatives]:
+    reproduction_counts: dict[str, int] = {"ready": 0, "partial": 0, "blocked": 0}
+    for reference in references:
         confidence_counts[reference.confidence] = confidence_counts.get(reference.confidence, 0) + 1
+        status = reference.verification.reproduction_status
+        reproduction_counts[status] = reproduction_counts.get(status, 0) + 1
+    code_link_count = sum(reference.verification.code_status == "link_present" for reference in references)
+    citation_checked_count = sum(reference.verification.citation_status != "not_checked" for reference in references)
+    full_text_count = sum(
+        1
+        for paper in scored
+        if normalize_space(paper.get("full_text", ""))
+        and (
+            not isinstance(paper.get("full_text_provenance"), dict)
+            or normalize_space(paper["full_text_provenance"].get("status", "")) == "extracted"
+        )
+    )
     return (
         f"BaselineMap 基于 {len(scored)} 篇候选论文生成，共形成 {reference_count} 个对比参照。"
+        f" 证据覆盖：full_text={full_text_count}，metadata_or_abstract={max(0, len(scored) - full_text_count)}。"
         f" 置信度分布：high={confidence_counts.get('high', 0)}, "
         f"medium={confidence_counts.get('medium', 0)}, low={confidence_counts.get('low', 0)}。"
-        " 当前证据主要来自 metadata、abstract 和候选池相关性；尚未接入 citation graph、全文 PDF、代码仓库和 meta-review。"
+        f" 验证覆盖：code_link={code_link_count}/{reference_count}, "
+        f"citation_graph_checked={citation_checked_count}/{reference_count}；"
+        f"复现准备度：ready={reproduction_counts.get('ready', 0)}, "
+        f"partial={reproduction_counts.get('partial', 0)}, blocked={reproduction_counts.get('blocked', 0)}。"
+        " 已解析 PDF 会优先用于证据片段和方法范式判断；代码链接仅表示已定位，引用关系与仓库可运行性尚未外部验证。"
     )
 
 
@@ -427,9 +711,32 @@ def dedupe_papers(papers: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def paper_text(paper: dict[str, Any]) -> str:
+    signals = paper.get("paper_signals") if isinstance(paper.get("paper_signals"), dict) else {}
     return normalize_space(
-        f"{paper.get('title', '')} {paper.get('abstract', '')} {paper.get('venue', '')} {paper.get('source', '')}",
+        " ".join(
+            [
+                str(paper.get("title", "")),
+                str(paper.get("abstract", "")),
+                str(paper.get("venue", "")),
+                str(paper.get("source", "")),
+                str(signals.get("method", "")),
+                str(signals.get("dataset", "")),
+                str(signals.get("metric", "")),
+                str(paper.get("full_text", ""))[:16000],
+            ],
+        ),
     ).lower()
+
+
+def split_sentences(text: str) -> list[str]:
+    normalized = normalize_space(text)
+    if not normalized:
+        return []
+    return [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?。！？])\s+", normalized)
+        if sentence.strip()
+    ]
 
 
 def parse_year(value: Any) -> int:

@@ -62,6 +62,46 @@ GOAL_ACTION_MARKERS = {
     "避免",
 }
 
+GOAL_REQUIRED_MARKERS = (
+    "must",
+    "required",
+    "require ",
+    "include ",
+    "compare ",
+    "comparison",
+    "必须",
+    "需包含",
+    "需要包含",
+    "至少包含",
+    "包含",
+    "比较",
+    "对比",
+    "单张",
+    "单卡",
+)
+
+KNOWN_EXPERIMENT_DATASETS = [
+    "HallusionBench",
+    "MMBench",
+    "MMMU",
+    "POPE",
+    "CHAIR",
+    "MM-Vet",
+    "LLaVA-Bench",
+    "SEED-Bench",
+    "RealWorldQA",
+    "ScienceQA",
+    "MathVista",
+    "ChartQA",
+    "DocVQA",
+    "TextVQA",
+    "VQA v2",
+    "OK-VQA",
+    "GQA",
+    "COCO",
+    "ImageNet",
+]
+
 
 @dataclass
 class DecisionIntent:
@@ -676,8 +716,8 @@ def build_unblock_suggestions(
     suggestions: list[str] = []
     if intent and intent.required_terms:
         suggestions.append(
-            f"目标硬约束：锚点论文至少需直接覆盖 {', '.join(intent.required_terms)} 中的一项；"
-            "当前候选未形成满足约束的全文级实验锚点。"
+            f"候选匹配术语：{', '.join(intent.required_terms)}。"
+            "显式硬约束必须逐项满足；当前候选未形成满足约束的全文级实验锚点。"
         )
     if intent and intent.excluded_terms:
         suggestions.append(f"排除约束：实验锚点不得依赖 {', '.join(intent.excluded_terms)}。")
@@ -814,6 +854,37 @@ def build_experiment_plan_from_anchor(
         )
 
     readiness_checks, assumptions = build_readiness_checks(anchor)
+    if anchor.goal_alignment.get("status") == "mismatch":
+        missing_constraints = [
+            normalize_space(item)
+            for item in anchor.goal_alignment.get("missing_hard_constraints", [])
+            if normalize_space(item)
+        ]
+        missing_label = "、".join(missing_constraints) or "未解析的目标硬约束"
+        readiness_checks["goal_constraints"] = f"blocked: 缺少 {missing_label}"
+        suggestions = [
+            f"补齐目标硬约束：{missing_label}。",
+            "如果约束来自用户资源上限，请补充模型版本、精度、batch size、显存估算和实测峰值。",
+            "如果约束来自研究问题，请在 claim、dataset、metric、baseline 或 failure slice 中提供直接对应项。",
+        ]
+        return ExperimentPlan(
+            status="blocked",
+            anchor_paper_id=anchor.paper_id,
+            anchor_paper_title=anchor.paper_title,
+            claim=f"候选 anchor 尚未满足目标约束：{anchor.claim}",
+            dataset=anchor.dataset,
+            baseline=anchor.baseline,
+            metrics=anchor.metrics,
+            ablations=[],
+            resources="候选论文具备基础实验字段，但用户显式硬约束尚未全部满足，不能视为可执行计划。",
+            timeline=[f"Blocked: {suggestion}" for suggestion in suggestions],
+            success_criterion="所有显式硬约束均有可验证的计划字段或资源证据后，才可进入 ready。",
+            failure_criterion="任一硬约束缺失、仅靠关键词推断，或资源可行性未经估算。",
+            unblock_suggestions=suggestions,
+            goal_alignment=anchor.goal_alignment,
+            readiness_checks=readiness_checks,
+            assumptions=unique_preserve_order([*assumptions, *missing_constraints]),
+        )
     timeline = build_intent_timeline(anchor, intent)
     budget_label = (
         f"{intent.time_budget_days} 天"
@@ -1191,15 +1262,161 @@ def score_anchor_goal_alignment(combined: str, intent: DecisionIntent | None) ->
     ).matched_terms
     matched_keys = {term.lower() for term in matched}
     missing = [term for term in intent.required_terms if term.lower() not in matched_keys]
-    status = "aligned" if matched or not intent.required_terms else "mismatch"
+    hard_constraint_checks = evaluate_explicit_goal_constraints(combined, intent.raw_goal)
+    matched_hard_constraints = [
+        label for label, is_satisfied in hard_constraint_checks if is_satisfied
+    ]
+    missing_hard_constraints = [
+        label for label, is_satisfied in hard_constraint_checks if not is_satisfied
+    ]
+    if hard_constraint_checks:
+        status = "aligned" if not missing_hard_constraints else "mismatch"
+    else:
+        status = "aligned" if matched or not intent.required_terms else "mismatch"
     return {
         "status": "excluded" if excluded_matches else status,
         "score": round(min(2.4, len(matched) * 0.45), 4),
         "matched_required_terms": matched,
         "missing_required_terms": missing,
+        "matched_hard_constraints": matched_hard_constraints,
+        "missing_hard_constraints": missing_hard_constraints,
+        "hard_constraint_checks": {
+            label: "ready" if is_satisfied else "blocked"
+            for label, is_satisfied in hard_constraint_checks
+        },
         "contrast_terms": intent.contrast_terms,
         "excluded_matches": excluded_matches,
     }
+
+
+def evaluate_explicit_goal_constraints(combined: str, raw_goal: str) -> list[tuple[str, bool]]:
+    goal = normalize_space(raw_goal)
+    lower_goal = goal.lower()
+    lower_combined = combined.lower()
+    if not any(marker in lower_goal for marker in GOAL_REQUIRED_MARKERS) and not re.search(
+        r"\b\d{1,3}\s*gb\b", lower_goal
+    ):
+        return []
+
+    checks: list[tuple[str, bool]] = []
+
+    def add_check(label: str, satisfied: bool) -> None:
+        key = label.casefold()
+        if any(existing.casefold() == key for existing, _ in checks):
+            return
+        checks.append((label, satisfied))
+
+    memory_match = re.search(r"\b(\d{1,3})\s*gb\b", lower_goal)
+    if memory_match:
+        memory_label = f"{memory_match.group(1)}GB"
+        add_check(memory_label, bool(re.search(rf"\b{memory_match.group(1)}\s*gb\b", lower_combined)))
+    if re.search(r"(?:single|one)\s+(?:[a-z0-9-]+\s+){0,2}gpu|单张\s*\d*\s*(?:gb)?\s*gpu|单卡", lower_goal):
+        add_check(
+            "single GPU",
+            bool(
+                re.search(
+                    r"(?:single|one)\s+(?:[a-z0-9-]+\s+){0,2}gpu|单张\s*\d*\s*(?:gb)?\s*gpu|单卡",
+                    lower_combined,
+                )
+            ),
+        )
+
+    for first, second in extract_comparison_pairs(goal):
+        add_check(first, goal_term_present(lower_combined, first))
+        add_check(second, goal_term_present(lower_combined, second))
+
+    required_clause = extract_required_clause(goal)
+    clause_lower = required_clause.lower()
+    if required_clause:
+        named_datasets = [
+            name for name in KNOWN_EXPERIMENT_DATASETS if goal_term_present(clause_lower, name)
+        ]
+        if len(named_datasets) > 1 and re.search(r"\b(?:or|either)\b|或", clause_lower):
+            add_check(
+                " / ".join(named_datasets),
+                any(goal_term_present(lower_combined, name) for name in named_datasets),
+            )
+        else:
+            for name in named_datasets:
+                add_check(name, goal_term_present(lower_combined, name))
+
+        if "数据集" in required_clause or re.search(r"\bdataset\b", clause_lower):
+            add_check(
+                "dataset",
+                "dataset:" in lower_combined
+                or "数据集" in combined
+                or any(goal_term_present(lower_combined, name) for name in KNOWN_EXPERIMENT_DATASETS),
+            )
+        if "baseline" in clause_lower:
+            has_named_baseline = bool(find_named_terms(combined, KNOWN_BASELINES))
+            if "强 baseline" in required_clause or "strong baseline" in clause_lower:
+                add_check("strong baseline", has_named_baseline or "strong baseline" in lower_combined)
+            else:
+                add_check("baseline", has_named_baseline or "baseline:" in lower_combined)
+        if "失败样本" in required_clause or "failure slice" in clause_lower or "failure-case" in clause_lower:
+            add_check(
+                "failure sample slices",
+                any(
+                    marker in lower_combined
+                    for marker in ["失败样本", "failure slice", "failure-case", "failure case", "failure-mode"]
+                ),
+            )
+        if "证据忠实性" in required_clause or "evidence faithfulness" in clause_lower:
+            add_check(
+                "evidence faithfulness metric",
+                (
+                    "证据忠实性" in combined
+                    or "evidence faithfulness" in lower_combined
+                    or "evidence consistency" in lower_combined
+                )
+                and any(marker in lower_combined for marker in ["metric", "指标", "score", "rate", "accuracy"]),
+            )
+        elif "指标" in required_clause or re.search(r"\bmetrics?\b", clause_lower):
+            add_check(
+                "metric",
+                "metric:" in lower_combined
+                or "指标" in combined
+                or bool(extract_anchor_metrics("", combined)),
+            )
+    return checks
+
+
+def extract_comparison_pairs(goal: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    patterns = [
+        r"(?:compare|comparison of|contrast)\s+([A-Za-z0-9][A-Za-z0-9._-]*)"
+        r"(?:\s+(?:hypothesis|mechanism))?\s+(?:and|with|versus|vs\.?)\s+"
+        r"([A-Za-z0-9][A-Za-z0-9._-]*)",
+        r"(?:比较|对比)\s*([A-Za-z0-9][A-Za-z0-9._-]*)"
+        r"(?:\s*根因假设)?\s*(?:与|和|及|vs\.?)\s*"
+        r"([A-Za-z0-9][A-Za-z0-9._-]*)",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, goal, flags=re.IGNORECASE):
+            pairs.append((normalize_space(match.group(1)), normalize_space(match.group(2))))
+    return pairs
+
+
+def extract_required_clause(goal: str) -> str:
+    match = re.search(
+        r"(?:must\s+(?:include|contain)|required?\s*:|include\s+|必须包含|需包含|需要包含|至少包含)"
+        r"([^；;。]{1,240})",
+        goal,
+        flags=re.IGNORECASE,
+    )
+    return normalize_space(match.group(1)) if match else ""
+
+
+def goal_term_present(text: str, term: str) -> bool:
+    normalized_term = normalize_space(term).lower()
+    if not normalized_term:
+        return False
+    if re.search(r"[\u4e00-\u9fff]", normalized_term):
+        return normalized_term in text
+    pattern = r"(?<![a-z0-9])" + r"[\s-]+".join(
+        re.escape(part) for part in re.split(r"[\s-]+", normalized_term) if part
+    ) + r"(?![a-z0-9])"
+    return bool(re.search(pattern, text, flags=re.IGNORECASE))
 
 
 def blocked_goal_alignment(intent: DecisionIntent | None) -> dict[str, Any]:
@@ -1208,6 +1425,9 @@ def blocked_goal_alignment(intent: DecisionIntent | None) -> dict[str, Any]:
         "score": 0.0,
         "matched_required_terms": [],
         "missing_required_terms": intent.required_terms if intent else [],
+        "matched_hard_constraints": [],
+        "missing_hard_constraints": [],
+        "hard_constraint_checks": {},
         "contrast_terms": intent.contrast_terms if intent else [],
         "excluded_matches": [],
     }

@@ -266,6 +266,42 @@ def build_direction_readings(
     return readings
 
 
+def build_baseline_papers_from_readings(
+    readings: list[DirectionPaperReading],
+) -> list[dict[str, Any]]:
+    papers: list[dict[str, Any]] = []
+    for reading in readings:
+        paper = dict(reading.paper)
+        paper["paper_signals"] = reading.card.signals.to_dict()
+        paper["evidence_level"] = reading.card.evidence_level
+        paper["full_text_provenance"] = dict(reading.full_text)
+        if reading.source_text:
+            paper["full_text"] = reading.source_text
+        papers.append(paper)
+    return papers
+
+
+def refresh_direction_reading_research_sights(
+    readings: list[DirectionPaperReading],
+    direction: str,
+    baseline_map: BaselineMap,
+) -> None:
+    for reading in readings:
+        paper_for_evidence = dict(reading.paper)
+        paper_for_evidence["full_text_provenance"] = dict(reading.full_text)
+        paper_for_evidence["evidence_level"] = reading.card.evidence_level
+        if reading.source_text:
+            paper_for_evidence["full_text"] = reading.source_text
+        reading.research_sight = build_research_sight(
+            paper_for_evidence,
+            [section.to_dict() for section in reading.card.sections],
+            baseline_map,
+            direction,
+            reading.card.signals,
+        )
+    enforce_research_sight_diversity(readings)
+
+
 def build_full_text_evidence_paper(paper: dict[str, Any], result: FullTextResult) -> dict[str, Any]:
     evidence_paper = dict(paper)
     evidence_paper["full_text_provenance"] = result.to_provenance()

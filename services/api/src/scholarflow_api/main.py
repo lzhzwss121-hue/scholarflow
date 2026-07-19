@@ -50,8 +50,10 @@ from scholarflow_api.api_helpers import (
 from scholarflow_api.baseline_map import build_baseline_map, render_baseline_map_markdown
 from scholarflow_api.database import artifact_summary_from_row, get_connection, init_db, new_id, row_to_dict, utc_now
 from scholarflow_api.direction_review import (
+    build_baseline_papers_from_readings,
     build_direction_readings,
     build_direction_review_bundle,
+    refresh_direction_reading_research_sights,
     render_direction_review_json,
     render_direction_review_markdown,
     retrieve_direction_candidate_pool,
@@ -1552,12 +1554,14 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
         session_id = ensure_active_session(connection, project, completed_at)
         paper_ids = insert_paper_candidates(connection, project_id, candidates, completed_at)
         paper_dicts = [fetch_paper_dict(connection, project_id, paper_id) for paper_id in paper_ids]
+        reading_context_map = build_baseline_map(payload.direction, [], [])
+        readings = build_direction_readings(paper_dicts, payload.direction, reading_context_map)
         baseline_map = build_baseline_map(
             payload.direction,
             [candidate.to_dict() for candidate in candidate_pool],
-            paper_dicts,
+            build_baseline_papers_from_readings(readings),
         )
-        readings = build_direction_readings(paper_dicts, payload.direction, baseline_map)
+        refresh_direction_reading_research_sights(readings, payload.direction, baseline_map)
         bundle = build_direction_review_bundle(
             payload.direction,
             payload.round,
@@ -1923,8 +1927,12 @@ def query_project_research_memory(project_id: str, payload: ResearchMemoryQueryR
             connection,
             session_id,
             "memory.answer",
-            "done",
-            f"已生成基于 {len(answer.hits)} 篇论文记忆的回答 artifact。",
+            "done" if answer.hits else "queued",
+            (
+                f"已生成基于 {len(answer.hits)} 篇论文记忆的回答 artifact。"
+                if answer.hits
+                else "没有可靠记忆命中；已保存证据边界与下一步建议，未生成科研结论。"
+            ),
             now,
         )
         connection.execute(
@@ -2349,12 +2357,14 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
         now = utc_now()
         paper_ids = insert_paper_candidates(connection, context.project["id"], candidates, now)
         paper_dicts = [fetch_paper_dict(connection, context.project["id"], paper_id) for paper_id in paper_ids]
+        reading_context_map = build_baseline_map(direction, [], [])
+        readings = build_direction_readings(paper_dicts, direction, reading_context_map)
         baseline_map = build_baseline_map(
             direction,
             [candidate.to_dict() for candidate in candidate_pool],
-            paper_dicts,
+            build_baseline_papers_from_readings(readings),
         )
-        readings = build_direction_readings(paper_dicts, direction, baseline_map)
+        refresh_direction_reading_research_sights(readings, direction, baseline_map)
         bundle = build_direction_review_bundle(
             direction,
             round_index,

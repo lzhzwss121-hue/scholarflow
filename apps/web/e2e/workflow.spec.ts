@@ -1794,6 +1794,26 @@ test("hydrates real direction review and memory artifact shapes without blank vi
           evidence_snippets: [],
           confidence: "medium",
           evidence_gap: "needs full paper check",
+          verification: {
+            evidence_level: "abstract_only",
+            selection_basis: "abstract_topic_evidence",
+            citation_status: "not_checked",
+            citation_note: "尚未运行引用图验证。",
+            code_status: "link_present",
+            code_url: "https://github.com/example/pope",
+            code_source: "metadata.code",
+            reproduction_status: "blocked",
+            checks: {
+              full_text: "missing",
+              method: "ready",
+              dataset: "ready",
+              metric: "ready",
+              baseline: "ready",
+              code: "ready",
+            },
+            missing_evidence: ["可定位的 PDF 全文"],
+            summary: "复现仍被 PDF 全文阻塞。",
+          },
         },
         {
           title: "POPE",
@@ -2009,6 +2029,18 @@ test("hydrates real direction review and memory artifact shapes without blank vi
   });
 
   await page.goto("/#direction-review");
+  await page.locator(".direction-evidence-details > summary").click();
+  const verifiedBaseline = page.getByTestId("baseline-reference-benchmark-0");
+  await expect(verifiedBaseline.getByText("阻塞", { exact: true })).toBeVisible();
+  await verifiedBaseline.getByText("验证与复现条件", { exact: true }).click();
+  await expect(verifiedBaseline.getByText("引用关系：未检查。尚未运行引用图验证。", { exact: true })).toBeVisible();
+  await expect(verifiedBaseline.getByText("仍缺少：可定位的 PDF 全文。", { exact: true })).toBeVisible();
+  await expect(verifiedBaseline.getByText("代码来源：metadata.code ·")).toBeVisible();
+  await expect(verifiedBaseline.getByRole("link", { name: "打开代码仓库" })).toHaveAttribute(
+    "href",
+    "https://github.com/example/pope",
+  );
+  await expect(page.getByTestId("baseline-reference-benchmark-1").locator(".baseline-verification")).toHaveCount(0);
   const directionPaperList = page.getByRole("region", { name: "direction paper cards" });
   const directionPaperButton = directionPaperList.getByRole("button", {
     name: `打开 Paper Card：${paper.title}`,
@@ -2217,6 +2249,17 @@ test("gap and experiment views show abstract-only evidence boundaries", async ({
       success_criterion: "",
       failure_criterion: "",
       unblock_suggestions: ["补充 PDF 或正文方法/实验部分。"],
+      goal_alignment: {
+        status: "mismatch",
+        hard_constraint_checks: {
+          "24GB": "blocked",
+          "POPE / CHAIR": "ready",
+        },
+      },
+      readiness_checks: {
+        goal_constraints: "blocked: 缺少 24GB",
+      },
+      assumptions: ["24GB"],
     },
     artifacts: [],
     decision_status: "partial",
@@ -2277,4 +2320,6 @@ test("gap and experiment views show abstract-only evidence boundaries", async ({
   await page.goto("/#experiment-planner");
   await expect(page.getByText("摘要级证据，不是全文结论", { exact: true })).toBeVisible();
   await expect(page.getByRole("listitem").filter({ hasText: "补充 PDF 或正文方法/实验部分。" })).toBeVisible();
+  await expect(page.getByText("24GB: blocked；POPE / CHAIR: ready", { exact: true })).toBeVisible();
+  await expect(page.getByText("[object Object]", { exact: true })).toHaveCount(0);
 });

@@ -437,6 +437,324 @@ POPE: Polling-based Object Probing Evaluation for Object Hallucination.
         self.assertTrue(signals.contribution_evidence)
         self.assertNotIn("Related work may review", signals.contribution_evidence)
 
+    def test_method_and_claim_prefer_the_paper_own_contribution_over_prior_work(self) -> None:
+        from scholarflow_api.paper_card import extract_paper_signals
+
+        signals = extract_paper_signals(
+            title="First Logit Boosting for Object Hallucination Mitigation",
+            abstract=(
+                "Although several approaches such as retraining and external grounding methods have been explored, "
+                "they require expensive supervision. We introduce First Logit Boosting (FLB), a training-free "
+                "decoding intervention for large vision-language models. We show that FLB reduces object "
+                "hallucination while preserving answer accuracy on POPE."
+            ),
+            paper_text=(
+                "[PDF page 2]\n[Section: related_work]\n"
+                "Existing retraining methods improve benchmark accuracy but require additional data.\n"
+                "[PDF page 4]\n[Section: method]\n"
+                "We introduce First Logit Boosting (FLB), which amplifies visually grounded first-token logits.\n"
+                "[PDF page 8]\n[Section: experiments]\n"
+                "Baselines include LLaV A-1.5, InstructBLIP, and GPT-4V. "
+                "We show that FLB reduces hallucination rate on POPE.\n"
+            ),
+            venue="CVPR",
+        )
+
+        self.assertEqual(signals.contribution_type, "method")
+        self.assertIn("First Logit Boosting", signals.method)
+        self.assertNotIn("several approaches", signals.method)
+        self.assertIn("We show that FLB reduces", signals.claim)
+        self.assertNotIn("Existing retraining methods", signals.claim)
+        self.assertEqual(signals.baseline, "Baseline evidence: LLaVA-1.5, InstructBLIP, GPT-4V")
+
+    def test_explicit_benchmark_construction_remains_a_benchmark(self) -> None:
+        from scholarflow_api.paper_card import extract_paper_signals
+
+        signals = extract_paper_signals(
+            title="CounterHall: A Benchmark for Counterfactual Object Hallucination",
+            abstract=(
+                "We introduce CounterHall, a benchmark with paired counterfactual images and a new evaluation "
+                "protocol. We evaluate LLaVA and InstructBLIP on the benchmark."
+            ),
+            paper_text="",
+            venue="ACL",
+        )
+
+        self.assertEqual(signals.contribution_type, "benchmark")
+        self.assertIn("CounterHall", signals.contribution_evidence)
+
+    def test_analysis_title_cues_override_incidental_method_language(self) -> None:
+        from scholarflow_api.paper_card import extract_paper_signals
+
+        circuits = extract_paper_signals(
+            title="Dual-Pathway Circuits for Multimodal Hallucination",
+            abstract=(
+                "We analyze two causal pathways that produce hallucinated objects. "
+                "We use MagDiff to visualize their effects."
+            ),
+            paper_text="",
+            venue="NeurIPS",
+        )
+        distractors = extract_paper_signals(
+            title='What Makes "Good" Distractors for Vision-Language Evaluation?',
+            abstract=(
+                "We investigate how distractor construction changes evaluation conclusions. "
+                "We first introduce the detailed experimental setup."
+            ),
+            paper_text="",
+            venue="ACL",
+        )
+
+        self.assertEqual(circuits.contribution_type, "analysis")
+        self.assertEqual(distractors.contribution_type, "analysis")
+        self.assertNotIn("experimental setup", distractors.method)
+
+    def test_named_owned_method_outranks_generic_method_usage(self) -> None:
+        from scholarflow_api.baseline_map import infer_method_family
+        from scholarflow_api.paper_card import extract_paper_signals
+
+        signals = extract_paper_signals(
+            title="DAMRO: Decoding-Aware Multimodal Reliability Optimization",
+            abstract=(
+                "We propose DAMRO, an attention-guided intervention for object hallucination. "
+                "We use Contrastive Decoding in one comparison."
+            ),
+            paper_text=(
+                "[PDF page 4]\n[Section: method]\n"
+                "We use Contrastive Decoding as a comparison. "
+                "We propose DAMRO to suppress attention outliers during generation."
+            ),
+            venue="ECCV",
+        )
+
+        self.assertIn("DAMRO", signals.method)
+        self.assertNotIn("use Contrastive Decoding", signals.method)
+        self.assertEqual(
+            infer_method_family(
+                {
+                    "title": "DAMRO: Dive into the Attention Mechanism of LVLM to Reduce Object Hallucination",
+                    "abstract": "",
+                    "paper_signals": signals.to_dict(),
+                },
+            ),
+            "attention-intervention",
+        )
+
+    def test_baseline_map_uses_owned_method_evidence_and_reports_full_text_coverage(self) -> None:
+        selected = [
+            {
+                "title": "F-CLIPScore for Faithful Multimodal Evaluation",
+                "abstract": (
+                    "We introduce F-CLIPScore, an evaluation metric for faithful multimodal generation. "
+                    "The experiments include diffusion models as evaluated systems."
+                ),
+                "year": "2026",
+                "venue": "CVPR",
+                "source": "arxiv",
+                "url": "https://arxiv.org/abs/fclip",
+                "full_text": (
+                    "[PDF page 4]\n[Section: method]\n"
+                    "We introduce F-CLIPScore as an evaluation metric based on region-text consistency."
+                ),
+                "full_text_provenance": {"status": "extracted", "source": "arxiv_pdf"},
+                "paper_signals": {
+                    "contribution_type": "benchmark",
+                    "method": "We introduce F-CLIPScore as an evaluation metric.",
+                },
+            },
+            {
+                "title": "Mitigating Multilingual Hallucination with Logit Calibration",
+                "abstract": (
+                    "We propose multilingual logit calibration for hallucination mitigation. "
+                    "State-space models are discussed as related architectures."
+                ),
+                "year": "2026",
+                "venue": "ACL",
+                "source": "arxiv",
+                "url": "https://arxiv.org/abs/calibration",
+                "full_text": (
+                    "[PDF page 3]\n[Section: method]\n"
+                    "We propose a decoding-time logit calibration method.\n"
+                    "[PDF page 10]\n[Section: related_work]\n"
+                    "State-space models provide an alternative sequence backbone."
+                ),
+                "full_text_provenance": {"status": "extracted", "source": "arxiv_pdf"},
+                "paper_signals": {
+                    "contribution_type": "method",
+                    "method": "We propose a decoding-time logit calibration method.",
+                },
+            },
+            {
+                "title": "MambaVLM: State-Space Vision-Language Modeling",
+                "abstract": "We propose a Mamba state-space architecture for vision-language modeling.",
+                "year": "2025",
+                "venue": "ICLR",
+                "source": "arxiv",
+                "url": "https://arxiv.org/abs/mambavlm",
+                "paper_signals": {
+                    "contribution_type": "method",
+                    "method": "We propose a Mamba state-space architecture.",
+                },
+            },
+        ]
+
+        baseline_map = build_baseline_map("multimodal hallucination evaluation", [], selected)
+        references = [
+            *baseline_map.recent_strong_baselines,
+            *baseline_map.classic_baselines,
+            *baseline_map.alternative_paradigms,
+        ]
+        by_title = {reference.title: reference for reference in references}
+
+        self.assertEqual(
+            by_title["F-CLIPScore for Faithful Multimodal Evaluation"].method_family,
+            "evaluation-metric",
+        )
+        self.assertEqual(
+            by_title["Mitigating Multilingual Hallucination with Logit Calibration"].method_family,
+            "decoding-intervention",
+        )
+        self.assertEqual(
+            by_title["MambaVLM: State-Space Vision-Language Modeling"].method_family,
+            "state-space",
+        )
+        self.assertEqual(baseline_map.classic_baselines, [])
+        self.assertIn("full_text=2", baseline_map.evidence_summary)
+        self.assertNotIn("`alternative_paradigm` 路线", " ".join(baseline_map.open_questions))
+
+    def test_baseline_verification_separates_pdf_code_citation_and_reproduction_state(self) -> None:
+        selected = [
+            {
+                "title": "Traceable Grounding Intervention",
+                "abstract": "We propose a grounded decoding intervention and evaluate it on POPE.",
+                "year": "2026",
+                "venue": "CVPR",
+                "source": "arxiv",
+                "url": "https://arxiv.org/abs/traceable",
+                "code": "Code: https://github.com/example/traceable-grounding",
+                "full_text": (
+                    "[PDF page 3]\n[Section: method]\n"
+                    "We propose a grounded decoding intervention.\n"
+                    "[PDF page 7]\n[Section: experiments]\n"
+                    "Experiments use POPE, report accuracy, and compare with LLaVA-1.5."
+                ),
+                "full_text_provenance": {"status": "extracted", "source": "arxiv_pdf"},
+                "paper_signals": {
+                    "contribution_type": "method",
+                    "method": "方法证据：We propose a grounded decoding intervention.",
+                    "dataset": "POPE",
+                    "metric": "accuracy",
+                    "baseline": "Baseline evidence: LLaVA-1.5",
+                },
+            },
+        ]
+
+        baseline_map = build_baseline_map("grounded hallucination mitigation", [], selected)
+        reference = baseline_map.recent_strong_baselines[0]
+        verification = reference.verification
+
+        self.assertEqual(verification.evidence_level, "full_text")
+        self.assertEqual(verification.selection_basis, "full_text_method_evidence")
+        self.assertEqual(verification.citation_status, "not_checked")
+        self.assertEqual(verification.code_status, "link_present")
+        self.assertEqual(verification.code_url, "https://github.com/example/traceable-grounding")
+        self.assertEqual(verification.code_source, "metadata.code")
+        self.assertEqual(verification.reproduction_status, "ready")
+        self.assertTrue(all(value == "ready" for value in verification.checks.values()))
+        self.assertEqual(verification.missing_evidence, [])
+        self.assertIn("code_link=1/1", baseline_map.evidence_summary)
+        self.assertIn("citation_graph_checked=0/1", baseline_map.evidence_summary)
+        self.assertIn("ready=1", baseline_map.evidence_summary)
+
+    def test_baseline_reproduction_stays_partial_without_code_and_blocked_without_pdf(self) -> None:
+        selected = [
+            {
+                "title": "Full Text but No Repository",
+                "abstract": "We propose a method evaluated on POPE with accuracy against LLaVA.",
+                "year": "2026",
+                "venue": "ACL",
+                "source": "arxiv",
+                "url": "https://arxiv.org/abs/no-code",
+                "code": "unknown",
+                "full_text": "[PDF page 4]\n[Section: experiments]\nWe evaluate on POPE with accuracy against LLaVA.",
+                "full_text_provenance": {"status": "extracted", "source": "arxiv_pdf"},
+                "paper_signals": {
+                    "contribution_type": "method",
+                    "method": "方法证据：We propose a method.",
+                    "dataset": "POPE",
+                    "metric": "accuracy",
+                    "baseline": "Baseline evidence: LLaVA",
+                },
+            },
+            {
+                "title": "Abstract Candidate Only",
+                "abstract": "We propose an evaluation method.",
+                "year": "2026",
+                "venue": "arXiv",
+                "source": "arxiv",
+                "url": "https://arxiv.org/abs/abstract-only",
+                "code": "available",
+                "paper_signals": {
+                    "contribution_type": "method",
+                    "method": "方法证据：We propose an evaluation method.",
+                    "dataset": "当前证据不足：未发现明确 dataset/benchmark 名称",
+                    "metric": "当前证据不足：未发现明确 metric/evaluation 指标",
+                    "baseline": "当前证据不足：未发现 baseline",
+                },
+            },
+        ]
+
+        baseline_map = build_baseline_map("hallucination evaluation", [], selected)
+        by_title = {
+            reference.title: reference
+            for reference in [
+                *baseline_map.recent_strong_baselines,
+                *baseline_map.classic_baselines,
+                *baseline_map.alternative_paradigms,
+            ]
+        }
+
+        full_text = by_title["Full Text but No Repository"].verification
+        abstract_only = by_title["Abstract Candidate Only"].verification
+        self.assertEqual(full_text.reproduction_status, "partial")
+        self.assertEqual(full_text.checks["code"], "missing")
+        self.assertIn("代码仓库链接", " ".join(full_text.missing_evidence))
+        self.assertEqual(abstract_only.evidence_level, "abstract_only")
+        self.assertEqual(abstract_only.code_status, "claimed_unverified")
+        self.assertEqual(abstract_only.reproduction_status, "blocked")
+        self.assertEqual(abstract_only.checks["full_text"], "missing")
+
+    def test_baseline_code_link_can_be_traced_to_pdf_text(self) -> None:
+        paper = {
+            "title": "PDF Linked Method",
+            "abstract": "We propose a grounded method.",
+            "year": "2026",
+            "venue": "CVPR",
+            "source": "arxiv",
+            "url": "https://arxiv.org/abs/pdf-linked",
+            "code": "unknown",
+            "full_text": (
+                "[PDF page 1]\n[Section: front_matter]\n"
+                "Code is available at https://github.com/example/pdf-linked-method.\n"
+                "[PDF page 4]\n[Section: method]\nWe propose a grounded method."
+            ),
+            "full_text_provenance": {"status": "extracted", "source": "arxiv_pdf"},
+            "paper_signals": {
+                "contribution_type": "method",
+                "method": "方法证据：We propose a grounded method.",
+                "dataset": "POPE",
+                "metric": "accuracy",
+                "baseline": "Baseline evidence: LLaVA",
+            },
+        }
+
+        verification = build_baseline_map("grounded method", [], [paper]).recent_strong_baselines[0].verification
+
+        self.assertEqual(verification.code_status, "link_present")
+        self.assertEqual(verification.code_source, "pdf.full_text")
+        self.assertEqual(verification.code_url, "https://github.com/example/pdf-linked-method")
+        self.assertEqual(verification.reproduction_status, "ready")
+
     def test_direction_reading_promotes_only_verified_extracted_text(self) -> None:
         paper = {
             "id": "paper_full_text_contract",

@@ -411,6 +411,12 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     }
     if (restored.directionReview) {
       setDirectionReview(restored.directionReview);
+      // The saved review direction is the identity of the memory scope. Project
+      // keywords are only a search default and may differ from the direction
+      // that produced the persisted paper memories.
+      if (restored.directionReview.direction.trim()) {
+        setDirectionInput(restored.directionReview.direction);
+      }
     }
     if (restored.memoryResult) {
       setMemoryResult(restored.memoryResult);
@@ -1006,7 +1012,10 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
         projectId,
         {
           question: memoryQuestion,
-          direction: directionInput,
+          // Query the memory scope that actually produced the persisted cards.
+          // When no review has been restored yet, omit the direction so the API
+          // can use the project's latest/only memory scope safely.
+          direction: directionReview?.direction?.trim() || undefined,
           top_k: memoryTopK,
         },
         { signal: guard.signal },
@@ -1622,7 +1631,14 @@ function buildWorkflowSteps(input: {
     toWorkflowStepView({
       id: "experiment-planner",
       label: "Experiment Plan",
-      summary: experimentStatus === "blocked" ? "缺少可复现 anchor" : input.researchDecision ? "已生成实验计划" : "检查 anchor 后生成计划",
+      summary:
+        experimentStatus === "blocked"
+          ? input.researchDecision?.experiment?.anchor_paper_title
+            ? "实验硬约束尚未满足"
+            : "缺少可复现 anchor"
+          : input.researchDecision
+            ? "已生成实验计划"
+            : "检查 anchor 后生成计划",
       status: resolveStepStatus({
         blocked: !hasProject || input.apiStatus === "offline" || experimentStatus === "blocked",
         running: input.decisionBusy,
