@@ -59,19 +59,11 @@ def build_research_sight(
     supported_signal_fields = append_signal_evidence_snippets(evidence_pack, paper, signal_view)
     evidence_profile = build_evidence_profile(evidence_pack)
     source_evidence = first_source_evidence(evidence_pack)
-    required_fields = ["claim", "dataset", "metric", "baseline", "limitation"]
-    if contribution_type == "method":
-        required_fields.append("method")
-    missing_required = [
-        field
-        for field in required_fields
-        if not has_research_signal(getattr(signal_view, field)) or field not in supported_signal_fields
-    ]
-    if source_evidence is None or (contribution_type != "survey" and missing_required):
+    if source_evidence is None:
         values = build_evidence_bounded_sight(
             title=title,
             source_evidence=source_evidence,
-            missing_required=missing_required,
+            missing_required=["claim", "dataset", "metric", "baseline", "limitation"],
             contribution_type=contribution_type,
         )
     else:
@@ -85,6 +77,12 @@ def build_research_sight(
             contribution_type=contribution_type,
             benchmark_risk=benchmark_risk,
             signals=signal_view,
+        )
+        values = apply_field_evidence_boundaries(
+            values,
+            signals=signal_view,
+            supported_signal_fields=supported_signal_fields,
+            contribution_type=contribution_type,
         )
     critique_evidence = build_critique_evidence(values, evidence_profile, contribution_type)
 
@@ -101,6 +99,49 @@ def build_research_sight(
         evidence_pack=evidence_pack,
         critique_evidence=critique_evidence,
     )
+
+
+def apply_field_evidence_boundaries(
+    values: dict[str, str],
+    *,
+    signals: PaperSignals,
+    supported_signal_fields: set[str],
+    contribution_type: str,
+) -> dict[str, str]:
+    if contribution_type == "survey":
+        return values
+    requirements = {
+        "motivation_sharpness": ["claim"],
+        "solution_elegance": ["method"],
+        "evaluation_integrity": ["claim", "dataset", "metric"],
+        "paradigm_inspiration": ["method"],
+        "why_good": ["claim", "dataset", "metric"],
+        "why_not_good": ["claim", "dataset", "metric"],
+        "better_angle": ["claim", "dataset", "metric"],
+        "baseline_comparison": ["baseline"],
+        "next_step_proposal": ["claim", "dataset", "metric"],
+    }
+    bounded = dict(values)
+    for field, required_fields in requirements.items():
+        missing = [
+            signal_field
+            for signal_field in required_fields
+            if not has_research_signal(getattr(signals, signal_field))
+            or signal_field not in supported_signal_fields
+        ]
+        if missing:
+            bounded[field] = (
+                f"无法判断：该字段缺少 {', '.join(missing)} 的可定位原文证据；"
+                "其他已提取字段不受此项缺失影响。"
+            )
+    if not has_research_signal(signals.limitation):
+        for field in ["why_not_good", "better_angle"]:
+            if not bounded[field].startswith("无法判断"):
+                bounded[field] = (
+                    "待验证推断（作者未明确陈述 limitation）："
+                    f"{bounded[field]}"
+                )
+    return bounded
 
 
 def build_evidence_bounded_sight(
@@ -515,6 +556,13 @@ def build_evidence_profile(evidence_pack: EvidencePack) -> dict[str, dict[str, s
                 "source": snippet.source,
             },
         )
+        signal_match = re.match(r"signal_([a-z_]+)_(?:pdf|abstract)$", snippet.id)
+        if signal_match:
+            profile[f"signal:{signal_match.group(1)}"] = {
+                "id": snippet.id,
+                "confidence": snippet.confidence or evidence_pack.confidence,
+                "source": snippet.source,
+            }
     fallback = next(
         (snippet for snippet in evidence_pack.snippets if snippet.source in {"metadata.abstract", "pdf.full_text"}),
         None,
@@ -533,18 +581,28 @@ def build_critique_evidence(
     contribution_type: str,
 ) -> list[ResearchSightJudgment]:
     preferred_kinds = {
-        "motivation_sharpness": ["problem", "context", "metadata"],
-        "solution_elegance": ["method", "context", "metadata"],
-        "evaluation_integrity": ["evaluation", "risk", "context"],
-        "paradigm_inspiration": ["context", "method", "metadata"],
-        "why_good": ["method", "evaluation", "context"],
-        "why_not_good": ["risk", "evaluation", "context"],
-        "better_angle": ["risk", "evaluation", "method"],
-        "baseline_comparison": ["metadata", "context"],
-        "next_step_proposal": ["evaluation", "risk", "method"],
+        "motivation_sharpness": ["signal:claim", "problem", "context", "metadata"],
+        "solution_elegance": ["signal:method", "method", "context", "metadata"],
+        "evaluation_integrity": ["signal:metric", "signal:dataset", "evaluation", "risk", "context"],
+        "paradigm_inspiration": ["signal:method", "context", "method", "metadata"],
+        "why_good": ["signal:claim", "signal:method", "method", "evaluation", "context"],
+        "why_not_good": ["signal:limitation", "signal:metric", "risk", "evaluation", "context"],
+        "better_angle": ["signal:limitation", "signal:claim", "risk", "evaluation", "method"],
+        "baseline_comparison": ["signal:baseline", "metadata", "context"],
+        "next_step_proposal": ["signal:claim", "signal:dataset", "evaluation", "risk", "method"],
     }
     judgments: list[ResearchSightJudgment] = []
-    for field in values:
+    for field, value in values.items():
+        if normalize_space(value).startswith("无法判断"):
+            judgments.append(
+                ResearchSightJudgment(
+                    field=field,
+                    evidence_snippet_id="none",
+                    confidence="low",
+                    rationale="该字段缺少自身所需的可定位原文证据；其他字段的证据不能替代它。",
+                ),
+            )
+            continue
         evidence = select_evidence_for_field(evidence_profile, preferred_kinds.get(field, ["default"]))
         judgments.append(
             ResearchSightJudgment(

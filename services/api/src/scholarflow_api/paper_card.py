@@ -279,6 +279,9 @@ METRIC_NAMES = [
     "faithfulness",
     "grounding accuracy",
     "hallucination rate",
+    "CHAIRs",
+    "CHAIRi",
+    "Dice",
 ]
 
 METRIC_ALIASES = {
@@ -301,6 +304,9 @@ METRIC_ALIASES = {
     "faithfulness": ["faithfulness"],
     "grounding accuracy": ["grounding accuracy"],
     "hallucination rate": ["hallucination rate"],
+    "CHAIRs": ["CHAIRs", "CHAIR-s"],
+    "CHAIRi": ["CHAIRi", "CHAIR-i"],
+    "Dice": ["Dice", "Dice score", "Dice coefficient"],
 }
 
 DATASET_ALIASES = {name: [name] for name in DATASET_NAMES}
@@ -322,6 +328,10 @@ BASELINE_ALIASES = {
     "Qwen-VL": ["Qwen-VL", "Qwen VL"],
     "mPLUG-Owl": ["mPLUG-Owl"],
     "CLIPScore": ["CLIPScore", "CLIP Score"],
+    "VCD": ["VCD"],
+    "ICD": ["ICD"],
+    "OPERA": ["OPERA"],
+    "DoLa": ["DoLa"],
 }
 
 METHOD_MARKERS = [
@@ -704,6 +714,13 @@ def extract_named_signal_from_segments(
                     pattern = r"(?<![A-Za-z0-9])" + re.escape(variant) + r"(?![A-Za-z0-9])"
                     match = re.search(pattern, sentence, flags=re.IGNORECASE)
                     if match:
+                        if (
+                            field_name == "dataset"
+                            and canonical == "CHAIR"
+                            and re.search(r"\b(?:metrics?|scores?)\b", lower)
+                            and not re.search(r"\b(?:dataset|benchmark|evaluate(?:d|s)?\s+on)\b", lower)
+                        ):
+                            continue
                         sentence_matches.append((canonical, match.group(0)))
                         break
             if not sentence_matches:
@@ -1106,7 +1123,13 @@ def make_signal_evidence(
         section=segment.section,
         page=segment.page,
         quote=truncate_text(quote or raw_value, 360),
-        confidence="medium",
+        confidence=(
+            "high"
+            if segment.source == "pdf.full_text"
+            else "medium"
+            if segment.source == "metadata.abstract"
+            else "low"
+        ),
         validation_errors=[],
     )
 
@@ -1470,9 +1493,15 @@ def build_takeaways_section(signals: PaperSignals, focus: str) -> str:
 
 
 def build_weakest_assumption(focus: str, signals: PaperSignals) -> str:
-    required_fields = ["claim", "limitation", "dataset", "metric"]
+    required_fields = ["claim", "dataset", "metric"]
     missing = [field for field in required_fields if not has_signal(getattr(signals, field))]
     if not missing:
+        if not has_signal(signals.limitation):
+            return (
+                f"推断性弱假设（作者未明确陈述 limitation）：`{signals.metric}` 在 `{signals.dataset}` 上"
+                f"足以支持 `{signals.claim}`。若该指标受数据捷径、样本选择或证据错配影响，核心 claim 会被削弱。"
+                "这是由 claim + dataset + metric 原文信号推出的待验证假设，不是作者已经承认的局限。"
+            )
         return (
             f"推断性弱假设：原文 limitation `{signals.limitation}` 可能使 `{signals.metric}` 在 `{signals.dataset}` 上"
             f"不足以支持 `{signals.claim}`。该判断锚定上述四项原文信号，仍需回到对应段落复核。"
@@ -1564,10 +1593,16 @@ def build_counterexample(signals: PaperSignals, focus: str) -> str:
 
 
 def build_follow_up_idea(signals: PaperSignals, focus: str) -> str:
-    if not all(has_signal(getattr(signals, field)) for field in ["claim", "limitation", "dataset", "metric"]):
+    if not all(has_signal(getattr(signals, field)) for field in ["claim", "dataset", "metric"]):
         return (
-            "无法判断：没有同时定位该论文的 claim、limitation、dataset 与 metric 原文证据。"
+            "无法判断：没有同时定位该论文的 claim、dataset 与 metric 原文证据。"
             "在这些字段缺失时，不提出论文专属 follow-up，避免把通用 benchmark 批判包装成新 idea。"
+        )
+    if not has_signal(signals.limitation):
+        return (
+            f"Follow-up idea（待验证推断）：固定原文 claim `{signals.claim}`，在 `{signals.dataset}` 中构造"
+            f"证据冲突、分布偏移或模板被破坏的切片，并继续用 `{signals.metric}` 与一个反例指标联合评估。"
+            "作者未明确陈述 limitation，因此这不是论文结论；第一步必须先验证该失败切片是否稳定存在。"
         )
     limitation = signals.limitation
     return (

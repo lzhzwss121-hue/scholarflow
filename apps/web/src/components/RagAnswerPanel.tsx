@@ -177,6 +177,7 @@ function RagQualityPanel({
     ["主张可追溯", formatQualityMetric(assessment.metrics.claim_traceability, "ratio")],
     ["引用完整", formatQualityMetric(assessment.metrics.citation_integrity, "ratio")],
     ["全文覆盖", formatQualityMetric(assessment.metrics.full_text_coverage, "ratio")],
+    ["问题覆盖", formatQualityMetric(assessment.metrics.mean_anchor_coverage, "ratio")],
     ["检索均值", formatQualityMetric(assessment.metrics.mean_retrieval_score, "score")],
   ];
   const problemChecks = assessment.checks.filter(
@@ -288,6 +289,7 @@ function CitationEvidenceCard({
         <span>{citation.section || "section unknown"}</span>
         <span>{pageLabel}</span>
         <span>score {citation.hybrid_score.toFixed(2)}</span>
+        <span>query {Math.round((citation.anchor_coverage ?? 0) * 100)}%</span>
       </div>
       <h4>{citation.paper_title}</h4>
       <p>{citation.text}</p>

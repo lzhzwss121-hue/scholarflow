@@ -96,7 +96,24 @@ def assess_rag_answer(
         if retrieval_scores
         else 0.0
     )
-    retrieval_strength = min(1.0, mean_retrieval_score / 0.6)
+    anchor_coverages = [
+        (
+            _safe_float(item.get("anchor_coverage"))
+            if item.get("anchor_coverage") is not None
+            else min(1.0, _safe_float(item.get("hybrid_score")) / 0.6)
+        )
+        for item in used_citations
+    ]
+    mean_anchor_coverage = (
+        round(fmean(anchor_coverages), 4)
+        if anchor_coverages
+        else 0.0
+    )
+    retrieval_strength = min(
+        1.0,
+        mean_retrieval_score / 0.6,
+        mean_anchor_coverage / 0.6,
+    )
     distinct_papers = len(
         {
             str(item.get("paper_id") or "")
@@ -181,6 +198,27 @@ def assess_rag_answer(
             else "",
         ),
         _check(
+            "query_relevance",
+            "问题覆盖",
+            (
+                "not_applicable"
+                if safe_refusal
+                else "pass"
+                if mean_anchor_coverage >= 0.5
+                else "warn"
+                if mean_anchor_coverage >= 0.3
+                else "fail"
+            ),
+            (
+                "没有过阈值命中，系统执行拒答。"
+                if safe_refusal
+                else f"已用证据平均覆盖问题 query anchor 的 {mean_anchor_coverage:.0%}。"
+            ),
+            "当前片段只命中少量泛化词；请拒答、缩小问题，或补充包含任务/方法/数据集/指标锚点的原文。"
+            if not safe_refusal and mean_anchor_coverage < 0.3
+            else "",
+        ),
+        _check(
             "claim_rejection",
             "生成主张过滤",
             (
@@ -206,6 +244,8 @@ def assess_rag_answer(
         "citation_integrity": round(citation_integrity, 4),
         "full_text_coverage": round(full_text_coverage, 4),
         "mean_retrieval_score": mean_retrieval_score,
+        "mean_anchor_coverage": mean_anchor_coverage,
+        "retrieval_relevance": round(retrieval_strength, 4),
         "distinct_papers": distinct_papers,
         "accepted_claims": len(claims),
         "rejected_claims": rejected_claim_count,
@@ -227,10 +267,10 @@ def assess_rag_answer(
                 0.0,
                 100.0
                 * (
-                    0.30 * claim_traceability
-                    + 0.25 * citation_integrity
-                    + 0.25 * full_text_coverage
-                    + 0.20 * retrieval_strength
+                    0.20 * claim_traceability
+                    + 0.15 * citation_integrity
+                    + 0.15 * full_text_coverage
+                    + 0.50 * retrieval_strength
                 )
                 - penalty,
             ),
@@ -240,6 +280,8 @@ def assess_rag_answer(
             score >= 80
             and full_text_coverage == 1.0
             and mean_retrieval_score >= 0.35
+            and mean_anchor_coverage >= 0.4
+            and retrieval_strength >= 0.65
             and rejected_claim_count == 0
             and not invalid_used_ids
         )
@@ -255,6 +297,8 @@ def assess_rag_answer(
         risks.append("部分主张仍依赖摘要级证据。")
     if claims and mean_retrieval_score < 0.35:
         risks.append("已用证据与问题的检索匹配强度偏低。")
+    if claims and mean_anchor_coverage < 0.3:
+        risks.append("已用证据只覆盖少量问题锚点，可能是在回答相邻主题而不是用户问题。")
     if rejected_claim_count:
         risks.append("生成模型曾产生未通过证据校验的候选主张。")
     if claims:

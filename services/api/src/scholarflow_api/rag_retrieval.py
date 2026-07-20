@@ -25,6 +25,52 @@ DEFAULT_MIN_SCORE = 0.18
 LOCAL_EMBEDDING_MODEL = "local/hash-embedding-v1"
 _CJK_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
 _LATIN_PATTERN = re.compile(r"[a-z0-9]+(?:[-_][a-z0-9]+)*")
+_RETRIEVAL_STOP_TERMS = {
+    "about",
+    "answer",
+    "approach",
+    "current",
+    "evidence",
+    "find",
+    "from",
+    "how",
+    "method",
+    "methods",
+    "model",
+    "models",
+    "paper",
+    "papers",
+    "result",
+    "results",
+    "study",
+    "that",
+    "the",
+    "these",
+    "this",
+    "use",
+    "uses",
+    "using",
+    "what",
+    "which",
+    "with",
+}
+_CJK_QUERY_ALIASES = {
+    "对象幻觉": "object hallucination",
+    "物体幻觉": "object hallucination",
+    "幻觉": "hallucination",
+    "视觉定位": "visual grounding",
+    "证据忠实性": "evidence faithfulness",
+    "忠实性": "faithfulness",
+    "解码": "decoding",
+    "基准": "benchmark",
+    "评测": "evaluation",
+    "数据集": "dataset",
+    "指标": "metric",
+    "实验": "experiment",
+    "医学": "medical",
+    "图像": "image",
+    "分割": "segmentation",
+}
 
 
 class EmbeddingError(RuntimeError):
@@ -418,6 +464,7 @@ def retrieve_project_chunks(
         warnings.append(str(error))
 
     query_terms = retrieval_terms(normalized_query)
+    query_anchors = retrieval_anchor_terms(normalized_query)
     document_term_sets = [set(retrieval_terms(str(row["chunk_text"]))) for row in rows]
     document_frequency = Counter(
         term
@@ -437,14 +484,37 @@ def retrieve_project_chunks(
         )
         stored_vector = _parse_stored_vector(row, active_provider)
         vector_score = cosine_similarity(query_vector, stored_vector) if query_vector and stored_vector else 0.0
+        matched_query_terms = matched_retrieval_anchors(query_anchors, str(row["chunk_text"]))
+        anchor_coverage = (
+            len(matched_query_terms) / len(query_anchors)
+            if query_anchors
+            else lexical_score
+        )
         if stored_vector:
             vector_ready_count += 1
         if query_vector and stored_vector:
-            hybrid_score = 0.62 * max(0.0, vector_score) + 0.38 * lexical_score
+            if active_provider and (
+                active_provider.model == LOCAL_EMBEDDING_MODEL
+                or active_provider.name == "local"
+            ):
+                # The local provider is a deterministic lexical hash, not a
+                # semantic model. Keep collision-prone vector similarity as a
+                # small tie-breaker instead of the main relevance signal.
+                hybrid_score = 0.80 * lexical_score + 0.20 * max(0.0, vector_score)
+            else:
+                hybrid_score = 0.45 * lexical_score + 0.55 * max(0.0, vector_score)
             retrieval_mode = "hybrid"
         else:
             hybrid_score = lexical_score
             retrieval_mode = "lexical_only"
+        passes_relevance_gate = passes_query_relevance_gate(
+            query_anchor_count=len(query_anchors),
+            anchor_coverage=anchor_coverage,
+            lexical_score=lexical_score,
+            vector_score=max(0.0, vector_score),
+            retrieval_mode=retrieval_mode,
+            provider=active_provider,
+        )
         if str(row.get("evidence_level")) == "full_text" and hybrid_score > 0:
             hybrid_score = min(1.0, hybrid_score + 0.015)
         scored.append(
@@ -453,6 +523,9 @@ def retrieve_project_chunks(
                 "lexical_score": round(lexical_score, 6),
                 "vector_score": round(max(0.0, vector_score), 6),
                 "hybrid_score": round(hybrid_score, 6),
+                "anchor_coverage": round(anchor_coverage, 6),
+                "matched_query_terms": matched_query_terms,
+                "passes_relevance_gate": passes_relevance_gate,
                 "retrieval_mode": retrieval_mode,
             }
         )
@@ -467,8 +540,12 @@ def retrieve_project_chunks(
     )
     selected: list[dict[str, Any]] = []
     per_paper: Counter[str] = Counter()
+    gated_count = 0
     for row in scored:
         if float(row["hybrid_score"]) < min_score:
+            continue
+        if not bool(row["passes_relevance_gate"]):
+            gated_count += 1
             continue
         paper_id = str(row["paper_id"])
         if per_paper[paper_id] >= max_chunks_per_paper:
@@ -482,6 +559,10 @@ def retrieve_project_chunks(
     retrieval_mode = "hybrid" if vector_complete else "lexical_only"
     if not selected:
         status = "no_reliable_hit"
+        if gated_count:
+            warnings.append(
+                "候选虽然达到数值阈值，但缺少足够 query anchor 原文重合，已拒绝向量碰撞或泛化词命中。"
+            )
         warnings.append(
             f"没有 chunk 达到最小相关性阈值 {min_score:.2f}；未返回低置信度证据。"
         )
@@ -525,6 +606,9 @@ def retrieval_terms(text: str, *, include_bigrams: bool = False) -> list[str]:
     normalized = normalize_retrieval_text(text)
     terms = _LATIN_PATTERN.findall(normalized)
     latin_words = list(terms)
+    for term in latin_words:
+        if "-" in term or "_" in term:
+            terms.extend(part for part in re.split(r"[-_]+", term) if part)
     for run in _CJK_PATTERN.findall(normalized):
         characters = list(run)
         terms.extend(characters)
@@ -537,6 +621,92 @@ def retrieval_terms(text: str, *, include_bigrams: bool = False) -> list[str]:
     return terms
 
 
+def retrieval_anchor_terms(text: str) -> list[str]:
+    normalized = normalize_retrieval_text(text)
+    anchors: list[str] = []
+    for token in _LATIN_PATTERN.findall(normalized):
+        parts = [part for part in re.split(r"[-_]+", token) if part]
+        for part in parts:
+            if len(part) >= 3 and part not in _RETRIEVAL_STOP_TERMS and not part.isdigit():
+                anchors.append(part)
+        if len(parts) > 1:
+            phrase = " ".join(parts)
+            if phrase not in _RETRIEVAL_STOP_TERMS:
+                anchors.append(phrase)
+    for run in _CJK_PATTERN.findall(normalized):
+        aliases = [
+            english
+            for chinese, english in sorted(
+                _CJK_QUERY_ALIASES.items(),
+                key=lambda item: len(item[0]),
+                reverse=True,
+            )
+            if chinese in run
+        ]
+        if aliases:
+            for alias in aliases:
+                anchors.append(alias)
+                anchors.extend(
+                    part
+                    for part in alias.split()
+                    if len(part) >= 3 and part not in _RETRIEVAL_STOP_TERMS
+                )
+        elif 2 <= len(run) <= 8:
+            anchors.append(run)
+        elif len(run) > 8:
+            anchors.extend(
+                run[index : index + 2]
+                for index in range(len(run) - 1)
+                if run[index : index + 2] not in {"哪些", "如何", "当前", "论文", "研究", "方法"}
+            )
+    return list(dict.fromkeys(anchors))
+
+
+def matched_retrieval_anchors(anchors: list[str], document: str) -> list[str]:
+    normalized_document = normalize_retrieval_match_text(document)
+    matches: list[str] = []
+    for anchor in anchors:
+        normalized_anchor = normalize_retrieval_match_text(anchor)
+        if not normalized_anchor:
+            continue
+        if _CJK_PATTERN.search(normalized_anchor):
+            matched = normalized_anchor in normalized_document
+        else:
+            pattern = r"(?<![a-z0-9])" + r"[\s-]+".join(
+                re.escape(part)
+                for part in normalized_anchor.split()
+                if part
+            ) + r"(?![a-z0-9])"
+            matched = bool(re.search(pattern, normalized_document))
+        if matched:
+            matches.append(anchor)
+    return matches
+
+
+def passes_query_relevance_gate(
+    *,
+    query_anchor_count: int,
+    anchor_coverage: float,
+    lexical_score: float,
+    vector_score: float,
+    retrieval_mode: str,
+    provider: EmbeddingProvider | None,
+) -> bool:
+    if query_anchor_count <= 0:
+        return lexical_score >= 0.18
+    minimum_coverage = 1.0 if query_anchor_count == 1 else (0.34 if query_anchor_count <= 3 else 0.25)
+    lexical_support = anchor_coverage >= minimum_coverage and lexical_score >= 0.10
+    if lexical_support:
+        return True
+    semantic_provider = bool(
+        retrieval_mode == "hybrid"
+        and provider
+        and provider.name != "local"
+        and provider.model != LOCAL_EMBEDDING_MODEL
+    )
+    return semantic_provider and vector_score >= 0.55
+
+
 def lexical_relevance_score(
     query: str,
     query_terms: list[str],
@@ -545,7 +715,8 @@ def lexical_relevance_score(
     document_frequency: Counter[str],
     document_count: int,
 ) -> float:
-    unique_query_terms = set(query_terms)
+    anchor_terms = retrieval_anchor_terms(query)
+    unique_query_terms = set(anchor_terms or query_terms)
     if not unique_query_terms:
         return 0.0
     weighted_total = 0.0
@@ -556,7 +727,12 @@ def lexical_relevance_score(
         if term in document_terms:
             weighted_match += weight
     coverage = weighted_match / weighted_total if weighted_total else 0.0
-    phrase_bonus = 1.0 if len(query) >= 4 and query in normalize_retrieval_text(document) else 0.0
+    phrase_bonus = (
+        1.0
+        if len(query) >= 4
+        and normalize_retrieval_match_text(query) in normalize_retrieval_match_text(document)
+        else 0.0
+    )
     return min(1.0, 0.88 * coverage + 0.12 * phrase_bonus)
 
 
@@ -575,6 +751,10 @@ def normalize_vector(vector: list[float]) -> list[float]:
 
 def normalize_retrieval_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").lower()).strip()
+
+
+def normalize_retrieval_match_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[-_]+", " ", str(value or "").lower())).strip()
 
 
 def _retrieval_hit(row: dict[str, Any], *, rank: int) -> dict[str, Any]:
@@ -613,6 +793,8 @@ def _retrieval_hit(row: dict[str, Any], *, rank: int) -> dict[str, Any]:
         "lexical_score": float(row["lexical_score"]),
         "vector_score": float(row["vector_score"]),
         "hybrid_score": float(row["hybrid_score"]),
+        "anchor_coverage": float(row.get("anchor_coverage") or 0.0),
+        "matched_query_terms": list(row.get("matched_query_terms") or []),
     }
 
 

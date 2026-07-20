@@ -467,6 +467,64 @@ POPE: Polling-based Object Probing Evaluation for Object Hallucination.
         self.assertNotIn("Existing retraining methods", signals.claim)
         self.assertEqual(signals.baseline, "Baseline evidence: LLaVA-1.5, InstructBLIP, GPT-4V")
 
+    def test_full_text_fields_remain_useful_when_author_does_not_state_a_limitation(self) -> None:
+        from scholarflow_api.baseline_map import build_baseline_map
+        from scholarflow_api.paper_card import generate_deep_paper_card
+        from scholarflow_api.research_sight import build_research_sight
+
+        paper = {
+            "title": "First Logit Boosting for Object Hallucination Mitigation",
+            "abstract": (
+                "We introduce First Logit Boosting, a training-free decoding intervention. "
+                "We show that it reduces object hallucination on COCO."
+            ),
+            "year": "2026",
+            "venue": "CVPR",
+            "source": "arxiv",
+            "url": "https://arxiv.org/abs/flb",
+        }
+        full_text = (
+            "[PDF page 4]\n[Section: method]\n"
+            "We introduce First Logit Boosting (FLB), which amplifies visually grounded first-token logits.\n"
+            "[PDF page 8]\n[Section: experiments]\n"
+            "We evaluate our method on the COCO dataset. "
+            "Baselines include VCD, ICD, and LLaVA-1.5. "
+            "Evaluation metrics include CHAIRs, CHAIRi, and accuracy.\n"
+            "[PDF page 9]\n[Section: results]\n"
+            "We show that FLB reduces CHAIRs while preserving answer accuracy."
+        )
+        card = generate_deep_paper_card(paper, full_text)
+        sight = build_research_sight(
+            {**paper, "full_text": full_text, "evidence_level": "full_text"},
+            [section.to_dict() for section in card.sections],
+            build_baseline_map("object hallucination mitigation", [], []),
+            "object hallucination mitigation",
+            card.signals,
+        )
+
+        self.assertEqual(card.evidence_level, "full_text")
+        self.assertNotIn("method", card.signals.missing_signals)
+        self.assertNotIn("dataset", card.signals.missing_signals)
+        self.assertNotIn("metric", card.signals.missing_signals)
+        self.assertNotIn("baseline", card.signals.missing_signals)
+        self.assertNotIn("claim", card.signals.missing_signals)
+        self.assertIn("limitation", card.signals.missing_signals)
+        self.assertEqual(card.signals.dataset, "COCO")
+        self.assertIn("CHAIRs", card.signals.metric)
+        self.assertIn("CHAIRi", card.signals.metric)
+        self.assertIn("推断性弱假设", card.weakest_assumption)
+        self.assertNotIn("无法判断", card.follow_up_idea)
+        self.assertNotIn("无法判断", sight.solution_elegance)
+        self.assertNotIn("无法判断", sight.evaluation_integrity)
+        self.assertNotIn("无法判断", sight.why_good)
+        self.assertTrue(
+            any(
+                item.field == "evaluation_integrity"
+                and item.evidence_snippet_id != "none"
+                for item in sight.critique_evidence
+            )
+        )
+
     def test_explicit_benchmark_construction_remains_a_benchmark(self) -> None:
         from scholarflow_api.paper_card import extract_paper_signals
 

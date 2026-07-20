@@ -441,6 +441,8 @@ class RagSearchHit(BaseModel):
     lexical_score: float
     vector_score: float
     hybrid_score: float
+    anchor_coverage: float = 0.0
+    matched_query_terms: list[str] = Field(default_factory=list)
 
 
 class RagSearchResponse(BaseModel):

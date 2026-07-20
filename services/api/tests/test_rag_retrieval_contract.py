@@ -17,6 +17,21 @@ from scholarflow_api.rag_retrieval import (
 )
 
 
+class CollisionEmbeddingProvider:
+    """Simulate a hash collision so lexical gating, not vector luck, decides."""
+
+    name = "local"
+    model = "local/collision-test"
+    dimensions = 8
+    external_data_transfer = False
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] for _text in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+
 def candidate(
     *,
     title: str,
@@ -225,6 +240,23 @@ class RagRetrievalContractTest(unittest.TestCase):
                 self.assertEqual(no_hit.status, "no_reliable_hit")
                 self.assertEqual(no_hit.hits, [])
                 self.assertTrue(any("最小相关性阈值" in warning for warning in no_hit.warnings))
+
+                with patch(
+                    "scholarflow_api.rag_retrieval.get_embedding_provider",
+                    return_value=CollisionEmbeddingProvider(),
+                ):
+                    collision_no_hit = main_module.search_project_rag(
+                        project.id,
+                        RagSearchRequest(
+                            query="medical image segmentation Dice score",
+                            min_score=0.18,
+                        ),
+                    )
+                self.assertEqual(collision_no_hit.status, "no_reliable_hit")
+                self.assertEqual(collision_no_hit.hits, [])
+                self.assertTrue(
+                    any("query anchor" in warning for warning in collision_no_hit.warnings)
+                )
 
                 openapi_paths = main_module.app.openapi()["paths"]
                 self.assertIn("/projects/{project_id}/rag-search", openapi_paths)

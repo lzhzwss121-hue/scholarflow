@@ -5,7 +5,11 @@ import unittest
 from scholarflow_api.rag_evaluation import assess_rag_answer
 
 
-def answer_fixture(*, evidence_level: str = "full_text") -> dict[str, object]:
+def answer_fixture(
+    *,
+    evidence_level: str = "full_text",
+    anchor_coverage: float | None = None,
+) -> dict[str, object]:
     citation_id = "paper_eval:experiments:p.7:chunk-1"
     return {
         "question": "What evidence supports the reported improvement?",
@@ -27,6 +31,11 @@ def answer_fixture(*, evidence_level: str = "full_text") -> dict[str, object]:
                 "paper_id": "paper_eval",
                 "evidence_level": evidence_level,
                 "hybrid_score": 0.52,
+                **(
+                    {"anchor_coverage": anchor_coverage}
+                    if anchor_coverage is not None
+                    else {}
+                ),
             }
         ],
         "citation_validation": {
@@ -131,6 +140,23 @@ class RagEvaluationContractTest(unittest.TestCase):
             if item["id"] == "citation_integrity"
         )
         self.assertEqual(citation_check["status"], "fail")
+
+    def test_low_query_anchor_coverage_cannot_be_scored_as_strong_evidence(self) -> None:
+        assessment = assess_rag_answer(
+            answer_fixture(anchor_coverage=0.1),
+            evaluation_id="rag_eval_low_query_coverage",
+            evaluated_at="2026-07-18T00:00:00+00:00",
+        )
+
+        self.assertEqual(assessment["quality_status"], "review_required")
+        self.assertLess(assessment["score"], 60)
+        self.assertEqual(assessment["metrics"]["mean_anchor_coverage"], 0.1)
+        relevance_check = next(
+            item
+            for item in assessment["checks"]
+            if item["id"] == "query_relevance"
+        )
+        self.assertEqual(relevance_check["status"], "fail")
 
 
 if __name__ == "__main__":

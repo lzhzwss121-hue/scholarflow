@@ -573,6 +573,8 @@ export interface ApiRagSearchHit {
   lexical_score: number;
   vector_score: number;
   hybrid_score: number;
+  anchor_coverage: number;
+  matched_query_terms: string[];
 }
 
 export interface ApiRagSearchResponse {

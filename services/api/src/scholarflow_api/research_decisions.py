@@ -36,6 +36,10 @@ GOAL_GENERIC_TERMS = {
     "novel",
     "one-week",
     "plan",
+    "reproduce",
+    "replicate",
+    "run",
+    "use",
     "week",
     "weeks",
     "实验",
@@ -638,7 +642,10 @@ def build_experiment_anchor_candidate(
     intent: DecisionIntent | None = None,
 ) -> ExperimentAnchor | None:
     title = normalize_space(paper.get("title") or card.get("paper_title") or card.get("id") or "Untitled paper")
-    minimal = normalize_space(card.get("minimal_reproduction", ""))
+    # Preserve line breaks because Claim/Dataset/Metric/Baseline are a
+    # line-oriented contract. Flattening the card here made valid labels
+    # invisible and forced extraction to fall back to a short hard-coded list.
+    minimal = str(card.get("minimal_reproduction", "") or "").strip()
     if not minimal or is_invalid_minimal_reproduction(minimal):
         return None
     combined = normalize_space(
@@ -771,7 +778,7 @@ def build_unblock_suggestions(
 
     missing_by_field: dict[str, list[str]] = {"claim": [], "dataset": [], "baseline": [], "metric": []}
     for paper, card in usable_cards:
-        minimal = normalize_space(card.get("minimal_reproduction", ""))
+        minimal = str(card.get("minimal_reproduction", "") or "").strip()
         combined = normalize_space(
             " ".join(
                 [
@@ -857,9 +864,13 @@ def build_experiment_plan_from_anchor(
     if anchor.goal_alignment.get("status") == "mismatch":
         missing_constraints = [
             normalize_space(item)
-            for item in anchor.goal_alignment.get("missing_hard_constraints", [])
+            for item in [
+                *anchor.goal_alignment.get("missing_hard_constraints", []),
+                *anchor.goal_alignment.get("missing_required_terms", []),
+            ]
             if normalize_space(item)
         ]
+        missing_constraints = unique_preserve_order(missing_constraints)
         missing_label = "、".join(missing_constraints) or "未解析的目标硬约束"
         readiness_checks["goal_constraints"] = f"blocked: 缺少 {missing_label}"
         suggestions = [
@@ -970,6 +981,7 @@ def extract_anchor_dataset(minimal: str, combined: str) -> str:
             "MMBench",
             "MMMU",
             "POPE",
+            "CHAIR",
             "MM-Vet",
             "LLaVA-Bench",
             "SEED-Bench",
@@ -1011,6 +1023,9 @@ def extract_anchor_metrics(minimal: str, combined: str) -> list[str]:
             "hallucination rate",
             "grounding accuracy",
             "faithfulness",
+            "CHAIR score",
+            "CHAIRs",
+            "CHAIRi",
             "precision",
             "recall",
             "F1",
@@ -1250,10 +1265,16 @@ def score_anchor_goal_alignment(combined: str, intent: DecisionIntent | None) ->
             "score": 0.0,
             "matched_required_terms": [],
             "missing_required_terms": [],
+            "required_term_coverage": 1.0,
+            "minimum_required_term_coverage": 0.0,
             "contrast_terms": [],
             "excluded_matches": [],
         }
-    matched = score_term_overlap(combined, set(intent.required_terms), weight=0.45, max_score=2.4).matched_terms
+    matched = [
+        term
+        for term in intent.required_terms
+        if goal_term_present(combined.lower(), term)
+    ]
     excluded_matches = score_term_overlap(
         combined,
         set(intent.excluded_terms),
@@ -1262,6 +1283,20 @@ def score_anchor_goal_alignment(combined: str, intent: DecisionIntent | None) ->
     ).matched_terms
     matched_keys = {term.lower() for term in matched}
     missing = [term for term in intent.required_terms if term.lower() not in matched_keys]
+    required_term_coverage = (
+        len(matched) / len(intent.required_terms)
+        if intent.required_terms
+        else 1.0
+    )
+    minimum_required_term_coverage = (
+        0.0
+        if not intent.required_terms
+        else 1.0
+        if len(intent.required_terms) == 1
+        else 0.5
+        if len(intent.required_terms) == 2
+        else 0.6
+    )
     hard_constraint_checks = evaluate_explicit_goal_constraints(combined, intent.raw_goal)
     matched_hard_constraints = [
         label for label, is_satisfied in hard_constraint_checks if is_satisfied
@@ -1269,15 +1304,19 @@ def score_anchor_goal_alignment(combined: str, intent: DecisionIntent | None) ->
     missing_hard_constraints = [
         label for label, is_satisfied in hard_constraint_checks if not is_satisfied
     ]
-    if hard_constraint_checks:
-        status = "aligned" if not missing_hard_constraints else "mismatch"
-    else:
-        status = "aligned" if matched or not intent.required_terms else "mismatch"
+    status = (
+        "aligned"
+        if not missing_hard_constraints
+        and required_term_coverage >= minimum_required_term_coverage
+        else "mismatch"
+    )
     return {
         "status": "excluded" if excluded_matches else status,
-        "score": round(min(2.4, len(matched) * 0.45), 4),
+        "score": round(2.4 * required_term_coverage, 4),
         "matched_required_terms": matched,
         "missing_required_terms": missing,
+        "required_term_coverage": round(required_term_coverage, 4),
+        "minimum_required_term_coverage": minimum_required_term_coverage,
         "matched_hard_constraints": matched_hard_constraints,
         "missing_hard_constraints": missing_hard_constraints,
         "hard_constraint_checks": {
@@ -1293,8 +1332,13 @@ def evaluate_explicit_goal_constraints(combined: str, raw_goal: str) -> list[tup
     goal = normalize_space(raw_goal)
     lower_goal = goal.lower()
     lower_combined = combined.lower()
-    if not any(marker in lower_goal for marker in GOAL_REQUIRED_MARKERS) and not re.search(
-        r"\b\d{1,3}\s*gb\b", lower_goal
+    has_action_constraint = bool(
+        re.search(r"\b(?:reproduce|replicate|compare)\b|复现|比较|对比", lower_goal)
+    )
+    if (
+        not any(marker in lower_goal for marker in GOAL_REQUIRED_MARKERS)
+        and not re.search(r"\b\d{1,3}\s*gb\b", lower_goal)
+        and not has_action_constraint
     ):
         return []
 
@@ -1324,6 +1368,10 @@ def evaluate_explicit_goal_constraints(combined: str, raw_goal: str) -> list[tup
     for first, second in extract_comparison_pairs(goal):
         add_check(first, goal_term_present(lower_combined, first))
         add_check(second, goal_term_present(lower_combined, second))
+    for target in extract_reproduction_targets(goal):
+        add_check(target, goal_term_present(lower_combined, target))
+    for target in extract_comparison_terms(goal):
+        add_check(target, goal_term_present(lower_combined, target))
 
     required_clause = extract_required_clause(goal)
     clause_lower = required_clause.lower()
@@ -1378,6 +1426,10 @@ def evaluate_explicit_goal_constraints(combined: str, raw_goal: str) -> list[tup
                 or "指标" in combined
                 or bool(extract_anchor_metrics("", combined)),
             )
+    if not required_clause:
+        for name in KNOWN_EXPERIMENT_DATASETS:
+            if goal_term_present(lower_goal, name):
+                add_check(name, goal_term_present(lower_combined, name))
     return checks
 
 
@@ -1397,6 +1449,37 @@ def extract_comparison_pairs(goal: str) -> list[tuple[str, str]]:
     return pairs
 
 
+def extract_reproduction_targets(goal: str) -> list[str]:
+    targets: list[str] = []
+    patterns = [
+        r"\b(?:reproduce|replicate)\s+([^,;。；]{2,100}?)(?=\s+(?:on|using|with)\b|[,;。；]|$)",
+        r"复现\s*([^，,；;。]{2,100}?)(?=\s*(?:在|使用|采用)|[，,；;。]|$)",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, goal, flags=re.IGNORECASE):
+            target = normalize_space(match.group(1)).strip("`'\"")
+            if target:
+                targets.append(target)
+    return unique_preserve_order(targets)
+
+
+def extract_comparison_terms(goal: str) -> list[str]:
+    values: list[str] = []
+    for match in re.finditer(
+        r"(?:compare|comparison|比较|对比)\s*([^；;。]{2,180})",
+        goal,
+        flags=re.IGNORECASE,
+    ):
+        clause = normalize_space(match.group(1))
+        values.extend(re.findall(r"\b[A-Z][A-Z0-9._-]{1,}\b", clause))
+        values.extend(
+            token
+            for token in re.findall(r"\b[a-z][a-z0-9]*(?:-[a-z0-9]+)+\b", clause.lower())
+            if token not in {"one-week", "single-gpu"}
+        )
+    return unique_preserve_order(values)
+
+
 def extract_required_clause(goal: str) -> str:
     match = re.search(
         r"(?:must\s+(?:include|contain)|required?\s*:|include\s+|必须包含|需包含|需要包含|至少包含)"
@@ -1411,6 +1494,20 @@ def goal_term_present(text: str, term: str) -> bool:
     normalized_term = normalize_space(term).lower()
     if not normalized_term:
         return False
+    alias_groups = {
+        "数据集": ["dataset", "benchmark"],
+        "指标": ["metric", "accuracy", "rate", "score"],
+        "证据忠实性": ["evidence faithfulness", "evidence consistency", "faithfulness"],
+        "失败判据": ["failure criterion", "failure criteria", "failure condition"],
+        "强 baseline": ["strong baseline", *[name.lower() for name in KNOWN_BASELINES]],
+    }
+    aliases = alias_groups.get(normalized_term, [normalized_term])
+    if any(
+        goal_term_present(text, alias)
+        for alias in aliases
+        if alias != normalized_term
+    ):
+        return True
     if re.search(r"[\u4e00-\u9fff]", normalized_term):
         return normalized_term in text
     pattern = r"(?<![a-z0-9])" + r"[\s-]+".join(
@@ -1425,6 +1522,8 @@ def blocked_goal_alignment(intent: DecisionIntent | None) -> dict[str, Any]:
         "score": 0.0,
         "matched_required_terms": [],
         "missing_required_terms": intent.required_terms if intent else [],
+        "required_term_coverage": 0.0,
+        "minimum_required_term_coverage": 0.6 if intent and intent.required_terms else 0.0,
         "matched_hard_constraints": [],
         "missing_hard_constraints": [],
         "hard_constraint_checks": {},

@@ -167,6 +167,92 @@ class PhaseThreeDecisionMemoryContractTest(unittest.TestCase):
         self.assertTrue(bundle.experiment.readiness_checks["goal_constraints"].startswith("blocked:"))
         self.assertEqual(bundle.decision_status, "partial")
 
+    def test_experiment_cannot_be_ready_from_one_generic_goal_term(self) -> None:
+        unrelated = make_paper(
+            "paper_generic_baseline",
+            "Generic Vision-Language Benchmark",
+            "An evaluation on COCO with common vision-language models.",
+        )
+        bundle = generate_research_decisions(
+            project={"title": "FLB reproduction", "keyword": "object hallucination"},
+            papers=[unrelated],
+            paper_cards=[
+                {
+                    **make_anchor_card(
+                        "paper_generic_baseline",
+                        str(unrelated["title"]),
+                        "COCO",
+                    ),
+                    "minimal_reproduction": "\n".join(
+                        [
+                            "Claim: the generic benchmark improves answer accuracy.",
+                            "Dataset: COCO",
+                            "Metric: accuracy",
+                            "Baseline: LLaVA-1.5",
+                        ],
+                    ),
+                }
+            ],
+            goal=(
+                "7天内复现 First Logit Boosting，"
+                "在 CHAIR 上比较 VCD、ICD 与 no-op baseline"
+            ),
+        )
+
+        self.assertEqual(bundle.experiment.status, "blocked")
+        self.assertEqual(bundle.experiment.goal_alignment["status"], "mismatch")
+        self.assertLess(
+            bundle.experiment.goal_alignment["required_term_coverage"],
+            bundle.experiment.goal_alignment["minimum_required_term_coverage"],
+        )
+        missing = {
+            item.lower()
+            for item in bundle.experiment.goal_alignment["missing_required_terms"]
+        }
+        self.assertTrue({"boosting", "chair", "icd", "logit", "no-op", "vcd"}.issubset(missing))
+        self.assertIn("CHAIR", bundle.experiment.goal_alignment["missing_hard_constraints"])
+        self.assertIn("VCD", bundle.experiment.goal_alignment["missing_hard_constraints"])
+        self.assertIn("ICD", bundle.experiment.goal_alignment["missing_hard_constraints"])
+        self.assertIn("no-op", bundle.experiment.goal_alignment["missing_hard_constraints"])
+
+    def test_experiment_is_ready_when_all_named_goal_anchors_are_present(self) -> None:
+        paper = make_paper(
+            "paper_flb",
+            "First Logit Boosting for Object Hallucination Mitigation",
+            "A decoding-time First Logit Boosting method evaluated on CHAIR.",
+        )
+        bundle = generate_research_decisions(
+            project={"title": "FLB reproduction", "keyword": "object hallucination"},
+            papers=[paper],
+            paper_cards=[
+                {
+                    **make_anchor_card("paper_flb", str(paper["title"]), "CHAIR"),
+                    "minimal_reproduction": "\n".join(
+                        [
+                            "Claim: First Logit Boosting reduces object hallucination.",
+                            "Dataset: CHAIR",
+                            "Metric: CHAIR score",
+                            "Baseline: VCD, ICD, no-op baseline",
+                        ],
+                    ),
+                    "sections_json": (
+                        "First Logit Boosting decoding experiment on CHAIR "
+                        "with VCD, ICD, and no-op baseline."
+                    ),
+                }
+            ],
+            goal=(
+                "7天内复现 First Logit Boosting，"
+                "在 CHAIR 上比较 VCD、ICD 与 no-op baseline"
+            ),
+        )
+
+        self.assertEqual(bundle.experiment.status, "ready")
+        self.assertEqual(bundle.experiment.anchor_paper_id, "paper_flb")
+        self.assertEqual(bundle.experiment.goal_alignment["status"], "aligned")
+        self.assertEqual(bundle.experiment.goal_alignment["required_term_coverage"], 1.0)
+        self.assertFalse(bundle.experiment.goal_alignment["missing_hard_constraints"])
+
     def test_gap_evidence_uses_the_limitation_quote_and_locator(self) -> None:
         paper = make_paper("paper_grounded", "Grounded Limitation Paper", "A benchmark paper.")
         card = {
