@@ -57,6 +57,10 @@ const citation = {
   lexical_score: 0.72,
   vector_score: 0.82,
   hybrid_score: 0.79,
+  anchor_coverage: 0.75,
+  matched_query_terms: ["object hallucination", "grounding", "对象幻觉"],
+  match_strength: "strong",
+  match_explanation: "强命中：覆盖 3/4 个问题锚点；关键词分 0.72，向量分 0.82，混合分 0.79；证据来自 PDF/用户全文。",
 };
 
 const artifact = {
@@ -85,6 +89,9 @@ function retrieval(hits = [citation]) {
     returned_hits: hits.length,
     top_k: 5,
     min_score: 0.18,
+    query_anchor_terms: ["object hallucination", "grounding", "counterfactual"],
+    rejected_by_relevance_gate: 0,
+    score_explanation: "本地模式的混合分由 80% 关键词相关性与 20% hash 向量相似度组成；该分数不是正确率。",
     hits,
     warnings: [],
   };
@@ -195,14 +202,23 @@ test("full-text RAG renders validated claims and focuses the cited evidence", as
   await expect(page.locator('[aria-label="evidence grounded rag answer"]')).toBeVisible();
   await expect(page.getByText("POPE 上 object hallucination rate 降低 12%")).toBeVisible();
   await expect(page.getByText("本次全部在本机处理")).toBeVisible();
+  const retrievalExplanation = page.locator('[aria-label="rag retrieval explanation"]');
+  await expect(retrievalExplanation).toContainText("1 候选 → 0 门槛拒绝 → 1 返回");
+  await expect(retrievalExplanation).toContainText("object hallucination");
+  await expect(retrievalExplanation).toContainText("该分数不是正确率");
   await expect(page.locator('[aria-label="rag automated evidence quality"]')).toBeVisible();
   await expect(page.getByText("96.0/100")).toBeVisible();
+  await expect(page.getByText(/证据链分 · 证据链较强/)).toBeVisible();
   await expect(page.getByText("证据链较强")).toBeVisible();
   await expect(page.getByText("全文覆盖").locator("..").getByText("100%")).toBeVisible();
   await expect(page.getByText("自动检查不能验证论文结论、因果关系或实验可复现性。")).toBeVisible();
   await expect(page.getByText("PDF 全文").first()).toBeVisible();
   await expect(page.getByText("p.9", { exact: true })).toBeVisible();
   await expect(page.getByText(citation.text)).toBeVisible();
+  await expect(page.getByText("强命中", { exact: true })).toBeVisible();
+  await page.getByText("为什么命中这段证据", { exact: true }).click();
+  await expect(page.locator('[aria-label="matched query anchors"]')).toContainText("对象幻觉");
+  await expect(page.getByText(citation.match_explanation, { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /experiments:p.9:chunk-2/ })).toBeVisible();
 
   await page.getByRole("button", { name: /experiments:p.9:chunk-2/ }).click();

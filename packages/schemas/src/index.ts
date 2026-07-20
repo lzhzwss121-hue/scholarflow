@@ -630,6 +630,8 @@ export interface ApiRagSearchHit {
   hybrid_score: number;
   anchor_coverage: number;
   matched_query_terms: string[];
+  match_strength: "strong" | "moderate" | "borderline";
+  match_explanation: string;
 }
 
 export interface ApiRagSearchResponse {
@@ -645,6 +647,9 @@ export interface ApiRagSearchResponse {
   returned_hits: number;
   top_k: number;
   min_score: number;
+  query_anchor_terms: string[];
+  rejected_by_relevance_gate: number;
+  score_explanation: string;
   hits: ApiRagSearchHit[];
   warnings: string[];
 }

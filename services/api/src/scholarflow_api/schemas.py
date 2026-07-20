@@ -448,6 +448,8 @@ class RagSearchHit(BaseModel):
     hybrid_score: float
     anchor_coverage: float = 0.0
     matched_query_terms: list[str] = Field(default_factory=list)
+    match_strength: Literal["strong", "moderate", "borderline"] = "borderline"
+    match_explanation: str = ""
 
 
 class RagSearchResponse(BaseModel):
@@ -463,6 +465,9 @@ class RagSearchResponse(BaseModel):
     returned_hits: int = 0
     top_k: int
     min_score: float
+    query_anchor_terms: list[str] = Field(default_factory=list)
+    rejected_by_relevance_gate: int = 0
+    score_explanation: str = ""
     hits: list[RagSearchHit] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 

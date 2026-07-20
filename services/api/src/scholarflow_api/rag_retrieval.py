@@ -54,22 +54,32 @@ _RETRIEVAL_STOP_TERMS = {
     "which",
     "with",
 }
-_CJK_QUERY_ALIASES = {
-    "对象幻觉": "object hallucination",
-    "物体幻觉": "object hallucination",
-    "幻觉": "hallucination",
-    "视觉定位": "visual grounding",
-    "证据忠实性": "evidence faithfulness",
-    "忠实性": "faithfulness",
-    "解码": "decoding",
-    "基准": "benchmark",
-    "评测": "evaluation",
-    "数据集": "dataset",
-    "指标": "metric",
-    "实验": "experiment",
-    "医学": "medical",
-    "图像": "image",
-    "分割": "segmentation",
+_CJK_QUERY_ALIASES: dict[str, tuple[str, ...]] = {
+    "对象幻觉": ("object hallucination",),
+    "物体幻觉": ("object hallucination",),
+    "幻觉": ("hallucination",),
+    "视觉定位": ("visual grounding",),
+    "证据忠实性": ("evidence faithfulness",),
+    "忠实性": ("faithfulness",),
+    "检索增强生成": ("retrieval augmented generation", "rag"),
+    "大语言模型": ("large language model", "llm"),
+    "视觉语言模型": ("vision language model", "vlm"),
+    "多模态大模型": ("multimodal large language model", "mllm"),
+    "多模态": ("multimodal",),
+    "机制可解释性": ("mechanistic interpretability",),
+    "稀疏自编码器": ("sparse autoencoder", "sae"),
+    "不确定性校准": ("uncertainty calibration",),
+    "失败模式": ("failure mode",),
+    "鲁棒性": ("robustness",),
+    "解码": ("decoding",),
+    "基准": ("benchmark",),
+    "评测": ("evaluation",),
+    "数据集": ("dataset",),
+    "指标": ("metric",),
+    "实验": ("experiment",),
+    "医学": ("medical",),
+    "图像": ("image",),
+    "分割": ("segmentation",),
 }
 
 
@@ -400,7 +410,15 @@ def retrieve_project_chunks(
 ) -> dict[str, Any]:
     normalized_query = normalize_retrieval_text(query)
     if not normalized_query:
-        return _empty_retrieval_result(query, top_k, min_score, "检索问题为空。")
+        return _empty_retrieval_result(
+            query,
+            top_k,
+            min_score,
+            "检索问题为空。",
+            query_anchor_terms=[],
+        )
+    query_terms = retrieval_terms(normalized_query)
+    query_anchors = retrieval_anchor_terms(normalized_query)
 
     parameters: list[Any] = [project_id]
     filters = ["pc.project_id = ?"]
@@ -441,6 +459,7 @@ def retrieve_project_chunks(
             top_k,
             min_score,
             "当前项目或筛选范围没有可检索的论文 chunk。",
+            query_anchor_terms=query_anchors,
         )
 
     warnings: list[str] = []
@@ -463,8 +482,6 @@ def retrieve_project_chunks(
         query_vector = []
         warnings.append(str(error))
 
-    query_terms = retrieval_terms(normalized_query)
-    query_anchors = retrieval_anchor_terms(normalized_query)
     document_term_sets = [set(retrieval_terms(str(row["chunk_text"]))) for row in rows]
     document_frequency = Counter(
         term
@@ -525,6 +542,7 @@ def retrieve_project_chunks(
                 "hybrid_score": round(hybrid_score, 6),
                 "anchor_coverage": round(anchor_coverage, 6),
                 "matched_query_terms": matched_query_terms,
+                "query_anchor_count": len(query_anchors),
                 "passes_relevance_gate": passes_relevance_gate,
                 "retrieval_mode": retrieval_mode,
             }
@@ -573,6 +591,10 @@ def retrieve_project_chunks(
     provider_name = active_provider.name if active_provider else "disabled"
     model = active_provider.model if active_provider else ""
     dimensions = len(query_vector) if query_vector else 0
+    score_explanation = retrieval_score_explanation(
+        retrieval_mode=retrieval_mode,
+        provider=active_provider,
+    )
     return {
         "query": query,
         "status": status,
@@ -586,6 +608,9 @@ def retrieve_project_chunks(
         "returned_hits": len(selected),
         "top_k": top_k,
         "min_score": min_score,
+        "query_anchor_terms": query_anchors,
+        "rejected_by_relevance_gate": gated_count,
+        "score_explanation": score_explanation,
         "hits": selected,
         "warnings": list(dict.fromkeys(warnings)),
     }
@@ -603,7 +628,7 @@ def local_hash_embedding(text: str, dimensions: int) -> list[float]:
 
 
 def retrieval_terms(text: str, *, include_bigrams: bool = False) -> list[str]:
-    normalized = normalize_retrieval_text(text)
+    normalized = expand_bilingual_retrieval_text(text)
     terms = _LATIN_PATTERN.findall(normalized)
     latin_words = list(terms)
     for term in latin_words:
@@ -636,12 +661,13 @@ def retrieval_anchor_terms(text: str) -> list[str]:
     for run in _CJK_PATTERN.findall(normalized):
         aliases = [
             english
-            for chinese, english in sorted(
+            for chinese, english_aliases in sorted(
                 _CJK_QUERY_ALIASES.items(),
                 key=lambda item: len(item[0]),
                 reverse=True,
             )
             if chinese in run
+            for english in english_aliases
         ]
         if aliases:
             for alias in aliases:
@@ -663,7 +689,9 @@ def retrieval_anchor_terms(text: str) -> list[str]:
 
 
 def matched_retrieval_anchors(anchors: list[str], document: str) -> list[str]:
-    normalized_document = normalize_retrieval_match_text(document)
+    normalized_document = normalize_retrieval_match_text(
+        expand_bilingual_retrieval_text(document)
+    )
     matches: list[str] = []
     for anchor in anchors:
         normalized_anchor = normalize_retrieval_match_text(anchor)
@@ -757,6 +785,36 @@ def normalize_retrieval_match_text(value: Any) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[-_]+", " ", str(value or "").lower())).strip()
 
 
+def expand_bilingual_retrieval_text(value: Any) -> str:
+    """Append deterministic Chinese/English equivalents for local retrieval.
+
+    This is a small auditable concept lexicon, not machine translation. It
+    improves both Chinese-query/English-paper and English-query/Chinese-paper
+    recall without pretending the local hash provider is a semantic model.
+    """
+
+    normalized = normalize_retrieval_text(value)
+    if not normalized:
+        return ""
+    equivalents: list[str] = []
+    for chinese, english_aliases in sorted(
+        _CJK_QUERY_ALIASES.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    ):
+        if chinese in normalized:
+            equivalents.extend(english_aliases)
+        for english in english_aliases:
+            english_pattern = r"(?<![a-z0-9])" + r"[\s-]+".join(
+                re.escape(part)
+                for part in english.split()
+                if part
+            ) + r"(?![a-z0-9])"
+            if re.search(english_pattern, normalize_retrieval_match_text(normalized)):
+                equivalents.append(chinese)
+    return " ".join([normalized, *dict.fromkeys(equivalents)]).strip()
+
+
 def _retrieval_hit(row: dict[str, Any], *, rank: int) -> dict[str, Any]:
     page_start = row.get("page_start")
     page_end = row.get("page_end")
@@ -771,6 +829,16 @@ def _retrieval_hit(row: dict[str, Any], *, rank: int) -> dict[str, Any]:
     )
     section = str(row.get("section") or "unknown")
     citation_id = f"{row['paper_id']}:{section}:{page_label}:chunk-{row['chunk_index']}"
+    match_strength = retrieval_match_strength(
+        hybrid_score=float(row["hybrid_score"]),
+        anchor_coverage=float(row.get("anchor_coverage") or 0.0),
+        matched_query_terms=list(row.get("matched_query_terms") or []),
+        retrieval_mode=str(row.get("retrieval_mode") or "lexical_only"),
+    )
+    match_explanation = retrieval_match_explanation(
+        row,
+        match_strength=match_strength,
+    )
     return {
         "rank": rank,
         "citation_id": citation_id,
@@ -795,7 +863,82 @@ def _retrieval_hit(row: dict[str, Any], *, rank: int) -> dict[str, Any]:
         "hybrid_score": float(row["hybrid_score"]),
         "anchor_coverage": float(row.get("anchor_coverage") or 0.0),
         "matched_query_terms": list(row.get("matched_query_terms") or []),
+        "match_strength": match_strength,
+        "match_explanation": match_explanation,
     }
+
+
+def retrieval_match_strength(
+    *,
+    hybrid_score: float,
+    anchor_coverage: float,
+    matched_query_terms: list[str],
+    retrieval_mode: str,
+) -> str:
+    if matched_query_terms and anchor_coverage >= 0.6 and hybrid_score >= 0.35:
+        return "strong"
+    if (
+        matched_query_terms
+        and anchor_coverage >= 0.3
+        and hybrid_score >= 0.22
+    ) or (
+        retrieval_mode == "hybrid"
+        and hybrid_score >= 0.55
+    ):
+        return "moderate"
+    return "borderline"
+
+
+def retrieval_match_explanation(
+    row: dict[str, Any],
+    *,
+    match_strength: str,
+) -> str:
+    matched = list(row.get("matched_query_terms") or [])
+    anchor_count = max(0, int(row.get("query_anchor_count") or 0))
+    matched_label = " / ".join(matched[:6]) if matched else "无直接词面锚点"
+    evidence_label = (
+        "PDF/用户全文"
+        if str(row.get("evidence_level") or "") == "full_text"
+        else "论文摘要"
+        if str(row.get("evidence_level") or "") == "abstract_only"
+        else "元数据"
+    )
+    strength_label = {
+        "strong": "强命中",
+        "moderate": "中等命中",
+        "borderline": "门槛命中",
+    }.get(match_strength, "门槛命中")
+    return (
+        f"{strength_label}：覆盖 {len(matched)}/{anchor_count} 个问题锚点"
+        f"（{matched_label}）；关键词分 {float(row['lexical_score']):.2f}，"
+        f"向量分 {float(row['vector_score']):.2f}，"
+        f"混合分 {float(row['hybrid_score']):.2f}；证据来自{evidence_label}。"
+    )
+
+
+def retrieval_score_explanation(
+    *,
+    retrieval_mode: str,
+    provider: EmbeddingProvider | None,
+) -> str:
+    if retrieval_mode == "lexical_only":
+        return (
+            "当前混合分等于关键词相关性分；结果仍须通过问题锚点覆盖门槛，"
+            "该分数不是论文结论正确率。"
+        )
+    if provider and (
+        provider.name == "local"
+        or provider.model == LOCAL_EMBEDDING_MODEL
+    ):
+        return (
+            "本地模式的混合分由 80% 关键词相关性与 20% hash 向量相似度组成；"
+            "hash 向量只作排序辅助，不是训练语义模型，结果仍须通过问题锚点门槛。"
+        )
+    return (
+        "外部语义模式的混合分由 45% 关键词相关性与 55% 向量相似度组成；"
+        "语义命中仍不代表论文结论正确，必须核对 citation 原文。"
+    )
 
 
 def _refresh_embedding_columns(
@@ -888,6 +1031,8 @@ def _empty_retrieval_result(
     top_k: int,
     min_score: float,
     warning: str,
+    *,
+    query_anchor_terms: list[str],
 ) -> dict[str, Any]:
     return {
         "query": query,
@@ -902,6 +1047,11 @@ def _empty_retrieval_result(
         "returned_hits": 0,
         "top_k": top_k,
         "min_score": min_score,
+        "query_anchor_terms": query_anchor_terms,
+        "rejected_by_relevance_gate": 0,
+        "score_explanation": (
+            "当前没有可评分的命中；系统不会把空结果或低相关 chunk 包装成答案。"
+        ),
         "hits": [],
         "warnings": [warning],
     }

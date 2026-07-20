@@ -14,6 +14,8 @@ from scholarflow_api.rag_retrieval import (
     LocalHashEmbeddingProvider,
     OpenRouterEmbeddingProvider,
     cosine_similarity,
+    matched_retrieval_anchors,
+    retrieval_anchor_terms,
 )
 
 
@@ -58,6 +60,36 @@ def candidate(
 
 
 class RagRetrievalContractTest(unittest.TestCase):
+    def test_bilingual_concept_aliases_match_in_both_directions(self) -> None:
+        english_anchors = retrieval_anchor_terms(
+            "How does visual grounding reduce object hallucination?"
+        )
+        english_to_chinese = matched_retrieval_anchors(
+            english_anchors,
+            "该方法使用反事实视觉定位来减少对象幻觉，并记录失败模式。",
+        )
+        self.assertTrue(
+            {"visual", "grounding", "object", "hallucination"}.issubset(
+                set(english_to_chinese)
+            )
+        )
+
+        chinese_anchors = retrieval_anchor_terms(
+            "对象幻觉如何被视觉定位缓解？"
+        )
+        chinese_to_english = matched_retrieval_anchors(
+            chinese_anchors,
+            (
+                "Counterfactual visual grounding reduces object hallucination "
+                "and exposes a measurable failure mode."
+            ),
+        )
+        self.assertTrue(
+            {"visual", "grounding", "object", "hallucination"}.issubset(
+                set(chinese_to_english)
+            )
+        )
+
     def test_local_hash_embedding_is_deterministic_normalized_and_topic_sensitive(self) -> None:
         provider = LocalHashEmbeddingProvider(dimensions=256)
         relevant = provider.embed_query("对象幻觉 object hallucination visual grounding")
@@ -156,6 +188,8 @@ class RagRetrievalContractTest(unittest.TestCase):
                 self.assertEqual(response.embedding_dimensions, 256)
                 self.assertFalse(response.external_data_transfer)
                 self.assertGreaterEqual(response.returned_hits, 1)
+                self.assertTrue(response.query_anchor_terms)
+                self.assertIn("80% 关键词相关性", response.score_explanation)
                 grounding_paper = next(
                     paper
                     for paper in literature_response.papers
@@ -167,6 +201,12 @@ class RagRetrievalContractTest(unittest.TestCase):
                 self.assertIn(response.hits[0].paper_id, response.hits[0].citation_id)
                 self.assertIn("chunk-0", response.hits[0].citation_id)
                 self.assertGreater(response.hits[0].hybrid_score, response.min_score)
+                self.assertIn(
+                    response.hits[0].match_strength,
+                    {"strong", "moderate", "borderline"},
+                )
+                self.assertIn("关键词分", response.hits[0].match_explanation)
+                self.assertTrue(response.hits[0].matched_query_terms)
 
                 after = main_module.get_project_rag_index_status(project.id)
                 self.assertEqual(after.embedding_status, "ready")
@@ -254,6 +294,10 @@ class RagRetrievalContractTest(unittest.TestCase):
                     )
                 self.assertEqual(collision_no_hit.status, "no_reliable_hit")
                 self.assertEqual(collision_no_hit.hits, [])
+                self.assertGreaterEqual(
+                    collision_no_hit.rejected_by_relevance_gate,
+                    1,
+                )
                 self.assertTrue(
                     any("query anchor" in warning for warning in collision_no_hit.warnings)
                 )

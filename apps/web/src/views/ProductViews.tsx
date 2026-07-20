@@ -1977,6 +1977,7 @@ export function ProductPaperReaderView({
   const readerTitle = formatReaderTitle(evidenceLevel, Boolean(displayCard));
   const evidenceBoundary = buildEvidenceBoundary(evidenceLevel);
   const missingEvidence = buildMissingEvidenceChecklist(displayCard);
+  const decisionBrief = buildPaperDecisionBrief(displayCard);
   const activeQuestionIndex = cardSections.length
     ? Math.min(Math.max(activeQuestion - 1, 0), cardSections.length - 1)
     : -1;
@@ -2155,6 +2156,50 @@ export function ProductPaperReaderView({
               </details>
             ) : null}
           </section>
+
+          {displayCard ? (
+            <section
+              className="paper-decision-brief"
+              aria-label="paper research decision brief"
+              data-testid="paper-research-decision-brief"
+            >
+              <header>
+                <div>
+                  <p className="section-kicker">Research decision brief</p>
+                  <h2>先判断这篇论文是否值得继续投入</h2>
+                </div>
+                <span data-readiness={decisionBrief.readiness}>{decisionBrief.label}</span>
+              </header>
+              <div className="paper-decision-grid">
+                {decisionBrief.items.map((item) => (
+                  <article key={item.label}>
+                    <span>{item.label}</span>
+                    <strong>{item.value}</strong>
+                  </article>
+                ))}
+              </div>
+              <div className="paper-decision-next">
+                <Target size={17} />
+                <div>
+                  <strong>建议下一步</strong>
+                  <p>{decisionBrief.nextAction}</p>
+                </div>
+              </div>
+              {decisionBrief.evidence.length ? (
+                <details className="paper-decision-evidence">
+                  <summary>查看任务、方法与主张的原文定位</summary>
+                  <dl>
+                    {decisionBrief.evidence.map((item) => (
+                      <div key={item.label}>
+                        <dt>{item.label}</dt>
+                        <dd>{item.location}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </details>
+              ) : null}
+            </section>
+          ) : null}
 
           <details className="reader-supplemental-input">
             <summary>
@@ -2406,6 +2451,74 @@ export function ProductPaperReaderView({
       </section>
     </div>
   );
+}
+
+function buildPaperDecisionBrief(card: ApiPaperCard | null): {
+  readiness: "ready" | "partial" | "blocked";
+  label: string;
+  items: Array<{ label: string; value: string }>;
+  nextAction: string;
+  evidence: Array<{ label: string; location: string }>;
+} {
+  const signals = card?.signals;
+  const useful = (value: string | undefined, fallback: string) => {
+    const normalized = value?.trim() ?? "";
+    return normalized && !normalized.startsWith("当前证据不足") ? normalized : fallback;
+  };
+  const coreSignalsReady = Boolean(
+    signals &&
+    useful(signals.task, "") &&
+    useful(signals.method, "") &&
+    useful(signals.claim, ""),
+  );
+  const readiness =
+    card?.evidence_level === "full_text" && coreSignalsReady
+      ? "ready"
+      : card?.evidence_level === "abstract_only" || coreSignalsReady
+        ? "partial"
+        : "blocked";
+  const label =
+    readiness === "ready"
+      ? "可进入人工核验"
+      : readiness === "partial"
+        ? "仅作选读线索"
+        : "证据不足";
+  const nextAction =
+    card?.evidence_level === "full_text"
+      ? useful(
+          card.minimal_reproduction,
+          "先回到 PDF 核对方法、实验设置和失败案例，再决定是否进入复现。",
+        )
+      : "上传或绑定论文 PDF，重点补齐方法、实验设置、baseline、ablation 与失败案例后重新生成。";
+  const evidenceFields: Array<[string, ApiSignalEvidence | undefined]> = [
+    ["研究任务", signals?.signal_evidence?.task],
+    ["核心方法", signals?.signal_evidence?.method],
+    ["主要主张", signals?.signal_evidence?.claim],
+  ];
+  return {
+    readiness,
+    label,
+    items: [
+      {
+        label: "研究任务",
+        value: useful(signals?.task, "当前证据尚未抽取出明确、可检验的研究任务。"),
+      },
+      {
+        label: "核心方法",
+        value: useful(signals?.method, "当前证据尚不足以确认具体方法机制。"),
+      },
+      {
+        label: "主要主张",
+        value: useful(signals?.claim, "当前证据尚不足以确认论文的主要经验主张。"),
+      },
+    ],
+    nextAction,
+    evidence: evidenceFields.flatMap(([field, evidence]) =>
+      evidence
+        ? [{ label: field, location: formatSignalEvidenceLocation(evidence) }]
+        : [],
+    ),
+  };
 }
 
 function DirectionPaperPage({

@@ -43,6 +43,7 @@ export function RagAnswerPanel({ result }: { result: ApiRagAnswerResponse | null
             <li>上传关键论文 PDF，把 abstract_only 升级为 full_text。</li>
             <li>在问题中写明任务对象、数据集、指标或失败模式。</li>
           </ul>
+          <RetrievalExplanation result={result} compact />
           <RagQualityPanel assessment={result.quality_assessment ?? null} compact />
           <WarningList title="检索状态" items={result.warnings} />
         </div>
@@ -82,6 +83,8 @@ export function RagAnswerPanel({ result }: { result: ApiRagAnswerResponse | null
         </span>
         <span>{result.external_data_transfer ? "本次存在外部数据传输" : "本次全部在本机处理"}</span>
       </div>
+
+      <RetrievalExplanation result={result} />
 
       <RagQualityPanel assessment={result.quality_assessment ?? null} />
 
@@ -193,12 +196,12 @@ function RagQualityPanel({
           <Gauge size={19} />
           <div>
             <p className="section-kicker">Automated evidence audit</p>
-            <h3>证据质量检查</h3>
+            <h3>证据链质量（不是答案正确率）</h3>
           </div>
         </div>
         <div className="rag-quality-score" data-status={assessment.quality_status}>
           <strong>{scoreLabel}</strong>
-          <span>{formatQualityStatus(assessment.quality_status)}</span>
+          <span>证据链分 · {formatQualityStatus(assessment.quality_status)}</span>
         </div>
       </header>
 
@@ -276,6 +279,8 @@ function CitationEvidenceCard({
       : citation.page_start === citation.page_end
         ? `p.${citation.page_start}`
         : `pp.${citation.page_start}-${citation.page_end}`;
+  const matchStrength = citation.match_strength || inferMatchStrength(citation);
+  const matchedTerms = citation.matched_query_terms ?? [];
   return (
     <article
       className="rag-evidence-card"
@@ -285,14 +290,45 @@ function CitationEvidenceCard({
     >
       <div className="rag-evidence-meta">
         <span>{isUsed ? "已引用" : "候选证据"}</span>
+        <span data-match-strength={matchStrength}>{formatMatchStrength(matchStrength)}</span>
         <span>{formatEvidenceLevel(citation.evidence_level)}</span>
         <span>{citation.section || "section unknown"}</span>
         <span>{pageLabel}</span>
-        <span>score {citation.hybrid_score.toFixed(2)}</span>
-        <span>query {Math.round((citation.anchor_coverage ?? 0) * 100)}%</span>
       </div>
       <h4>{citation.paper_title}</h4>
       <p>{citation.text}</p>
+      <details className="rag-match-details">
+        <summary>为什么命中这段证据</summary>
+        <p>
+          {citation.match_explanation ||
+            `覆盖 ${Math.round((citation.anchor_coverage ?? 0) * 100)}% 的问题锚点；混合分 ${citation.hybrid_score.toFixed(2)}。`}
+        </p>
+        <div className="rag-match-term-list" aria-label="matched query anchors">
+          {matchedTerms.length ? (
+            matchedTerms.map((term) => <span key={term}>{term}</span>)
+          ) : (
+            <span>没有记录直接词面锚点</span>
+          )}
+        </div>
+        <dl>
+          <div>
+            <dt>关键词</dt>
+            <dd>{citation.lexical_score.toFixed(2)}</dd>
+          </div>
+          <div>
+            <dt>向量</dt>
+            <dd>{citation.vector_score.toFixed(2)}</dd>
+          </div>
+          <div>
+            <dt>混合</dt>
+            <dd>{citation.hybrid_score.toFixed(2)}</dd>
+          </div>
+          <div>
+            <dt>问题覆盖</dt>
+            <dd>{Math.round((citation.anchor_coverage ?? 0) * 100)}%</dd>
+          </div>
+        </dl>
+      </details>
       <footer>
         <code>{citation.citation_id}</code>
         {citation.paper_url ? (
@@ -303,6 +339,40 @@ function CitationEvidenceCard({
         ) : null}
       </footer>
     </article>
+  );
+}
+
+function RetrievalExplanation({
+  result,
+  compact = false,
+}: {
+  result: ApiRagAnswerResponse;
+  compact?: boolean;
+}) {
+  const retrieval = result.retrieval;
+  return (
+    <section
+      className={compact ? "rag-retrieval-explanation compact" : "rag-retrieval-explanation"}
+      aria-label="rag retrieval explanation"
+    >
+      <header>
+        <strong>本次检索是怎样得到结果的</strong>
+        <span>
+          {retrieval.candidate_chunks} 候选 → {retrieval.rejected_by_relevance_gate ?? 0} 门槛拒绝 →{" "}
+          {retrieval.returned_hits} 返回
+        </span>
+      </header>
+      {retrieval.query_anchor_terms?.length ? (
+        <div className="rag-query-anchor-list">
+          <span>问题锚点</span>
+          {retrieval.query_anchor_terms.map((term) => <code key={term}>{term}</code>)}
+        </div>
+      ) : null}
+      <p>
+        {retrieval.score_explanation ||
+          "检索分只表示当前问题与索引片段的匹配强度，不是论文结论或答案的正确率。"}
+      </p>
+    </section>
   );
 }
 
@@ -374,6 +444,32 @@ function formatQualityStatus(status: ApiRagQualityAssessment["quality_status"]) 
     return "证据不足";
   }
   return "需要复核";
+}
+
+function inferMatchStrength(
+  citation: ApiRagSearchHit,
+): ApiRagSearchHit["match_strength"] {
+  if (
+    (citation.matched_query_terms?.length ?? 0) > 0 &&
+    citation.anchor_coverage >= 0.6 &&
+    citation.hybrid_score >= 0.35
+  ) {
+    return "strong";
+  }
+  if (citation.anchor_coverage >= 0.3 || citation.hybrid_score >= 0.55) {
+    return "moderate";
+  }
+  return "borderline";
+}
+
+function formatMatchStrength(strength: ApiRagSearchHit["match_strength"]) {
+  if (strength === "strong") {
+    return "强命中";
+  }
+  if (strength === "moderate") {
+    return "中等命中";
+  }
+  return "门槛命中";
 }
 
 function formatQualityMetric(value: number | undefined, kind: "ratio" | "score") {

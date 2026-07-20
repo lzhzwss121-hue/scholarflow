@@ -67,6 +67,18 @@ ScholarFlow 的方向阅读不是一次性处理 30 篇论文，而是按轮次�
 
 一轮是否 `complete` 由实际完成结构化阅读的强/中相关论文数决定；被过滤的弱相关或离题候选只作为检索质量 warning 展示，不会在已经读满目标数量时把该轮错误降级为 `partial`。
 
+网页中的 Direction Review 使用后端持久化异步任务，而不是前端计时器模拟进度。任务会依次记录
+`queued -> scoping -> retrieving -> reading -> curating -> persisting -> completed|failed`，
+刷新页面后仍可恢复当前阶段、真实百分比、结构化 warning/error 和最终 artifact。相同方向与轮次的活跃任务会复用；同一项目同时启动不同 Direction Review 会返回 `409`，避免并发写入互相覆盖。
+
+```text
+POST /projects/{project_id}/direction-review-runs
+GET  /projects/{project_id}/direction-review-runs/latest
+GET  /projects/{project_id}/direction-review-runs/{run_id}
+```
+
+原有同步 `POST /projects/{project_id}/direction-reviews` 仍保留用于兼容和直接 API 调用。
+
 每轮结束后，系统会生成方向总结，说明：
 
 - 这个方向真正解决的问题是什么。
@@ -111,6 +123,8 @@ Paper Card 默认围绕 12 个问题展开：
 
 Direction Review 和单篇 Paper Card 会优先尝试解析 arXiv/OpenAlex 提供的开放 PDF。PDF 最多处理 80 页并保留最多 50,000 个正文字符；只有提取文本达到 PDF 校验阈值时才会标记为 `full_text`，同时记录来源、解析页数、字符数和失败原因。自动获取失败时，可以在阅读页上传本地 PDF 或粘贴关键正文片段；粘贴文本使用启发式证据等级，不等同于完整 PDF 核验。12 项提纲使用目录切换，一次只显示一项。
 
+阅读页会在 12 段正文前显示一张简洁的 Research Decision Brief，集中呈现研究任务、核心方法、主要主张、当前证据可用程度和建议下一步。`abstract_only` 只能标为“仅作选读线索”；只有绑定全文且核心 signals 已抽取时才显示“可进入人工核验”，仍不表示系统已经验证论文结论。
+
 ### 5. Research Sight 科研判断
 
 ScholarFlow 不只整理摘要，还会生成一份启发式科研判断草稿。Research Sight 关注四个维度，但其结论仍需用户回到原文核验：
@@ -148,6 +162,8 @@ ScholarFlow 会把已读论文转成结构化记忆，而不是依赖聊天窗�
 - 用户后续提问时，可以只召回最相关的论文片段。
 - 回答可以指出依据来自哪些论文记忆。
 - 长期项目可以持续积累方向理解。
+
+网页中的“原文 RAG”和“结构化 Paper Memory”是两条独立查询通道，各自保存问题、top-k、运行状态和结果。原文 RAG 检索摘要/PDF chunk 并返回 citation；Paper Memory 检索 Paper Card 与 ResearchSight。执行其中一种查询不会覆盖另一种查询的输入或已恢复结果。
 
 #### RAG 第一阶段：可追溯原文索引
 
@@ -209,9 +225,11 @@ curl -X POST http://127.0.0.1:8000/projects/PROJECT_ID/rag-search \
   }'
 ```
 
-每个 hit 都返回 `paper_id`、论文元数据、chunk hash、原文、证据等级、section、页码、`lexical_score`、`vector_score`、`hybrid_score` 和稳定的 `citation_id`。检索严格限制在当前 `project_id`，还可以通过 `paper_ids`、`evidence_levels`、`sections` 缩小范围。低于 `min_score` 的候选不会返回；没有可靠证据时状态为 `no_reliable_hit`，`hits=[]`。
+每个 hit 都返回 `paper_id`、论文元数据、chunk hash、原文、证据等级、section、页码、`lexical_score`、`vector_score`、`hybrid_score`、`anchor_coverage`、`matched_query_terms`、`match_strength`、`match_explanation` 和稳定的 `citation_id`。响应还会给出 `query_anchor_terms`、被相关性门槛拒绝的 chunk 数和当前 provider 的 `score_explanation`。检索严格限制在当前 `project_id`，还可以通过 `paper_ids`、`evidence_levels`、`sections` 缩小范围。低于 `min_score` 的候选不会返回；没有可靠证据时状态为 `no_reliable_hit`，`hits=[]`。
 
 `complete` 仅表示本次混合检索所需向量齐全且存在过阈值证据，不表示论文结论正确，也不表示系统已生成或验证答案。`partial` 表示降级到关键词检索、embedding 失败或存在其他警告。
+
+本地检索包含一份小型、可审计的中英科研概念表，使中文问题可以检索英文原文，英文问题也可以检索中文 chunk，例如“对象幻觉/object hallucination”“视觉定位/visual grounding”“检索增强生成/RAG”和“机制可解释性/mechanistic interpretability”。它不是通用翻译系统；超出词表的跨语言同义改写仍建议启用 OpenRouter embedding 或在问题中同时写出中英文关键术语。
 
 #### RAG 第三阶段：证据约束回答与 Citation Inspector
 
@@ -257,6 +275,7 @@ POST /projects/{project_id}/rag-answer
 - `citation_integrity`：已使用引用能否在 Citation Inspector 中定位，是否出现未知或被拒绝引用。
 - `full_text_coverage`：最终使用的引用中，PDF/用户全文证据所占比例。
 - `mean_retrieval_score`：已用证据的平均 hybrid score，用于暴露弱匹配。
+- `mean_anchor_coverage`：已用证据实际覆盖了多少用户问题锚点，避免只命中相邻主题。
 - 正确拒答：`no_reliable_hit` 时是否保持空答案、零主张和零引用。
 - 生成过滤：有多少候选主张因伪引用、不受支持的数字或证据不足而被拒绝。
 
@@ -266,7 +285,7 @@ POST /projects/{project_id}/rag-answer
 GET /projects/{project_id}/rag-evaluations?limit=20
 ```
 
-网页中的“证据质量检查”面板会显示分数、全文覆盖、风险项和修复建议。安全拒答显示为“拒答通过”，不会伪装成 `100/100`；摘要级引用即使 citation ID 完全正确，也不能获得 `strong_evidence`。所有有实际回答内容的结果仍标记为需要人工核验。
+网页中的“证据质量检查”面板会显示证据链分、全文覆盖、问题覆盖、风险项和修复建议；它会明确标注“不是答案正确率”。Citation Inspector 默认只显示“强/中等/门槛命中”，展开“为什么命中这段证据”后才显示命中锚点、关键词分、向量分、混合分和解释。安全拒答显示为“拒答通过”，不会伪装成 `100/100`；摘要级引用即使 citation ID 完全正确，也不能获得 `strong_evidence`。所有有实际回答内容的结果仍标记为需要人工核验。
 
 这里的分数不是 scientific correctness、fact-check 或可复现性评分。它只能回答“当前输出是否可追溯、证据等级是否足够、检索是否偏弱、拒答边界是否正确”，不能判断论文结论真实与否，也不能替代阅读全文和复现实验。
 

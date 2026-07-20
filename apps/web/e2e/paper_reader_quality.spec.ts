@@ -301,6 +301,12 @@ test("12-section reader uses a table of contents and one readable section instea
   const tocItems = toc.locator(".paper-reader-toc-item");
 
   await expect(board).toBeVisible();
+  const decisionBrief = page.getByTestId("paper-research-decision-brief");
+  await expect(decisionBrief).toBeVisible();
+  await expect(decisionBrief.getByRole("heading", { name: "先判断这篇论文是否值得继续投入" })).toBeVisible();
+  await expect(decisionBrief.getByText("仅作选读线索", { exact: true })).toBeVisible();
+  await expect(decisionBrief).toContainText("VQA evidence faithfulness evaluation");
+  await expect(decisionBrief).toContainText("上传或绑定论文 PDF");
   await expect(toc).toBeVisible();
   await expect(tocItems).toHaveCount(12);
   await expect(page.locator(".question-grid, .question-card")).toHaveCount(0);
@@ -445,6 +451,7 @@ test("uploaded PDF immediately replaces a stale abstract card for the same paper
 
   await expect(page.getByRole("heading", { name: "全文级深读 · Paper Card" })).toBeVisible();
   await expect(page.locator('.reader-evidence-level.full_text').getByText("全文已验证", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("paper-research-decision-brief").getByText("可进入人工核验", { exact: true })).toBeVisible();
   const provenance = page.getByTestId("paper-card-provenance");
   await expect(provenance.getByText("已解析 14 页 / 50,000 字符", { exact: true })).toBeVisible();
   await expect(provenance.getByText("来源：用户上传 PDF", { exact: true })).toBeVisible();
