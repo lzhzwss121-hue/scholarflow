@@ -5,6 +5,7 @@ import type {
   ApiArtifact,
   ApiArtifactSummary,
   ApiDirectionReviewResponse,
+  ApiDirectionReviewRunStatusResponse,
   ApiPaper,
   ApiPaperCard,
   ApiProject,
@@ -17,7 +18,6 @@ import {
   askProjectRag,
   cancelAgentRun,
   createAgentPlan,
-  createDirectionReview,
   createProject,
   createProjectPaperCard,
   createResearchDecisions,
@@ -25,7 +25,9 @@ import {
   extractProjectPaperFullText,
   getAgentRunStatus,
   getArtifact,
+  getDirectionReviewRun,
   getHealth,
+  getLatestDirectionReviewRun,
   getProjectTimeline,
   isAbortError,
   isRetrievalWarning,
@@ -37,6 +39,7 @@ import {
   queryResearchMemory,
   saveArtifact,
   searchProjectLiterature,
+  startDirectionReviewRun,
 } from "../apiClient";
 import type { ArtifactContent, PaperRow, TimelineEvent, ViewId } from "../mockData";
 import {
@@ -92,6 +95,7 @@ type ProjectResourceSnapshot = {
   artifactSummaries?: ApiArtifactSummary[];
   artifacts?: ApiArtifact[];
   paperCards?: ApiPaperCard[];
+  directionRun?: ApiDirectionReviewRunStatusResponse | null;
   warnings: string[];
 };
 
@@ -141,13 +145,19 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
   const [directionRound, setDirectionRound] = useState(1);
   const [directionBusy, setDirectionBusy] = useState(false);
   const [directionReview, setDirectionReview] = useState<ApiDirectionReviewResponse | null>(null);
+  const [directionRun, setDirectionRun] = useState<ApiDirectionReviewRunStatusResponse | null>(null);
+  const [directionMessage, setDirectionMessage] = useState("尚未启动 Direction Review 后端任务。");
   const [selectedDirectionPaperId, setSelectedDirectionPaperId] = useState("");
   const [memoryQuestion, setMemoryQuestion] = useState("这个方向最值得做的一周验证实验是什么？");
   const [memoryTopK, setMemoryTopK] = useState(5);
   const [memoryBusy, setMemoryBusy] = useState(false);
   const [memoryResult, setMemoryResult] = useState<ApiResearchMemoryQueryResponse | null>(null);
+  const [memoryMessage, setMemoryMessage] = useState("结构化记忆尚未查询。");
   const [ragBusy, setRagBusy] = useState(false);
   const [ragAnswer, setRagAnswer] = useState<ApiRagAnswerResponse | null>(null);
+  const [ragQuestion, setRagQuestion] = useState("原文中有哪些直接证据支持或反驳这个研究判断？");
+  const [ragTopK, setRagTopK] = useState(5);
+  const [ragMessage, setRagMessage] = useState("原文 RAG 尚未查询。");
   const [selectedPaperId, setSelectedPaperId] = useState("");
   const [paperCardInput, setPaperCardInput] = useState("");
   const [paperCardBusy, setPaperCardBusy] = useState(false);
@@ -175,6 +185,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     decision: { id: 0, controller: null },
   });
   const agentPollingRef = useRef<number | null>(null);
+  const directionPollingRef = useRef<number | null>(null);
 
   useEffect(() => {
     activeProjectIdRef.current = activeProject?.id ?? null;
@@ -185,6 +196,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     loadWorkspace(guard);
     return () => {
       stopAgentPolling();
+      stopDirectionPolling();
       guard.finish();
     };
   }, []);
@@ -269,6 +281,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
         literatureCoverage,
         directionBusy,
         directionReview,
+        directionRun,
         paperCardBusy,
         latestPaperCard: effectivePaperCard,
         selectedPaperId,
@@ -285,6 +298,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       decisionBusy,
       directionBusy,
       directionReview,
+      directionRun,
       effectivePaperCard,
       selectedPaperId,
       literatureCoverage,
@@ -306,6 +320,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
         hydrationWarnings,
         literatureErrors,
         directionReview,
+        directionRun,
         memoryResult,
         ragAnswer,
         agentRunWarnings,
@@ -318,6 +333,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       hydrationWarnings,
       literatureErrors,
       directionReview,
+      directionRun,
       memoryResult,
       ragAnswer,
       researchDecision,
@@ -364,6 +380,9 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       }
 
       applyProjectResources(projectId, snapshot);
+      if (snapshot.directionRun && !isTerminalDirectionRunStatus(snapshot.directionRun.status)) {
+        startDirectionRunPolling(snapshot.directionRun.run_id, projectId);
+      }
     } catch (error) {
       if (!guard.isCurrent() || isAbortError(error)) {
         return;
@@ -396,6 +415,9 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     if (snapshot.paperCards) {
       setPaperCards(snapshot.paperCards);
     }
+    if (snapshot.directionRun !== undefined) {
+      applyDirectionRunSnapshot(projectId, snapshot.directionRun);
+    }
     if (!snapshot.artifacts) {
       setHydrationWarnings(snapshot.warnings);
       return;
@@ -420,9 +442,16 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     }
     if (restored.memoryResult) {
       setMemoryResult(restored.memoryResult);
+      if (restored.memoryResult.question.trim()) {
+        setMemoryQuestion(restored.memoryResult.question);
+      }
+      setMemoryTopK(restored.memoryResult.top_k);
     }
     if (restored.ragAnswer) {
       setRagAnswer(restored.ragAnswer);
+      if (restored.ragAnswer.question.trim()) {
+        setRagQuestion(restored.ragAnswer.question);
+      }
     }
     if (restored.paperCard) {
       // A refresh can hydrate an older abstract card for the same paper. Do not
@@ -441,6 +470,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
 
   function resetWorkflowState() {
     stopAgentPolling();
+    stopDirectionPolling();
     setAgentPlan(null);
     setAgentRunStatus(null);
     setAgentRunWarnings([]);
@@ -448,12 +478,16 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     setLiteratureBusy(false);
     setLiteratureErrors([]);
     setDirectionReview(null);
+    setDirectionRun(null);
+    setDirectionMessage("尚未启动 Direction Review 后端任务。");
     setSelectedDirectionPaperId("");
     setDirectionBusy(false);
     setMemoryResult(null);
     setMemoryBusy(false);
+    setMemoryMessage("结构化记忆尚未查询。");
     setRagAnswer(null);
     setRagBusy(false);
+    setRagMessage("原文 RAG 尚未查询。");
     setResearchDecision(null);
     setDecisionBusy(false);
     setLatestPaperCard(null);
@@ -934,14 +968,9 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     const projectId = activeProject.id;
     const guard = beginRequest("direction");
     setDirectionBusy(true);
-    const stopProgress = startProgressMessages([
-      `Direction Review: 正在界定第 ${directionRound} 轮研究方向范围...`,
-      "Direction Review: 正在检索候选池并构建 BaselineMap...",
-      "Direction Review: 正在生成 10 篇 Paper Card、ResearchSight 和 Paper Memory...",
-      "Direction Review: 正在保存 artifacts；如果检索源限流，会标记 partial 或 warning。",
-    ]);
+    setDirectionMessage(`正在向后端提交第 ${directionRound} 轮 Direction Review 任务...`);
     try {
-      const result = await createDirectionReview(
+      const run = await startDirectionReviewRun(
         projectId,
         {
           direction: directionInput,
@@ -952,46 +981,133 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       if (!guard.isCurrent() || activeProjectIdRef.current !== projectId) {
         return;
       }
-      setDirectionReview(result);
       setSelectedDirectionPaperId("");
-      applyBackendWorkflowSteps(result.workflow_steps);
+      applyDirectionRunSnapshot(projectId, run);
+      if (isTerminalDirectionRunStatus(run.status)) {
+        await finalizeDirectionRun(projectId, run);
+      } else {
+        startDirectionRunPolling(run.run_id, projectId);
+      }
+    } catch (error) {
+      if (!isAbortError(error) && guard.isCurrent()) {
+        const normalized = normalizeApiError(error);
+        setDirectionMessage(
+          normalized.kind === "timeout"
+            ? "Direction Review 任务提交超时；请检查后端运行列表后再决定是否重试。"
+            : formatApiFailure(error, "Direction Review 任务启动失败，请检查 API 日志。"),
+        );
+        setDirectionBusy(false);
+      }
+    } finally {
+      guard.finish();
+    }
+  }
+
+  function applyDirectionRunSnapshot(
+    projectId: string,
+    run: ApiDirectionReviewRunStatusResponse | null,
+  ) {
+    if (activeProjectIdRef.current !== projectId) {
+      return;
+    }
+    setDirectionRun(run);
+    if (!run) {
+      setDirectionBusy(false);
+      return;
+    }
+    setDirectionBusy(!isTerminalDirectionRunStatus(run.status));
+    setDirectionMessage(run.message || `Direction Review ${run.status}`);
+    if (run.result) {
+      setDirectionReview(run.result);
+      applyBackendWorkflowSteps(run.result.workflow_steps);
+    }
+  }
+
+  async function finalizeDirectionRun(
+    projectId: string,
+    run: ApiDirectionReviewRunStatusResponse,
+  ) {
+    if (activeProjectIdRef.current !== projectId) {
+      return;
+    }
+    stopDirectionPolling();
+    applyDirectionRunSnapshot(projectId, run);
+    const result = run.result;
+    if (result) {
       const reviewArtifactRef =
         result.artifact_refs.find((artifact) => artifact.title.toLowerCase().includes("direction_review")) ??
         result.artifact_refs[0];
       if (reviewArtifactRef) {
-        const artifact = await getArtifact(reviewArtifactRef.id, { signal: guard.signal });
-        if (guard.isCurrent() && activeProjectIdRef.current === projectId) {
-          setLastSavedArtifact(artifact);
-          setProjectArtifacts((items) => upsertArtifactDetail(items, artifact));
-          setProjectArtifactSummaries((items) => upsertArtifactSummary(items, artifactSummaryFromDetail(artifact)));
-          setArtifactTab("markdown");
+        try {
+          const artifact = await getArtifact(reviewArtifactRef.id);
+          if (activeProjectIdRef.current === projectId) {
+            setLastSavedArtifact(artifact);
+            setProjectArtifacts((items) => upsertArtifactDetail(items, artifact));
+            setProjectArtifactSummaries((items) => upsertArtifactSummary(items, artifactSummaryFromDetail(artifact)));
+            setArtifactTab("markdown");
+          }
+        } catch (error) {
+          if (!isAbortError(error) && activeProjectIdRef.current === projectId) {
+            setDirectionMessage(
+              `${run.message} ${formatApiFailure(error, "运行已结束，但 Direction Review artifact 回读失败。")}`,
+            );
+          }
         }
       }
-      setApiMessage(
-        result.review_status !== "complete"
-          ? `方向精读 ${result.review_status}：第 ${result.round} 轮仅读取 ${result.relevant_read_count ?? result.round_read_count}/${result.target_paper_count} 篇强/中相关论文，off-topic=${result.off_topic_count ?? 0}。`
-          : `方向精读完成：第 ${result.round} 轮，累计 ${result.total_read_count} 篇。`,
-      );
-      await loadProjectResources(projectId, guard);
-    } catch (error) {
-      if (!isAbortError(error) && guard.isCurrent()) {
-        const normalized = normalizeApiError(error);
-        setApiMessage(
-          normalized.kind === "timeout"
-            ? "方向精读超时。建议稍后重试，或先只运行 Literature Search。"
-            : formatApiFailure(error, "方向精读失败，请检查网络、检索源可用性或 API 日志。"),
-        );
+    }
+    try {
+      const snapshot = await fetchProjectResourceSnapshot(projectId);
+      if (activeProjectIdRef.current === projectId) {
+        applyProjectResources(projectId, snapshot);
       }
-    } finally {
-      stopProgress();
-      setDirectionBusy(false);
-      guard.finish();
+    } catch (error) {
+      if (!isAbortError(error) && activeProjectIdRef.current === projectId) {
+        setDirectionMessage(`${run.message} 项目资源刷新失败，可重新进入项目恢复已保存结果。`);
+      }
+    }
+  }
+
+  function startDirectionRunPolling(runId: string, projectId: string) {
+    stopDirectionPolling();
+    let inFlight = false;
+    const poll = async () => {
+      if (inFlight || activeProjectIdRef.current !== projectId) {
+        return;
+      }
+      inFlight = true;
+      try {
+        const run = await getDirectionReviewRun(projectId, runId);
+        if (activeProjectIdRef.current !== projectId) {
+          return;
+        }
+        applyDirectionRunSnapshot(projectId, run);
+        if (isTerminalDirectionRunStatus(run.status)) {
+          await finalizeDirectionRun(projectId, run);
+        }
+      } catch (error) {
+        if (!isAbortError(error) && activeProjectIdRef.current === projectId) {
+          setDirectionMessage(formatApiFailure(error, "轮询 Direction Review 真实进度失败。"));
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+    void poll();
+    directionPollingRef.current = window.setInterval(() => {
+      void poll();
+    }, 1200);
+  }
+
+  function stopDirectionPolling() {
+    if (directionPollingRef.current !== null) {
+      window.clearInterval(directionPollingRef.current);
+      directionPollingRef.current = null;
     }
   }
 
   async function handleQueryResearchMemory() {
     if (!activeProject) {
-      setApiMessage("没有可写入的后端项目，请先创建或启动 API。");
+      setMemoryMessage("没有可写入的后端项目，请先创建或启动 API。");
       return;
     }
     if (isDemoProject(activeProject.id)) {
@@ -1002,7 +1118,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     const projectId = activeProject.id;
     const guard = beginRequest("memory");
     setMemoryBusy(true);
-    const stopProgress = startProgressMessages([
+    const stopProgress = startOperationMessages(setMemoryMessage, [
       `Paper Memory: 正在从 SQLite memory bank 检索 ${memoryTopK} 篇相关论文...`,
       "Paper Memory: 正在按问题意图匹配 minimal reproduction、counterexample 和 ResearchSight 字段...",
       "Paper Memory: 正在保存 grounded answer artifact...",
@@ -1026,7 +1142,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       setMemoryResult(result);
       setLastSavedArtifact(result.artifact);
       applyBackendWorkflowSteps(result.workflow_steps);
-      setApiMessage(
+      setMemoryMessage(
         result.reliability_status === "no_reliable_hit"
           ? "当前记忆没有可靠证据回答此问题。建议重新检索或补充 PDF。"
           : `论文记忆回答已生成：命中 ${result.hits.length} 篇，memory bank 总量 ${result.total_memories}。`,
@@ -1034,7 +1150,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       await loadProjectResources(projectId, guard);
     } catch (error) {
       if (!isAbortError(error) && guard.isCurrent()) {
-        setApiMessage(formatApiFailure(error, "论文记忆检索失败，请先执行方向精读，或检查 API 日志。"));
+        setMemoryMessage(formatApiFailure(error, "论文记忆检索失败，请先执行方向精读，或检查 API 日志。"));
       }
     } finally {
       stopProgress();
@@ -1045,7 +1161,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
 
   async function handleQueryRag() {
     if (!activeProject) {
-      setApiMessage("没有可检索的后端项目，请先创建或启动 API。");
+      setRagMessage("没有可检索的后端项目，请先创建或启动 API。");
       return;
     }
     if (isDemoProject(activeProject.id)) {
@@ -1056,8 +1172,8 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     const projectId = activeProject.id;
     const guard = beginRequest("rag");
     setRagBusy(true);
-    const stopProgress = startProgressMessages([
-      `原文 RAG: 正在检索最多 ${memoryTopK} 个项目内论文 chunk...`,
+    const stopProgress = startOperationMessages(setRagMessage, [
+      `原文 RAG: 正在检索最多 ${ragTopK} 个项目内论文 chunk...`,
       "原文 RAG: 正在核对 section、页码、证据等级与 citation ID...",
       "原文 RAG: 正在校验每条主张是否具有有效引用...",
     ]);
@@ -1065,8 +1181,8 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       const result = await askProjectRag(
         projectId,
         {
-          query: memoryQuestion,
-          top_k: memoryTopK,
+          query: ragQuestion,
+          top_k: ragTopK,
           evidence_levels: ["abstract_only", "full_text"],
           min_score: 0.18,
           max_chunks_per_paper: 3,
@@ -1082,7 +1198,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       if (result.artifact) {
         setLastSavedArtifact(result.artifact);
       }
-      setApiMessage(
+      setRagMessage(
         result.status === "no_reliable_hit"
           ? "原文索引没有达到门槛的证据，系统已拒绝生成回答。"
           : `原文 RAG 已返回 ${result.citations.length} 条引用、${result.claims.length} 条通过校验的主张。`,
@@ -1090,7 +1206,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       await loadProjectResources(projectId, guard);
     } catch (error) {
       if (!isAbortError(error) && guard.isCurrent()) {
-        setApiMessage(formatApiFailure(error, "原文 RAG 问答失败，请检查索引、embedding 配置或 API 日志。"));
+        setRagMessage(formatApiFailure(error, "原文 RAG 问答失败，请检查索引、embedding 配置或 API 日志。"));
       }
     } finally {
       stopProgress();
@@ -1164,6 +1280,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
 
   function cancelLongRequests() {
     stopAgentPolling();
+    stopDirectionPolling();
     (["resources", "literature", "direction", "paper-card", "memory", "rag", "decision", "agent"] as RequestScope[]).forEach(
       (scope) => {
         requestStateRef.current[scope].controller?.abort("project-switch");
@@ -1173,14 +1290,22 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
   }
 
   function startProgressMessages(messages: string[], intervalMs = 6500): () => void {
+    return startOperationMessages(setApiMessage, messages, intervalMs);
+  }
+
+  function startOperationMessages(
+    setMessage: (message: string) => void,
+    messages: string[],
+    intervalMs = 6500,
+  ): () => void {
     if (!messages.length) {
       return () => undefined;
     }
     let index = 0;
-    setApiMessage(messages[index]);
+    setMessage(messages[index]);
     const timer = window.setInterval(() => {
       index = Math.min(index + 1, messages.length - 1);
-      setApiMessage(messages[index]);
+      setMessage(messages[index]);
     }, intervalMs);
     return () => window.clearInterval(timer);
   }
@@ -1309,6 +1434,8 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     decisionGoal,
     directionInput,
     directionReview,
+    directionRun,
+    directionMessage,
     directionRound,
     latestPaperCard: effectivePaperCard,
     lastSavedArtifact,
@@ -1316,9 +1443,13 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     literatureCoverage,
     literatureQuery,
     memoryQuestion,
+    memoryMessage,
     memoryResult,
     memoryTopK,
+    ragMessage,
     ragAnswer,
+    ragQuestion,
+    ragTopK,
     paperCardInput,
     paperRows,
     projectCount: projects.length,
@@ -1350,6 +1481,8 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     onLoadArtifact: handleLoadArtifact,
     onMemoryQuestionChange: setMemoryQuestion,
     onMemoryTopKChange: setMemoryTopK,
+    onRagQuestionChange: setRagQuestion,
+    onRagTopKChange: setRagTopK,
     onPaperCardInputChange: setPaperCardInput,
     onPaperPdfUpload: handlePaperPdfUpload,
     onProjectDraftChange: setProjectDraft,
@@ -1447,13 +1580,14 @@ async function fetchProjectResourceSnapshot(
   projectId: string,
   options?: RequestInit,
 ): Promise<ProjectResourceSnapshot> {
-  const [papersResult, timelineResult, artifactSummariesResult, paperCardsResult] = await Promise.allSettled([
+  const [papersResult, timelineResult, artifactSummariesResult, paperCardsResult, directionRunResult] = await Promise.allSettled([
     listProjectPapers(projectId, options),
     getProjectTimeline(projectId, options),
     listProjectArtifactSummaries(projectId, options),
     listProjectPaperCards(projectId, options),
+    getLatestDirectionReviewRun(projectId, options),
   ]);
-  const results = [papersResult, timelineResult, artifactSummariesResult, paperCardsResult];
+  const results = [papersResult, timelineResult, artifactSummariesResult, paperCardsResult, directionRunResult];
   const aborted = results.find((result) => result.status === "rejected" && isAbortError(result.reason));
   if (aborted?.status === "rejected") {
     throw aborted.reason;
@@ -1480,6 +1614,11 @@ async function fetchProjectResourceSnapshot(
     snapshot.paperCards = paperCardsResult.value;
   } else {
     snapshot.warnings.push(projectResourceWarning("Paper Card 列表", paperCardsResult.reason));
+  }
+  if (directionRunResult.status === "fulfilled") {
+    snapshot.directionRun = directionRunResult.value;
+  } else {
+    snapshot.warnings.push(projectResourceWarning("Direction Review 运行状态", directionRunResult.reason));
   }
   return snapshot;
 }
@@ -1508,6 +1647,7 @@ function buildWorkflowSteps(input: {
   literatureCoverage: RelevanceCoverage;
   directionBusy: boolean;
   directionReview: ApiDirectionReviewResponse | null;
+  directionRun: ApiDirectionReviewRunStatusResponse | null;
   paperCardBusy: boolean;
   latestPaperCard: ApiPaperCard | null;
   selectedPaperId: string;
@@ -1524,6 +1664,10 @@ function buildWorkflowSteps(input: {
     (input.literatureCoverage.weak_match_count ?? 0) > 0 ||
     (hasPapers && returnedCount < 5);
   const directionStatus = input.directionReview?.review_status ?? null;
+  const directionRunActive = Boolean(
+    input.directionRun && !isTerminalDirectionRunStatus(input.directionRun.status),
+  );
+  const directionRunFailed = input.directionRun?.status === "failed";
   const experimentStatus = input.researchDecision?.experiment?.status;
   const decisionStatus = input.researchDecision?.decision_status ?? "complete";
   const decisionEvidencePartial = isDecisionEvidencePartial(input.researchDecision);
@@ -1562,18 +1706,30 @@ function buildWorkflowSteps(input: {
     toWorkflowStepView({
       id: "direction-review",
       label: "Direction Review",
-      summary: input.directionReview
-        ? `${input.directionReview.relevant_read_count ?? input.directionReview.round_read_count}/${input.directionReview.target_paper_count} 强/中相关精读`
-        : "每轮最多 10 篇方向精读",
-      status: resolveStepStatus({
-        running: input.directionBusy,
-        partial: directionStatus === "partial",
-        blocked: directionStatus === "blocked" || !hasProject || !hasPapers || input.apiStatus === "offline",
-        complete: directionStatus === "complete",
-      }),
-      warnings: input.directionReview?.errors ?? [],
-      errors: [],
-      updatedAt,
+      summary: directionRunActive || directionRunFailed
+        ? `${input.directionRun?.progress ?? 0}% · ${input.directionRun?.stage ?? "queued"}`
+        : input.directionReview
+          ? `${input.directionReview.relevant_read_count ?? input.directionReview.round_read_count}/${input.directionReview.target_paper_count} 强/中相关精读`
+          : "每轮最多 10 篇方向精读",
+      status: directionRunFailed
+        ? "error"
+        : resolveStepStatus({
+            running: input.directionBusy,
+            partial: directionStatus === "partial",
+            blocked: directionStatus === "blocked" || !hasProject || !hasPapers || input.apiStatus === "offline",
+            complete: directionStatus === "complete",
+          }),
+      warnings: [
+        ...(input.directionReview?.errors ?? []),
+        ...(input.directionRun?.notices
+          .filter((notice) => notice.severity === "warning")
+          .map((notice) => notice.message) ?? []),
+      ],
+      errors:
+        input.directionRun?.notices
+          .filter((notice) => notice.severity === "error")
+          .map((notice) => notice.message) ?? [],
+      updatedAt: input.directionRun?.updated_at || updatedAt,
     }),
     toWorkflowStepView({
       id: "paper-reader",
@@ -1754,6 +1910,10 @@ function isTerminalAgentRunStatus(status: string): boolean {
   return ["completed", "completed_with_warnings", "partial", "failed", "cancelled"].includes(status);
 }
 
+function isTerminalDirectionRunStatus(status: string): boolean {
+  return ["complete", "partial", "blocked", "failed"].includes(status);
+}
+
 function isViewId(value: string): value is ViewId {
   return value in workflowLabels;
 }
@@ -1786,6 +1946,7 @@ function buildWorkflowWarnings(input: {
   hydrationWarnings: string[];
   literatureErrors: string[];
   directionReview: ApiDirectionReviewResponse | null;
+  directionRun: ApiDirectionReviewRunStatusResponse | null;
   memoryResult: ApiResearchMemoryQueryResponse | null;
   ragAnswer: ApiRagAnswerResponse | null;
   researchDecision: ApiResearchDecisionResponse | null;
@@ -1807,9 +1968,19 @@ function buildWorkflowWarnings(input: {
   input.hydrationWarnings.forEach((message, index) => {
     notices.push({ id: `hydration-${index}`, kind: "warning", message });
   });
-  input.directionReview?.errors.forEach((message, index) => {
-    notices.push({ id: `direction-${index}`, kind: "warning", message });
-  });
+  if (input.directionRun?.notices.length) {
+    input.directionRun.notices.forEach((notice, index) => {
+      notices.push({
+        id: `direction-run-${notice.code || index}`,
+        kind: notice.severity,
+        message: notice.message,
+      });
+    });
+  } else {
+    input.directionReview?.errors.forEach((message, index) => {
+      notices.push({ id: `direction-${index}`, kind: "warning", message });
+    });
+  }
   input.memoryResult?.warnings.forEach((message, index) => {
     notices.push({ id: `memory-${index}`, kind: "warning", message });
   });

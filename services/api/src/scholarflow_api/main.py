@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import threading
+from typing import Callable
 
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -111,6 +112,7 @@ from scholarflow_api.schemas import (
     BaselineMap,
     DirectionReviewRequest,
     DirectionReviewResponse,
+    DirectionReviewRunStatusResponse,
     HealthResponse,
     LiteratureSearchRequest,
     LiteratureSearchResponse,
@@ -1526,8 +1528,15 @@ def delete_project_paper_rag_index(project_id: str, paper_id: str) -> PaperChunk
     return PaperChunkIndexStatus.model_validate(status)
 
 
-@app.post("/projects/{project_id}/direction-reviews", response_model=DirectionReviewResponse, status_code=201)
-def create_project_direction_review(project_id: str, payload: DirectionReviewRequest) -> DirectionReviewResponse:
+def execute_project_direction_review(
+    project_id: str,
+    payload: DirectionReviewRequest,
+    progress_callback: Callable[[str, int, str], None] | None = None,
+) -> DirectionReviewResponse:
+    def report(stage: str, progress: int, message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(stage, progress, message)
+
     now = utc_now()
     with get_connection() as connection:
         project = fetch_project_dict(connection, project_id)
@@ -1542,36 +1551,55 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
             now,
         )
 
+    report("scoping", 10, f"已确认第 {payload.round} 轮方向范围，正在生成检索查询。")
+    report("retrieving", 20, "正在从 arXiv 与 OpenAlex 检索、去重并按原始研究方向重排候选。")
     scope, candidate_pool, candidates, errors, relevance_coverage = retrieve_direction_candidate_pool(
         payload.direction,
         payload.round,
         previous_titles,
     )
-    completed_at = utc_now()
+    report(
+        "reading",
+        45,
+        f"候选检索完成：{len(candidate_pool)} 条原始候选，{len(candidates)} 篇达到强/中相关阅读门槛；正在获取 PDF。",
+    )
+    papers_persisted_at = utc_now()
     artifacts: list[dict] = []
     with get_connection() as connection:
         project = fetch_project_dict(connection, project_id)
-        session_id = ensure_active_session(connection, project, completed_at)
-        paper_ids = insert_paper_candidates(connection, project_id, candidates, completed_at)
+        session_id = ensure_active_session(connection, project, papers_persisted_at)
+        paper_ids = insert_paper_candidates(connection, project_id, candidates, papers_persisted_at)
         paper_dicts = [fetch_paper_dict(connection, project_id, paper_id) for paper_id in paper_ids]
-        reading_context_map = build_baseline_map(payload.direction, [], [])
-        readings = build_direction_readings(paper_dicts, payload.direction, reading_context_map)
-        baseline_map = build_baseline_map(
-            payload.direction,
-            [candidate.to_dict() for candidate in candidate_pool],
-            build_baseline_papers_from_readings(readings),
-        )
-        refresh_direction_reading_research_sights(readings, payload.direction, baseline_map)
-        bundle = build_direction_review_bundle(
-            payload.direction,
-            payload.round,
-            scope,
-            baseline_map,
-            readings,
-            previous_read_count=len(previous_titles),
-            errors=errors,
-            relevance_coverage=relevance_coverage,
-        )
+
+    reading_context_map = build_baseline_map(payload.direction, [], [])
+    readings = build_direction_readings(paper_dicts, payload.direction, reading_context_map)
+    full_text_count = sum(reading.full_text.get("status") == "extracted" for reading in readings)
+    report(
+        "curating",
+        68,
+        f"结构化阅读完成：{len(readings)} 篇中 {full_text_count} 篇具有已解析全文；正在校准 BaselineMap 与 ResearchSight。",
+    )
+    baseline_map = build_baseline_map(
+        payload.direction,
+        [candidate.to_dict() for candidate in candidate_pool],
+        build_baseline_papers_from_readings(readings),
+    )
+    refresh_direction_reading_research_sights(readings, payload.direction, baseline_map)
+    bundle = build_direction_review_bundle(
+        payload.direction,
+        payload.round,
+        scope,
+        baseline_map,
+        readings,
+        previous_read_count=len(previous_titles),
+        errors=errors,
+        relevance_coverage=relevance_coverage,
+    )
+    report("persisting", 82, "证据状态已计算，正在写入 Direction Review、Paper Card、BaselineMap 与 Memory artifacts。")
+    completed_at = utc_now()
+    with get_connection() as connection:
+        project = fetch_project_dict(connection, project_id)
+        session_id = ensure_active_session(connection, project, completed_at)
         baseline_artifact = insert_artifact_row(
             connection=connection,
             project_id=project_id,
@@ -1736,6 +1764,7 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
             ("direction-review", completed_at, project_id),
         )
 
+    report("persisting", 96, f"已持久化 {len(artifacts)} 个 artifacts，正在生成最终运行状态。")
     return DirectionReviewResponse(
         direction=bundle.direction,
         round=bundle.round,
@@ -1766,6 +1795,342 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
             ),
         ],
     )
+
+
+@app.post("/projects/{project_id}/direction-reviews", response_model=DirectionReviewResponse, status_code=201)
+def create_project_direction_review(project_id: str, payload: DirectionReviewRequest) -> DirectionReviewResponse:
+    """Compatibility endpoint for CLI and existing API clients.
+
+    The web product uses the persisted async run endpoints below so it can show
+    server-authored progress instead of a timer-based approximation.
+    """
+
+    return execute_project_direction_review(project_id, payload)
+
+
+def parse_json_list(value: str) -> list[dict]:
+    try:
+        parsed = json.loads(value or "[]")
+    except json.JSONDecodeError:
+        parsed = []
+    return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
+
+
+def direction_review_run_response(run: dict) -> DirectionReviewRunStatusResponse:
+    result = None
+    if str(run.get("result_json") or "").strip():
+        try:
+            result = DirectionReviewResponse.model_validate(json.loads(str(run["result_json"])))
+        except (json.JSONDecodeError, ValueError):
+            result = None
+    return DirectionReviewRunStatusResponse(
+        run_id=str(run["id"]),
+        project_id=str(run["project_id"]),
+        direction=str(run["direction"]),
+        round=int(run["round_index"]),
+        status=str(run["status"]),  # type: ignore[arg-type]
+        stage=str(run["stage"]),  # type: ignore[arg-type]
+        progress=max(0, min(100, int(run["progress"] or 0))),
+        message=str(run.get("message") or ""),
+        notices=parse_json_list(str(run.get("notices_json") or "[]")),
+        result=result,
+        created_at=str(run["created_at"]),
+        updated_at=str(run["updated_at"]),
+        completed_at=str(run["completed_at"]) if run.get("completed_at") else None,
+    )
+
+
+def fetch_direction_review_run_dict(connection, project_id: str, run_id: str) -> dict:
+    row = connection.execute(
+        "SELECT * FROM direction_review_runs WHERE id = ? AND project_id = ?",
+        (run_id, project_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Direction Review run not found")
+    return dict(row)
+
+
+def persist_direction_review_run(
+    run_id: str,
+    *,
+    status: str,
+    stage: str,
+    progress: int,
+    message: str,
+    notices: list[dict] | None = None,
+    result: DirectionReviewResponse | None = None,
+    completed: bool = False,
+) -> None:
+    updated_at = utc_now()
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT notices_json FROM direction_review_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return
+        current_notices = parse_json_list(str(row["notices_json"] or "[]"))
+        merged_notices = current_notices
+        for notice in notices or []:
+            identity = (str(notice.get("code") or ""), str(notice.get("message") or ""))
+            if identity not in {
+                (str(item.get("code") or ""), str(item.get("message") or ""))
+                for item in merged_notices
+            }:
+                merged_notices.append(notice)
+        connection.execute(
+            """
+            UPDATE direction_review_runs
+            SET status = ?, stage = ?, progress = ?, message = ?, notices_json = ?,
+                result_json = COALESCE(?, result_json), updated_at = ?,
+                completed_at = CASE WHEN ? THEN ? ELSE completed_at END
+            WHERE id = ?
+            """,
+            (
+                status,
+                stage,
+                max(0, min(100, int(progress))),
+                message,
+                json.dumps(merged_notices, ensure_ascii=False, indent=2),
+                result.model_dump_json() if result is not None else None,
+                updated_at,
+                1 if completed else 0,
+                updated_at,
+                run_id,
+            ),
+        )
+
+
+def build_direction_review_run_notices(result: DirectionReviewResponse) -> list[dict]:
+    occurred_at = utc_now()
+    notices: list[dict] = [
+        {
+            "severity": "info",
+            "code": "direction_review_evidence_summary",
+            "stage": "completed",
+            "message": (
+                f"本轮保存 {result.relevant_read_count}/{result.target_paper_count} 篇强/中相关结构化阅读；"
+                "候选覆盖不等于所有论文均已完成全文阅读。"
+            ),
+            "occurred_at": occurred_at,
+        },
+    ]
+    for index, warning in enumerate(unique_strings(result.errors)):
+        lower = warning.lower()
+        severity = "error" if "blocked_direction_review" in lower else "warning"
+        notices.append(
+            {
+                "severity": severity,
+                "code": f"direction_review_source_{index + 1}",
+                "stage": "completed",
+                "message": warning,
+                "occurred_at": occurred_at,
+            },
+        )
+    if result.review_status == "partial":
+        notices.append(
+            {
+                "severity": "warning",
+                "code": "direction_review_partial",
+                "stage": "completed",
+                "message": (
+                    f"Direction Review 仅部分完成：可靠阅读 {result.relevant_read_count}/"
+                    f"{result.target_paper_count}，后续决策必须保留证据不足边界。"
+                ),
+                "occurred_at": occurred_at,
+            },
+        )
+    elif result.review_status == "blocked":
+        notices.append(
+            {
+                "severity": "error",
+                "code": "direction_review_blocked",
+                "stage": "completed",
+                "message": "Direction Review 被证据门槛阻塞，不能视为已完成方向综述。",
+                "occurred_at": occurred_at,
+            },
+        )
+    return notices
+
+
+def run_direction_review_background(run_id: str, project_id: str) -> None:
+    def report(stage: str, progress: int, message: str) -> None:
+        persist_direction_review_run(
+            run_id,
+            status="running",
+            stage=stage,
+            progress=progress,
+            message=message,
+        )
+
+    try:
+        with get_connection() as connection:
+            run = fetch_direction_review_run_dict(connection, project_id, run_id)
+            if str(run["status"]) != "queued":
+                return
+            payload = DirectionReviewRequest(
+                direction=str(run["direction"]),
+                round=int(run["round_index"]),
+            )
+        report("scoping", 5, "Direction Review 后端任务已启动，正在确认范围与历史已读论文。")
+        result = execute_project_direction_review(project_id, payload, report)
+        terminal_status = result.review_status
+        terminal_message = {
+            "complete": f"Direction Review 完成：可靠阅读 {result.relevant_read_count}/{result.target_paper_count} 篇。",
+            "partial": f"Direction Review 部分完成：可靠阅读 {result.relevant_read_count}/{result.target_paper_count} 篇。",
+            "blocked": "Direction Review 被证据门槛阻塞；结果已保留，但不能视为完成。",
+        }[terminal_status]
+        persist_direction_review_run(
+            run_id,
+            status=terminal_status,
+            stage="completed",
+            progress=100,
+            message=terminal_message,
+            notices=build_direction_review_run_notices(result),
+            result=result,
+            completed=True,
+        )
+        with get_connection() as connection:
+            run = fetch_direction_review_run_dict(connection, project_id, run_id)
+            insert_tool_event(
+                connection,
+                str(run["session_id"]),
+                "direction.run",
+                {"complete": "done", "partial": "partial", "blocked": "blocked"}[terminal_status],  # type: ignore[arg-type]
+                terminal_message,
+                utc_now(),
+            )
+    except Exception as error:  # noqa: BLE001 - the persisted run must expose background failures.
+        failed_at = utc_now()
+        persist_direction_review_run(
+            run_id,
+            status="failed",
+            stage="failed",
+            progress=100,
+            message=f"Direction Review 运行失败：{error}",
+            notices=[
+                {
+                    "severity": "error",
+                    "code": "direction_review_execution_failed",
+                    "stage": "failed",
+                    "message": str(error)[:500],
+                    "occurred_at": failed_at,
+                },
+            ],
+            completed=True,
+        )
+        try:
+            with get_connection() as connection:
+                run = fetch_direction_review_run_dict(connection, project_id, run_id)
+                insert_tool_event(
+                    connection,
+                    str(run["session_id"]),
+                    "direction.run",
+                    "failed",
+                    str(error)[:500],
+                    failed_at,
+                )
+        except Exception:
+            return
+
+
+@app.post(
+    "/projects/{project_id}/direction-review-runs",
+    response_model=DirectionReviewRunStatusResponse,
+    status_code=202,
+)
+def start_project_direction_review_run(
+    project_id: str,
+    payload: DirectionReviewRequest,
+) -> DirectionReviewRunStatusResponse:
+    now = utc_now()
+    with get_connection() as connection:
+        project = fetch_project_dict(connection, project_id)
+        if is_demo_project_dict(project):
+            raise HTTPException(status_code=400, detail="Demo project cannot run Direction Review")
+        active = connection.execute(
+            """
+            SELECT * FROM direction_review_runs
+            WHERE project_id = ? AND status IN ('queued', 'running')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (project_id,),
+        ).fetchone()
+        if active is not None:
+            active_dict = dict(active)
+            if (
+                str(active_dict["direction"]).strip() == payload.direction.strip()
+                and int(active_dict["round_index"]) == payload.round
+            ):
+                return direction_review_run_response(active_dict)
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This project already has an active Direction Review run "
+                    f"({active_dict['id']}, round {active_dict['round_index']})."
+                ),
+            )
+        session_id = ensure_active_session(connection, project, now)
+        run_id = new_id("direction_run")
+        message = f"Direction Review 第 {payload.round} 轮已进入后端队列。"
+        connection.execute(
+            """
+            INSERT INTO direction_review_runs (
+                id, project_id, session_id, direction, round_index, status, stage,
+                progress, message, notices_json, result_json, created_at, updated_at, completed_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'queued', 'queued', 0, ?, '[]', '', ?, ?, NULL)
+            """,
+            (run_id, project_id, session_id, payload.direction.strip(), payload.round, message, now, now),
+        )
+        insert_tool_event(
+            connection,
+            session_id,
+            "direction.run",
+            "queued",
+            message,
+            now,
+        )
+
+    threading.Thread(
+        target=run_direction_review_background,
+        args=(run_id, project_id),
+        daemon=True,
+    ).start()
+    with get_connection() as connection:
+        return direction_review_run_response(fetch_direction_review_run_dict(connection, project_id, run_id))
+
+
+@app.get(
+    "/projects/{project_id}/direction-review-runs/latest",
+    response_model=DirectionReviewRunStatusResponse | None,
+)
+def get_latest_project_direction_review_run(project_id: str) -> DirectionReviewRunStatusResponse | None:
+    ensure_project_exists(project_id)
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT * FROM direction_review_runs
+            WHERE project_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (project_id,),
+        ).fetchone()
+    return direction_review_run_response(dict(row)) if row is not None else None
+
+
+@app.get(
+    "/projects/{project_id}/direction-review-runs/{run_id}",
+    response_model=DirectionReviewRunStatusResponse,
+)
+def get_project_direction_review_run(
+    project_id: str,
+    run_id: str,
+) -> DirectionReviewRunStatusResponse:
+    with get_connection() as connection:
+        return direction_review_run_response(fetch_direction_review_run_dict(connection, project_id, run_id))
 
 
 @app.post("/projects/{project_id}/research-decisions", response_model=ResearchDecisionResponse, status_code=201)

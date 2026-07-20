@@ -9,6 +9,7 @@ import type {
   ApiArtifactSummary,
   ApiDirectionReviewRequest,
   ApiDirectionReviewResponse,
+  ApiDirectionReviewRunStatusResponse,
   ApiHealth,
   ApiLiteratureSearchRequest,
   ApiLiteratureSearchResponse,
@@ -298,6 +299,32 @@ export function createDirectionReview(projectId: string, payload: ApiDirectionRe
     method: "POST",
     body: JSON.stringify(payload),
   }, API_RESEARCH_TIMEOUT_MS);
+}
+
+export function startDirectionReviewRun(
+  projectId: string,
+  payload: ApiDirectionReviewRequest,
+  options?: RequestInit,
+) {
+  return request<ApiDirectionReviewRunStatusResponse>(`/projects/${projectId}/direction-review-runs`, {
+    ...options,
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getDirectionReviewRun(projectId: string, runId: string, options?: RequestInit) {
+  return request<ApiDirectionReviewRunStatusResponse>(
+    `/projects/${projectId}/direction-review-runs/${runId}`,
+    options,
+  );
+}
+
+export function getLatestDirectionReviewRun(projectId: string, options?: RequestInit) {
+  return request<ApiDirectionReviewRunStatusResponse | null>(
+    `/projects/${projectId}/direction-review-runs/latest`,
+    options,
+  );
 }
 
 export function createResearchDecisions(projectId: string, payload: ApiResearchDecisionRequest = {}, options?: RequestInit) {

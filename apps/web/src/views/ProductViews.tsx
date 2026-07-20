@@ -43,6 +43,7 @@ import {
   type ApiArtifactSummary,
   type ApiDirectionPaperReading,
   type ApiDirectionReviewResponse,
+  type ApiDirectionReviewRunStatusResponse,
   type ApiEvidencePack,
   type ApiFullTextProvenance,
   type ApiPaperCard,
@@ -865,8 +866,10 @@ interface ActiveViewProps {
   decisionGoal: string;
   directionBusy: boolean;
   directionInput: string;
+  directionMessage: string;
   directionPaperRouteId: string;
   directionReview: ApiDirectionReviewResponse | null;
+  directionRun: ApiDirectionReviewRunStatusResponse | null;
   directionRound: number;
   literatureCoverage: Record<string, number>;
   literatureBusy: boolean;
@@ -874,11 +877,15 @@ interface ActiveViewProps {
   literatureQuery: string;
   latestPaperCard: ApiPaperCard | null;
   memoryBusy: boolean;
+  memoryMessage: string;
   memoryQuestion: string;
   memoryResult: ApiResearchMemoryQueryResponse | null;
   memoryTopK: number;
   ragAnswer: ApiRagAnswerResponse | null;
   ragBusy: boolean;
+  ragMessage: string;
+  ragQuestion: string;
+  ragTopK: number;
   projectDraft: ProjectDraft;
   onAgentTaskChange: (task: string) => void;
   onCreateAgentPlan: () => void;
@@ -896,6 +903,8 @@ interface ActiveViewProps {
   onLoadArtifact: (artifactId: string) => void;
   onMemoryQuestionChange: (question: string) => void;
   onMemoryTopKChange: (topK: number) => void;
+  onRagQuestionChange: (question: string) => void;
+  onRagTopKChange: (topK: number) => void;
   onPaperCardInputChange: (value: string) => void;
   onPaperPdfUpload: (paperId: string, file: File) => void;
   onProjectDraftChange: (draft: ProjectDraft) => void;
@@ -928,8 +937,10 @@ export function ActiveView({
   decisionGoal,
   directionBusy,
   directionInput,
+  directionMessage,
   directionPaperRouteId,
   directionReview,
+  directionRun,
   directionRound,
   literatureCoverage,
   literatureBusy,
@@ -937,11 +948,15 @@ export function ActiveView({
   literatureQuery,
   latestPaperCard,
   memoryBusy,
+  memoryMessage,
   memoryQuestion,
   memoryResult,
   memoryTopK,
   ragAnswer,
   ragBusy,
+  ragMessage,
+  ragQuestion,
+  ragTopK,
   projectDraft,
   onAgentTaskChange,
   onCancelAgentRun,
@@ -959,6 +974,8 @@ export function ActiveView({
   onLoadArtifact,
   onMemoryQuestionChange,
   onMemoryTopKChange,
+  onRagQuestionChange,
+  onRagTopKChange,
   onPaperCardInputChange,
   onPaperPdfUpload,
   onProjectDraftChange,
@@ -1053,7 +1070,7 @@ export function ActiveView({
         <>
           {offlineNotice}
           <DirectionReviewView
-            apiMessage={apiMessage}
+            apiMessage={directionMessage}
             apiStatus={apiStatus}
             direction={directionInput}
             isGenerating={directionBusy}
@@ -1063,6 +1080,7 @@ export function ActiveView({
             onOpenPaperCard={onSelectedDirectionPaperChange}
             onRoundChange={onDirectionRoundChange}
             review={directionReview}
+            run={directionRun}
             round={directionRound}
           />
         </>
@@ -1072,19 +1090,24 @@ export function ActiveView({
         <>
           {offlineNotice}
           <ResearchMemoryView
-            apiMessage={apiMessage}
             apiStatus={apiStatus}
             direction={directionInput}
             isQuerying={memoryBusy}
             isRagQuerying={ragBusy}
+            memoryMessage={memoryMessage}
             onQuestionChange={onMemoryQuestionChange}
             onQuery={onQueryResearchMemory}
             onQueryRag={onQueryRag}
+            onRagQuestionChange={onRagQuestionChange}
+            onRagTopKChange={onRagTopKChange}
             onSelectView={onSelectView}
             onTopKChange={onMemoryTopKChange}
             question={memoryQuestion}
             result={memoryResult}
             ragResult={ragAnswer}
+            ragMessage={ragMessage}
+            ragQuestion={ragQuestion}
+            ragTopK={ragTopK}
             topK={memoryTopK}
           />
         </>
@@ -3402,6 +3425,7 @@ export function DirectionReviewView({
   onOpenPaperCard,
   onRoundChange,
   review,
+  run,
   round,
 }: {
   apiMessage: string;
@@ -3414,6 +3438,7 @@ export function DirectionReviewView({
   onOpenPaperCard: (paperId: string) => void;
   onRoundChange: (round: number) => void;
   review: ApiDirectionReviewResponse | null;
+  run: ApiDirectionReviewRunStatusResponse | null;
   round: number;
 }) {
   const [summaryExpanded, setSummaryExpanded] = useState(false);
@@ -3486,6 +3511,34 @@ export function DirectionReviewView({
           <span>顶会/顶刊优先</span>
           <span>点击进入独立 Paper Card</span>
         </div>
+
+        {run ? (
+          <section className="direction-run-progress" aria-label="direction review server progress">
+            <div className="direction-run-progress-header">
+              <div>
+                <span>后端真实进度</span>
+                <strong>{formatDirectionRunStage(run.stage)}</strong>
+              </div>
+              <em data-status={run.status}>{run.status}</em>
+            </div>
+            <progress max={100} value={run.progress} />
+            <div className="direction-run-progress-meta">
+              <span>{run.progress}%</span>
+              <span>{run.message}</span>
+              <time dateTime={run.updated_at}>{formatArtifactDate(run.updated_at)}</time>
+            </div>
+            {run.notices.length ? (
+              <ul className="direction-run-notices" aria-label="direction review notices">
+                {run.notices.slice(-3).map((notice) => (
+                  <li data-severity={notice.severity} key={`${notice.code}-${notice.occurred_at}`}>
+                    <strong>{notice.severity}</strong>
+                    <span>{notice.message}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </section>
+        ) : null}
 
         <div className={`project-status-note ${apiStatus}`}>
           <Lightbulb size={18} />
@@ -4277,38 +4330,48 @@ function DirectionPaperDetail({
 }
 
 export function ResearchMemoryView({
-  apiMessage,
   apiStatus,
   direction,
   isQuerying,
   isRagQuerying,
+  memoryMessage,
   onQuestionChange,
   onQuery,
   onQueryRag,
+  onRagQuestionChange,
+  onRagTopKChange,
   onSelectView,
   onTopKChange,
   question,
+  ragMessage,
+  ragQuestion,
   ragResult,
+  ragTopK,
   result,
   topK,
 }: {
-  apiMessage: string;
   apiStatus: ApiStatus;
   direction: string;
   isQuerying: boolean;
   isRagQuerying: boolean;
+  memoryMessage: string;
   onQuestionChange: (question: string) => void;
   onQuery: () => void;
   onQueryRag: () => void;
+  onRagQuestionChange: (question: string) => void;
+  onRagTopKChange: (topK: number) => void;
   onSelectView: (view: ViewId) => void;
   onTopKChange: (topK: number) => void;
   question: string;
+  ragMessage: string;
+  ragQuestion: string;
   ragResult: ApiRagAnswerResponse | null;
+  ragTopK: number;
   result: ApiResearchMemoryQueryResponse | null;
   topK: number;
 }) {
-  const queryBusy = isQuerying || isRagQuerying;
-  const canQuery = apiStatus === "online" && !queryBusy && question.trim().length > 0;
+  const canQueryMemory = apiStatus === "online" && !isQuerying && question.trim().length > 0;
+  const canQueryRag = apiStatus === "online" && !isRagQuerying && ragQuestion.trim().length > 0;
   const memoryHits = result?.hits ?? [];
   const memoryEvidenceBoundary = buildMemoryEvidenceBoundary(memoryHits);
   const memoryUnavailable = result?.reliability_status === "no_reliable_hit" || result?.reliability_status === "no_memory";
@@ -4326,32 +4389,68 @@ export function ResearchMemoryView({
           <div>
             <p className="section-kicker">Paper Memory Bank</p>
             <h2>原文证据与结构化记忆问答</h2>
-          </div>
-          <div className="memory-query-actions">
-            <button className="primary-command" disabled={!canQuery} type="button" onClick={onQueryRag}>
-              <ShieldCheck size={17} />
-              {isRagQuerying ? "核对原文中" : "检索原文并回答"}
-            </button>
-            <button className="secondary-command" disabled={!canQuery} type="button" onClick={onQuery}>
-              <BrainCircuit size={17} />
-              {isQuerying ? "检索记忆中" : "检索记忆并回答"}
-            </button>
+            <p>两种检索拥有独立问题、top-k、运行状态和结果，不再互相覆盖。</p>
           </div>
         </div>
 
-        <div className="memory-control-grid">
-          <label>
-            用户问题
-            <textarea value={question} onChange={(event) => onQuestionChange(event.target.value)} />
-          </label>
-          <label>
-            检索论文数
-            <select value={topK} onChange={(event) => onTopKChange(Number(event.target.value))}>
-              <option value={3}>3 篇</option>
-              <option value={5}>5 篇</option>
-              <option value={8}>8 篇</option>
-            </select>
-          </label>
+        <div className="memory-query-mode-grid">
+          <article className="memory-query-mode rag-mode">
+            <header>
+              <ShieldCheck size={18} />
+              <div>
+                <strong>原文 RAG</strong>
+                <span>检索 PDF/摘要 chunk，输出 citation 与主张校验</span>
+              </div>
+            </header>
+            <label>
+              原文 RAG 问题
+              <textarea value={ragQuestion} onChange={(event) => onRagQuestionChange(event.target.value)} />
+            </label>
+            <div className="memory-query-mode-actions">
+              <label>
+                RAG 证据数
+                <select value={ragTopK} onChange={(event) => onRagTopKChange(Number(event.target.value))}>
+                  <option value={3}>3 条</option>
+                  <option value={5}>5 条</option>
+                  <option value={8}>8 条</option>
+                </select>
+              </label>
+              <button className="primary-command" disabled={!canQueryRag} type="button" onClick={onQueryRag}>
+                <ShieldCheck size={17} />
+                {isRagQuerying ? "核对原文中" : "检索原文并回答"}
+              </button>
+            </div>
+            <OperationStatusNote apiStatus={apiStatus} message={ragMessage} />
+          </article>
+
+          <article className="memory-query-mode memory-mode">
+            <header>
+              <BrainCircuit size={18} />
+              <div>
+                <strong>结构化 Paper Memory</strong>
+                <span>检索 Paper Card 与 ResearchSight，不等同于原文证据</span>
+              </div>
+            </header>
+            <label>
+              用户问题
+              <textarea value={question} onChange={(event) => onQuestionChange(event.target.value)} />
+            </label>
+            <div className="memory-query-mode-actions">
+              <label>
+                检索论文数
+                <select value={topK} onChange={(event) => onTopKChange(Number(event.target.value))}>
+                  <option value={3}>3 篇</option>
+                  <option value={5}>5 篇</option>
+                  <option value={8}>8 篇</option>
+                </select>
+              </label>
+              <button className="secondary-command" disabled={!canQueryMemory} type="button" onClick={onQuery}>
+                <BrainCircuit size={17} />
+                {isQuerying ? "检索记忆中" : "检索记忆并回答"}
+              </button>
+            </div>
+            <OperationStatusNote apiStatus={apiStatus} message={memoryMessage} />
+          </article>
         </div>
 
         <div className="memory-chip-row">
@@ -4360,7 +4459,6 @@ export function ResearchMemoryView({
           <span>Paper Memory：Paper Card + ResearchSight</span>
           <span>无可靠证据则拒答</span>
         </div>
-        {queryBusy ? <OperationStatusNote apiStatus={apiStatus} message={apiMessage} /> : null}
       </section>
 
       <RagAnswerPanel result={ragResult} />
@@ -5296,6 +5394,19 @@ function getDirectionArtifactRefs(review: ApiDirectionReviewResponse | null): Ap
     kind: artifact.kind,
     created_at: artifact.created_at,
   }));
+}
+
+function formatDirectionRunStage(stage: ApiDirectionReviewRunStatusResponse["stage"]): string {
+  return {
+    queued: "等待后端执行",
+    scoping: "界定方向范围",
+    retrieving: "检索与相关性筛选",
+    reading: "获取 PDF 与结构化阅读",
+    curating: "校准 BaselineMap 与 ResearchSight",
+    persisting: "写入科研资产",
+    completed: "运行结束",
+    failed: "执行失败",
+  }[stage];
 }
 
 function formatArtifactDate(value: string) {

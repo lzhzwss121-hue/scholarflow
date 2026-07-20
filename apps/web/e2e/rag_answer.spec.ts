@@ -189,7 +189,7 @@ test("full-text RAG renders validated claims and focuses the cited evidence", as
   });
 
   await page.goto("/#paper-memory");
-  await page.getByLabel("用户问题").fill("对象幻觉如何被反事实 grounding 缓解？");
+  await page.getByLabel("原文 RAG 问题").fill("对象幻觉如何被反事实 grounding 缓解？");
   await page.getByRole("button", { name: "检索原文并回答" }).click();
 
   await expect(page.locator('[aria-label="evidence grounded rag answer"]')).toBeVisible();
@@ -210,6 +210,8 @@ test("full-text RAG renders validated claims and focuses the cited evidence", as
   expect(requestBody.query).toBe("对象幻觉如何被反事实 grounding 缓解？");
   expect(requestBody.evidence_levels).toEqual(["abstract_only", "full_text"]);
   expect(requestBody.refresh_embeddings).toBe(true);
+  await expect(page.getByLabel("原文 RAG 问题")).toHaveValue("对象幻觉如何被反事实 grounding 缓解？");
+  await expect(page.getByLabel("用户问题")).toHaveValue("这个方向最值得做的一周验证实验是什么？");
   await expect(page.getByRole("button", { name: "检索记忆并回答" })).toBeVisible();
 });
 
@@ -244,7 +246,7 @@ test("full-text RAG shows a refusal boundary when no chunk is reliable", async (
   });
 
   await page.goto("/#paper-memory");
-  await page.getByLabel("用户问题").fill("不存在的火山考古问题");
+  await page.getByLabel("原文 RAG 问题").fill("不存在的火山考古问题");
   await page.getByRole("button", { name: "检索原文并回答" }).click();
 
   await expect(page.getByRole("heading", { name: "当前原文索引无法可靠回答" })).toBeVisible();

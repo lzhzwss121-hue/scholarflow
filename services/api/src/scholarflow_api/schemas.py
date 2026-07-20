@@ -607,6 +607,30 @@ class DirectionReviewResponse(BaseModel):
     workflow_steps: list[WorkflowStepState] = Field(default_factory=list)
 
 
+class WorkflowNoticeMessage(BaseModel):
+    severity: Literal["info", "warning", "error"]
+    code: str
+    stage: str
+    message: str
+    occurred_at: str
+
+
+class DirectionReviewRunStatusResponse(BaseModel):
+    run_id: str
+    project_id: str
+    direction: str
+    round: int
+    status: Literal["queued", "running", "complete", "partial", "blocked", "failed"]
+    stage: Literal["queued", "scoping", "retrieving", "reading", "curating", "persisting", "completed", "failed"]
+    progress: int = Field(ge=0, le=100)
+    message: str
+    notices: list[WorkflowNoticeMessage] = Field(default_factory=list)
+    result: DirectionReviewResponse | None = None
+    created_at: str
+    updated_at: str
+    completed_at: str | None = None
+
+
 class ResearchDecisionRequest(BaseModel):
     goal: str = Field(default="", max_length=1000)
 

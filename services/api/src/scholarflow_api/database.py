@@ -225,6 +225,25 @@ def init_db() -> None:
                 FOREIGN KEY (result_artifact_id) REFERENCES artifacts(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS direction_review_runs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                round_index INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'queued',
+                stage TEXT NOT NULL DEFAULT 'queued',
+                progress INTEGER NOT NULL DEFAULT 0,
+                message TEXT NOT NULL DEFAULT '',
+                notices_json TEXT NOT NULL DEFAULT '[]',
+                result_json TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS tool_events (
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
@@ -262,6 +281,10 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id);
             CREATE INDEX IF NOT EXISTS idx_agent_runs_project_id ON agent_runs(project_id);
             CREATE INDEX IF NOT EXISTS idx_agent_runs_session_id ON agent_runs(session_id);
+            CREATE INDEX IF NOT EXISTS idx_direction_review_runs_project_id
+                ON direction_review_runs(project_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_direction_review_runs_active
+                ON direction_review_runs(project_id, status, updated_at);
             CREATE INDEX IF NOT EXISTS idx_tool_events_session_id ON tool_events(session_id);
             CREATE INDEX IF NOT EXISTS idx_retrieval_cache_lookup ON retrieval_cache(source, query, max_results, created_at);
             """
@@ -271,6 +294,7 @@ def init_db() -> None:
         ensure_paper_memory_columns(connection)
         ensure_direction_memory_columns(connection)
         ensure_agent_run_columns(connection)
+        recover_interrupted_direction_review_runs(connection)
         seed_demo_project(connection)
 
 
@@ -345,6 +369,51 @@ def ensure_agent_run_columns(connection: sqlite3.Connection) -> None:
     for name, definition in columns.items():
         if name not in existing_columns:
             connection.execute(f"ALTER TABLE agent_runs ADD COLUMN {name} {definition}")
+
+
+def recover_interrupted_direction_review_runs(connection: sqlite3.Connection) -> None:
+    """Do not leave process-local background work looking alive after restart."""
+
+    rows = connection.execute(
+        """
+        SELECT id, notices_json FROM direction_review_runs
+        WHERE status IN ('queued', 'running')
+        """
+    ).fetchall()
+    if not rows:
+        return
+    recovered_at = utc_now()
+    for row in rows:
+        try:
+            notices = json.loads(str(row["notices_json"] or "[]"))
+        except json.JSONDecodeError:
+            notices = []
+        if not isinstance(notices, list):
+            notices = []
+        notices.append(
+            {
+                "severity": "error",
+                "code": "direction_review_process_interrupted",
+                "stage": "failed",
+                "message": "后端进程在任务完成前重启；该运行已标记失败，请重新启动 Direction Review。",
+                "occurred_at": recovered_at,
+            },
+        )
+        connection.execute(
+            """
+            UPDATE direction_review_runs
+            SET status = 'failed', stage = 'failed', progress = 100,
+                message = ?, notices_json = ?, updated_at = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (
+                "Direction Review 因后端进程中断而失败，未伪装为仍在运行。",
+                json.dumps(notices, ensure_ascii=False, indent=2),
+                recovered_at,
+                recovered_at,
+                row["id"],
+            ),
+        )
 
 
 def seed_demo_project(connection: sqlite3.Connection) -> None:

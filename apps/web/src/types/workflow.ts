@@ -4,6 +4,7 @@ import type {
   ApiArtifact,
   ApiArtifactSummary,
   ApiDirectionReviewResponse,
+  ApiDirectionReviewRunStatusResponse,
   ApiPaperCard,
   ApiProject,
   ApiRagAnswerResponse,
@@ -66,6 +67,8 @@ export type WorkflowViewModel = {
   decisionGoal: string;
   directionInput: string;
   directionReview: ApiDirectionReviewResponse | null;
+  directionRun: ApiDirectionReviewRunStatusResponse | null;
+  directionMessage: string;
   directionRound: number;
   latestPaperCard: ApiPaperCard | null;
   lastSavedArtifact: ApiArtifact | null;
@@ -73,9 +76,13 @@ export type WorkflowViewModel = {
   literatureErrors: string[];
   literatureQuery: string;
   memoryQuestion: string;
+  memoryMessage: string;
   memoryResult: ApiResearchMemoryQueryResponse | null;
   memoryTopK: number;
+  ragMessage: string;
   ragAnswer: ApiRagAnswerResponse | null;
+  ragQuestion: string;
+  ragTopK: number;
   paperCardInput: string;
   paperRows: PaperRow[];
   projectCount: number;
@@ -107,6 +114,8 @@ export type WorkflowActions = {
   onLoadArtifact: (artifactId: string) => void;
   onMemoryQuestionChange: (question: string) => void;
   onMemoryTopKChange: (topK: number) => void;
+  onRagQuestionChange: (question: string) => void;
+  onRagTopKChange: (topK: number) => void;
   onPaperCardInputChange: (value: string) => void;
   onPaperPdfUpload: (paperId: string, file: File) => void;
   onProjectDraftChange: (draft: ProjectDraft) => void;

@@ -398,6 +398,32 @@ export interface ApiDirectionReviewResponse {
   workflow_steps?: ApiWorkflowStepState[];
 }
 
+export type ApiWorkflowNoticeSeverity = "info" | "warning" | "error";
+
+export interface ApiWorkflowNoticeMessage {
+  severity: ApiWorkflowNoticeSeverity;
+  code: string;
+  stage: string;
+  message: string;
+  occurred_at: string;
+}
+
+export interface ApiDirectionReviewRunStatusResponse {
+  run_id: string;
+  project_id: string;
+  direction: string;
+  round: number;
+  status: "queued" | "running" | "complete" | "partial" | "blocked" | "failed";
+  stage: "queued" | "scoping" | "retrieving" | "reading" | "curating" | "persisting" | "completed" | "failed";
+  progress: number;
+  message: string;
+  notices: ApiWorkflowNoticeMessage[];
+  result: ApiDirectionReviewResponse | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
 export interface ApiResearchDecisionRequest {
   goal?: string;
 }

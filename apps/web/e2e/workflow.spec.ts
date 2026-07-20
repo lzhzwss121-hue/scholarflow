@@ -1576,9 +1576,62 @@ test("created Chinese research workflow keeps uploaded full text after refresh a
       },
     });
   });
-  await page.route(`**/projects/${project.id}/direction-reviews`, async (route) => {
+  let directionRunStarted = false;
+  await page.route(`**/projects/${project.id}/direction-review-runs**`, async (route) => {
+    const requestUrl = new URL(route.request().url());
+    const isLatest = requestUrl.pathname.endsWith("/latest");
+    if (isLatest && !directionRunStarted) {
+      await route.fulfill({ json: null });
+      return;
+    }
+    if (route.request().method() === "POST") {
+      directionRunStarted = true;
+      await route.fulfill({
+        status: 202,
+        json: {
+          run_id: "direction_run_e2e",
+          project_id: project.id,
+          direction: project.keyword,
+          round: 1,
+          status: "running",
+          stage: "retrieving",
+          progress: 20,
+          message: "正在从 arXiv 与 OpenAlex 检索候选。",
+          notices: [],
+          result: null,
+          created_at: directionArtifact.created_at,
+          updated_at: directionArtifact.updated_at,
+          completed_at: null,
+        },
+      });
+      return;
+    }
     artifacts = [artifact, directionArtifact];
-    await route.fulfill({ status: 201, json: directionPayload });
+    await route.fulfill({
+      json: {
+        run_id: "direction_run_e2e",
+        project_id: project.id,
+        direction: project.keyword,
+        round: 1,
+        status: "partial",
+        stage: "completed",
+        progress: 100,
+        message: "Direction Review 部分完成：可靠阅读 1/10 篇。",
+        notices: [
+          {
+            severity: "warning",
+            code: "direction_review_partial",
+            stage: "completed",
+            message: "Direction Review 仅部分完成，后续决策必须保留证据不足边界。",
+            occurred_at: directionArtifact.updated_at,
+          },
+        ],
+        result: directionPayload,
+        created_at: directionArtifact.created_at,
+        updated_at: directionArtifact.updated_at,
+        completed_at: directionArtifact.updated_at,
+      },
+    });
   });
   await page.route(`**/projects/${project.id}/papers/${paper.id}/full-text`, async (route) => {
     paperCards = [uploadedCard];
@@ -1663,6 +1716,13 @@ test("created Chinese research workflow keeps uploaded full text after refresh a
   await expect(page).toHaveURL(/#direction-review/);
   await page.getByRole("button", { name: "生成第 1 轮" }).click();
   await expect(page.getByRole("heading", { name: project.keyword })).toBeVisible();
+  await expect(page.locator('[aria-label="direction review server progress"]')).toContainText("后端真实进度");
+  await expect(page.locator('[aria-label="direction review server progress"]')).toContainText("100%");
+  await expect(
+    page
+      .locator('[aria-label="direction review server progress"]')
+      .getByText("Direction Review 仅部分完成，后续决策必须保留证据不足边界。"),
+  ).toBeVisible();
   await expect(page.locator('[aria-label="direction review metrics"]')).toContainText("1/10");
 
   await page.getByRole("button", { name: `打开 Paper Card：${paper.title}`, exact: true }).click();
