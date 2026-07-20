@@ -257,6 +257,10 @@ class BaselineReference(BaseModel):
     evidence_snippets: list[EvidenceSnippet] = Field(default_factory=list)
     confidence: str = ""
     evidence_gap: str = ""
+    comparison_role: str = ""
+    actionability_status: str = "blocked"
+    next_action: str = ""
+    experiment_anchor: dict[str, str] = Field(default_factory=dict)
     verification: BaselineVerification = Field(default_factory=BaselineVerification)
 
 
@@ -269,6 +273,7 @@ class BaselineMap(BaseModel):
     common_benchmarks: list[str]
     evaluation_risks: list[str]
     open_questions: list[str]
+    action_plan: list[str] = Field(default_factory=list)
     generated_from: list[str]
     evidence_summary: str = ""
     curator_notes: str
@@ -615,6 +620,11 @@ class GapDecision(BaseModel):
     opportunity: str
     novelty_risk: Literal["low", "medium", "high"]
     feasibility: Literal["one-week", "one-month", "thesis-scale"]
+    support_status: Literal["insufficient", "single_source", "corroborated", "conflicted"] = "insufficient"
+    confidence: Literal["low", "medium", "high"] = "low"
+    paper_ids: list[str] = Field(default_factory=list)
+    evidence_refs: list[dict[str, str]] = Field(default_factory=list)
+    validation_requirements: list[str] = Field(default_factory=list)
 
 
 class IdeaValidation(BaseModel):
@@ -683,6 +693,8 @@ class PaperMemoryHit(BaseModel):
     section_score: float = 0.0
     priority_score: float = 0.0
     snippets: list[str]
+    matched_query_terms: list[str] = Field(default_factory=list)
+    query_coverage: float = 0.0
     evidence_quality: Literal["metadata_only", "abstract_only", "full_text"] = "metadata_only"
     evidence_refs: list[dict[str, str]] = Field(default_factory=list)
     abstract_translation: str
@@ -726,6 +738,7 @@ class ResearchMemoryQueryResponse(BaseModel):
     answer_summary: str = ""
     claims: list[ResearchMemoryClaim] = Field(default_factory=list)
     unanswered_parts: list[str] = Field(default_factory=list)
+    query_coverage: dict[str, object] = Field(default_factory=dict)
     artifact: Artifact
     warnings: list[str]
     workflow_steps: list[WorkflowStepState] = Field(default_factory=list)

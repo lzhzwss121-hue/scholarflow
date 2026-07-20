@@ -3769,8 +3769,17 @@ function BaselineReferenceList({
               {reference.confidence || "unknown"} confidence
             </span>
             <h4>{reference.title}</h4>
+            <div className="baseline-action-row">
+              <span>{reference.comparison_role || "candidate_reference"}</span>
+              <strong data-status={reference.actionability_status ?? reference.verification?.reproduction_status ?? "blocked"}>
+                {formatBaselineVerificationValue(
+                  reference.actionability_status ?? reference.verification?.reproduction_status ?? "blocked",
+                )}
+              </strong>
+            </div>
             <p>{reference.reason}</p>
             <small>{reference.evidence_gap}</small>
+            {reference.next_action ? <p className="baseline-next-action">下一步：{reference.next_action}</p> : null}
             {reference.verification ? (
               <details
                 className="baseline-verification"
@@ -3807,6 +3816,18 @@ function BaselineReferenceList({
                   {reference.verification.missing_evidence.length ? (
                     <p>仍缺少：{reference.verification.missing_evidence.join("、")}。</p>
                   ) : null}
+                  {reference.experiment_anchor ? (
+                    <dl className="baseline-experiment-anchor">
+                      {Object.entries(reference.experiment_anchor)
+                        .filter(([, value]) => Boolean(value))
+                        .map(([field, value]) => (
+                          <div key={field}>
+                            <dt>{baselineCheckLabels[field] ?? field}</dt>
+                            <dd>{value}</dd>
+                          </div>
+                        ))}
+                    </dl>
+                  ) : null}
                 </div>
               </details>
             ) : null}
@@ -3832,17 +3853,21 @@ function BaselineMapPanel({ baselineMap }: { baselineMap: NonNullable<ApiDirecti
       <p>{baselineMap.task_definition}</p>
       <div className="baseline-map-grid">
         <BaselineReferenceList title="经典 baseline" references={baselineMap.classic_baselines} />
-        <BaselineReferenceList title="近三年强 baseline" references={baselineMap.recent_strong_baselines} />
+        <BaselineReferenceList title="近三年直接候选" references={baselineMap.recent_strong_baselines} />
         <BaselineReferenceList title="异质范式" references={baselineMap.alternative_paradigms} />
       </div>
       <div className="baseline-risk-grid">
+        <div>
+          <strong>执行顺序</strong>
+          <span>{baselineMap.action_plan?.join("；") || "当前没有 reproduction-ready baseline，实验计划应保持 blocked/partial。"}</span>
+        </div>
         <div>
           <strong>证据约束</strong>
           <span>{baselineMap.evidence_summary}</span>
         </div>
         <div>
           <strong>常见 benchmark</strong>
-          <span>{baselineMap.common_benchmarks.slice(0, 5).join(" / ")}</span>
+          <span>{baselineMap.common_benchmarks.slice(0, 5).join(" / ") || "尚未从候选论文中核验出稳定 benchmark"}</span>
         </div>
         <div>
           <strong>评价风险</strong>
@@ -4289,6 +4314,10 @@ export function ResearchMemoryView({
   const memoryUnavailable = result?.reliability_status === "no_reliable_hit" || result?.reliability_status === "no_memory";
   const memoryUnavailableTitle =
     result?.reliability_status === "no_memory" ? "当前项目还没有可检索的论文记忆" : "当前记忆没有可靠证据回答此问题";
+  const queryCoverage = result?.query_coverage;
+  const queryCoverageValue = Number(queryCoverage?.coverage ?? 0);
+  const matchedQueryTerms = queryCoverage?.matched_terms ?? [];
+  const missingQueryTerms = queryCoverage?.missing_terms ?? [];
 
   return (
     <div className="memory-stack">
@@ -4384,9 +4413,19 @@ export function ResearchMemoryView({
                 <span title="当前方向下已保存的论文记忆数。">已保存记忆 {result.total_memories}</span>
                 <span title="实际达到可靠命中门槛的论文数。">可靠命中 {memoryHits.length}</span>
                 <span title="本次请求的最大返回数。">请求 top {result.top_k}</span>
+                <span title="可靠命中的原文证据对用户问题锚点的联合覆盖率。">
+                  问题覆盖 {Math.round(queryCoverageValue * 100)}%
+                </span>
               </div>
             </div>
             <p className="memory-answer-summary">{result.answer_summary || result.answer}</p>
+            {queryCoverage ? (
+              <div className="memory-query-coverage" aria-label="memory query coverage">
+                <strong>本次回答覆盖范围</strong>
+                <p>已覆盖：{matchedQueryTerms.join(" / ") || "无"}</p>
+                <p>未覆盖：{missingQueryTerms.join(" / ") || "无，当前问题锚点已全部覆盖"}</p>
+              </div>
+            ) : null}
             {result.claims?.length ? (
               <div className="memory-claim-list" aria-label="memory synthesized claims">
                 {result.claims.map((claim) => (
@@ -4475,10 +4514,12 @@ export function ResearchMemoryView({
                       <span>keyword {(hit.keyword_score ?? 0).toFixed(2)}</span>
                       <span>section {(hit.section_score ?? 0).toFixed(2)}</span>
                       <span>priority {(hit.priority_score ?? 0).toFixed(2)}</span>
+                      <span>问题覆盖 {Math.round((hit.query_coverage ?? 0) * 100)}%</span>
                     </div>
                     <div className="memory-hit-evidence" data-testid="memory-hit-evidence">
                       <strong>命中理由</strong>
                       <span>{hit.paper?.relation || "标题、关键词或结构化字段与当前问题存在直接交集。"}</span>
+                      <span>直接命中：{hit.matched_query_terms?.join(" / ") || "未记录"}</span>
                       <small>{formatEvidenceLevel(pack.evidence_level || hit.evidence_quality || "metadata_only")}</small>
                     </div>
                     <p>{hit.snippets?.[0] ?? "暂无命中片段。"}</p>
@@ -4678,6 +4719,8 @@ export function GapBoardView({
   const evidenceQuality = decision?.evidence_quality ?? {};
   const gapEvidenceCount = Number(evidenceQuality.gap_evidence_paper_count ?? 0);
   const evidenceThreshold = Number(evidenceQuality.minimum_gap_evidence_threshold ?? 5);
+  const groundedGapCount = Number(evidenceQuality.grounded_gap_evidence_count ?? 0);
+  const corroboratedGapCount = Number(evidenceQuality.corroborated_gap_group_count ?? 0);
   const decisionEvidenceBoundary = buildDecisionEvidenceBoundary(decision);
   const isConservative = Boolean(decision && (decisionStatus !== "complete" || decisionEvidenceBoundary));
 
@@ -4735,6 +4778,8 @@ export function GapBoardView({
             <span>
               gap evidence {gapEvidenceCount}/{evidenceThreshold}
             </span>
+            <span>可定位限制 {groundedGapCount}</span>
+            <span>跨论文一致组 {corroboratedGapCount}</span>
           </div>
         ) : null}
       </section>
@@ -4778,7 +4823,12 @@ export function GapBoardView({
                 <h2>{gap.title}</h2>
                 <span className={`risk ${gap.novelty_risk}`}>{gap.novelty_risk}</span>
               </div>
-              <div className={`gap-kind ${gap.kind}`}>{gap.kind}</div>
+              <div className="gap-classification-row">
+                <div className={`gap-kind ${gap.kind}`}>{gap.kind}</div>
+                <span className={`confidence ${gap.confidence ?? "low"}`}>
+                  {gap.support_status ?? "insufficient"} · {gap.confidence ?? "low"}
+                </span>
+              </div>
               {isConservative ? (
                 <p className="gap-conservative-note">保守候选：先补齐原文证据并复核相邻工作，再决定是否投入实验。</p>
               ) : null}
@@ -4800,6 +4850,39 @@ export function GapBoardView({
                   <dd>{gap.feasibility}</dd>
                 </div>
               </dl>
+              {gap.evidence_refs?.length ? (
+                <details className="gap-evidence-details">
+                  <summary>查看原文证据锚点（{gap.evidence_refs.length}）</summary>
+                  <div>
+                    {gap.evidence_refs.map((reference) => (
+                      <article key={`${gap.id}-${reference.paper_id}-${reference.snippet_id}`}>
+                        <strong>{reference.paper_title || reference.paper_id}</strong>
+                        <small>
+                          {[
+                            reference.source,
+                            reference.section,
+                            reference.page ? `p.${reference.page}` : "",
+                            reference.evidence_level,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </small>
+                        <p>{reference.text}</p>
+                      </article>
+                    ))}
+                  </div>
+                </details>
+              ) : null}
+              {gap.validation_requirements?.length ? (
+                <div className="gap-validation-requirements">
+                  <strong>升级为可投入课题前必须完成</strong>
+                  <ul>
+                    {gap.validation_requirements.map((requirement) => (
+                      <li key={requirement}>{requirement}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
             </article>
           ))}
         </div>

@@ -7,10 +7,28 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from scholarflow_api.literature import build_query_intent
+from scholarflow_api.rag_retrieval import matched_retrieval_anchors, retrieval_anchor_terms
 from scholarflow_api.text_utils import extract_terms, normalize_space, normalize_terms, score_term_overlap
 
-RESEARCH_MEMORY_SCHEMA_VERSION = "research_memory_answer.v3"
+RESEARCH_MEMORY_SCHEMA_VERSION = "research_memory_answer.v4"
 MIN_RELIABLE_MEMORY_SCORE = 0.28
+MEMORY_QUERY_STOP_ANCHORS = {
+    "and",
+    "could",
+    "did",
+    "does",
+    "explain",
+    "explains",
+    "how",
+    "or",
+    "should",
+    "under",
+    "verify",
+    "what",
+    "which",
+    "why",
+    "would",
+}
 
 
 @dataclass
@@ -22,6 +40,8 @@ class PaperMemoryHit:
     section_score: float
     priority_score: float
     snippets: list[str]
+    matched_query_terms: list[str] = field(default_factory=list)
+    query_coverage: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         paper = memory_record_to_paper(self.memory, self.score)
@@ -36,6 +56,8 @@ class PaperMemoryHit:
             "section_score": self.section_score,
             "priority_score": self.priority_score,
             "snippets": self.snippets,
+            "matched_query_terms": self.matched_query_terms,
+            "query_coverage": self.query_coverage,
             "evidence_quality": memory_evidence_quality(self.memory),
             "evidence_refs": evidence_refs,
             "abstract_translation": self.memory.get("abstract_translation", ""),
@@ -126,6 +148,7 @@ class ResearchMemoryAnswer:
     answer_summary: str = ""
     claims: list[MemoryClaim] = field(default_factory=list)
     unanswered_parts: list[str] = field(default_factory=list)
+    query_coverage: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -142,6 +165,7 @@ class ResearchMemoryAnswer:
             "answer_summary": self.answer_summary,
             "claims": [claim.to_dict() for claim in self.claims],
             "unanswered_parts": self.unanswered_parts,
+            "query_coverage": self.query_coverage,
         }
 
 
@@ -479,12 +503,13 @@ def query_research_memory(
         reliability_status = "no_memory"
         reliability_reason = "当前项目没有可检索的 paper memory。"
     reliable_hits = [hit for hit in ranked_hits if is_reliable_memory_hit(hit, question)]
-    missing_terms: list[str] = []
+    query_coverage = build_memory_query_coverage(question, reliable_hits)
+    missing_terms = list(query_coverage["missing_terms"])
     if records and not reliable_hits:
-        missing_terms = missing_memory_query_terms(records, question)
         reliability_status = "no_reliable_hit"
         reliability_reason = (
-            "检索候选没有达到可靠命中门槛：需要至少一个来自标题、metadata.abstract 或 pdf.full_text 的问题词项证据，"
+            "检索候选没有达到可靠命中门槛：必须由标题、metadata.abstract 或 pdf.full_text "
+            "直接覆盖足够比例的问题锚点，"
             f"且总分不低于 {MIN_RELIABLE_MEMORY_SCORE:.2f}。"
         )
         warnings.append(
@@ -494,6 +519,15 @@ def query_research_memory(
         if missing_terms:
             warnings.append(f"当前原文证据未覆盖主题词：{', '.join(missing_terms[:5])}。")
             warnings.append(f"可尝试改写为：{' '.join(missing_terms[:3])} + 具体任务/数据集/指标，或重新运行 Literature Search。")
+    elif reliable_hits:
+        reliability_reason = (
+            f"{len(reliable_hits)} 篇 paper memory 达到相关性门槛；"
+            f"问题锚点覆盖 {float(query_coverage['coverage']):.0%}。"
+        )
+        if missing_terms:
+            warnings.append(
+                f"回答只覆盖问题的一部分；仍未由可靠命中直接覆盖：{', '.join(missing_terms[:5])}。"
+            )
 
     answer_summary, claims, unanswered_parts = build_memory_synthesis(
         question,
@@ -519,6 +553,7 @@ def query_research_memory(
         answer_summary=answer_summary,
         claims=claims,
         unanswered_parts=unanswered_parts,
+        query_coverage=query_coverage,
     )
 
 
@@ -603,10 +638,21 @@ def search_memory_records(
     allow_weak: bool = False,
 ) -> list[PaperMemoryHit]:
     terms = memory_query_terms(question)
+    query_anchors = memory_query_anchor_terms(question)
     scored: list[PaperMemoryHit] = []
     for record in records:
         breakdown = score_memory_record(record, terms, question)
         if breakdown.total > 0 or allow_weak:
+            direct_evidence = " ".join(
+                reference.get("text", "")
+                for reference in memory_evidence_refs(record)
+            )
+            matched_query_terms = matched_retrieval_anchors(query_anchors, direct_evidence)
+            query_coverage = (
+                len(matched_query_terms) / len(query_anchors)
+                if query_anchors
+                else 0.0
+            )
             scored.append(
                 PaperMemoryHit(
                     memory=record,
@@ -616,6 +662,8 @@ def search_memory_records(
                     section_score=breakdown.section_score,
                     priority_score=breakdown.priority_score,
                     snippets=build_memory_snippets(record, terms),
+                    matched_query_terms=matched_query_terms,
+                    query_coverage=round(query_coverage, 4),
                 ),
             )
     scored.sort(key=lambda hit: hit.score, reverse=True)
@@ -625,17 +673,65 @@ def search_memory_records(
 def is_reliable_memory_hit(hit: PaperMemoryHit, question: str) -> bool:
     if hit.score < MIN_RELIABLE_MEMORY_SCORE:
         return False
-    terms = memory_query_terms(question)
-    if not terms:
+    query_anchors = memory_query_anchor_terms(question)
+    if not query_anchors:
         return False
-    direct_text = " ".join(
-        [
-            str(hit.memory.get("title", "")),
-            *[reference.get("text", "") for reference in memory_evidence_refs(hit.memory)],
-        ],
-    )
-    direct_match = score_term_overlap(direct_text, terms, weight=0.1, max_score=1.0)
-    return bool(direct_match.matched_terms)
+    coverage = hit.query_coverage
+    if not hit.matched_query_terms:
+        direct_text = " ".join(
+            reference.get("text", "")
+            for reference in memory_evidence_refs(hit.memory)
+        )
+        matched = matched_retrieval_anchors(query_anchors, direct_text)
+        coverage = len(matched) / len(query_anchors)
+    return coverage >= minimum_memory_query_coverage(len(query_anchors))
+
+
+def minimum_memory_query_coverage(anchor_count: int) -> float:
+    if anchor_count <= 0:
+        return 1.0
+    if anchor_count == 1:
+        return 1.0
+    if anchor_count <= 3:
+        return 0.34
+    return 0.25
+
+
+def memory_query_anchor_terms(question: str) -> list[str]:
+    return [
+        term
+        for term in retrieval_anchor_terms(question)
+        if term.casefold() not in MEMORY_QUERY_STOP_ANCHORS
+    ]
+
+
+def build_memory_query_coverage(
+    question: str,
+    hits: list[PaperMemoryHit],
+) -> dict[str, Any]:
+    anchors = memory_query_anchor_terms(question)
+    matched: list[str] = []
+    for hit in hits:
+        for term in hit.matched_query_terms:
+            if term not in matched:
+                matched.append(term)
+    matched_keys = {term.casefold() for term in matched}
+    missing = [term for term in anchors if term.casefold() not in matched_keys]
+    coverage = len(matched) / len(anchors) if anchors else 0.0
+    return {
+        "anchor_terms": anchors,
+        "matched_terms": matched,
+        "missing_terms": missing,
+        "coverage": round(coverage, 4),
+        "minimum_coverage": minimum_memory_query_coverage(len(anchors)),
+        "status": (
+            "covered"
+            if anchors and not missing
+            else "partial"
+            if matched
+            else "uncovered"
+        ),
+    }
 
 
 def score_memory_record(record: dict[str, Any], terms: set[str], question: str) -> PaperMemoryScore:
@@ -987,17 +1083,6 @@ def best_memory_evidence_ref(record: dict[str, Any], question: str) -> dict[str,
     return max(references, key=reference_rank)
 
 
-def missing_memory_query_terms(records: list[dict[str, Any]], question: str) -> list[str]:
-    terms = memory_query_terms(question)
-    evidence_text = " ".join(
-        reference.get("text", "")
-        for record in records
-        for reference in memory_evidence_refs(record)
-    ).lower()
-    missing = [term for term in terms if term and term not in evidence_text]
-    return sorted(missing, key=lambda term: (-len(term), term))[:8]
-
-
 def render_research_memory_answer_markdown(answer: ResearchMemoryAnswer) -> str:
     rows = [
         "| Rank | Paper | Score | Breakdown | Round | Snippet |",
@@ -1013,7 +1098,8 @@ def render_research_memory_answer_markdown(answer: ResearchMemoryAnswer) -> str:
                     f"{hit.score:.2f}",
                     escape_table(
                         f"title={hit.title_score:.2f}, keyword={hit.keyword_score:.2f}, "
-                        f"section={hit.section_score:.2f}, priority={hit.priority_score:.2f}",
+                        f"section={hit.section_score:.2f}, priority={hit.priority_score:.2f}, "
+                        f"query_coverage={hit.query_coverage:.0%}",
                     ),
                     str(memory.get("round_index", "")),
                     escape_table(hit.snippets[0] if hit.snippets else ""),
@@ -1029,6 +1115,12 @@ def render_research_memory_answer_markdown(answer: ResearchMemoryAnswer) -> str:
             f"Top K: {answer.top_k}",
             f"Reliability: {answer.reliability_status}",
             f"Reliability reason: {answer.reliability_reason}",
+            "## Query Coverage",
+            (
+                f"Coverage: {float(answer.query_coverage.get('coverage') or 0.0):.0%}; "
+                f"matched={', '.join(answer.query_coverage.get('matched_terms', [])) or 'none'}; "
+                f"missing={', '.join(answer.query_coverage.get('missing_terms', [])) or 'none'}."
+            ),
             "## Direction Memory",
             direction,
             "## Answer",

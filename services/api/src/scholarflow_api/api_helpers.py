@@ -249,6 +249,8 @@ def to_paper_memory_hit(hit) -> PaperMemoryHit:
         section_score=float(getattr(hit, "section_score", 0.0)),
         priority_score=float(getattr(hit, "priority_score", 0.0)),
         snippets=hit.snippets,
+        matched_query_terms=list(getattr(hit, "matched_query_terms", []) or []),
+        query_coverage=float(getattr(hit, "query_coverage", 0.0)),
         evidence_quality=serialized_hit.get("evidence_quality", "metadata_only"),
         evidence_refs=serialized_hit.get("evidence_refs", []),
         abstract_translation=memory.get("abstract_translation", ""),

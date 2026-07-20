@@ -1794,6 +1794,14 @@ test("hydrates real direction review and memory artifact shapes without blank vi
           evidence_snippets: [],
           confidence: "medium",
           evidence_gap: "needs full paper check",
+          comparison_role: "diagnostic_evaluator",
+          actionability_status: "blocked",
+          next_action: "先补齐可定位的 PDF 全文；未补齐前不进入主结果表。",
+          experiment_anchor: {
+            dataset: "COCO",
+            metric: "POPE accuracy",
+            evidence_level: "abstract_only",
+          },
           verification: {
             evidence_level: "abstract_only",
             selection_basis: "abstract_topic_evidence",
@@ -1835,6 +1843,7 @@ test("hydrates real direction review and memory artifact shapes without blank vi
       common_benchmarks: [],
       evaluation_risks: [],
       open_questions: [],
+      action_plan: ["当前没有 reproduction-ready baseline；实验计划应保持 blocked/partial。"],
       generated_from: [paper.id],
       evidence_summary: "E2E artifact shape",
       curator_notes: "mocked",
@@ -2031,7 +2040,9 @@ test("hydrates real direction review and memory artifact shapes without blank vi
   await page.goto("/#direction-review");
   await page.locator(".direction-evidence-details > summary").click();
   const verifiedBaseline = page.getByTestId("baseline-reference-benchmark-0");
-  await expect(verifiedBaseline.getByText("阻塞", { exact: true })).toBeVisible();
+  await expect(verifiedBaseline.locator(".baseline-action-row").getByText("阻塞", { exact: true })).toBeVisible();
+  await expect(verifiedBaseline).toContainText("diagnostic_evaluator");
+  await expect(verifiedBaseline).toContainText("下一步：先补齐可定位的 PDF 全文");
   await verifiedBaseline.getByText("验证与复现条件", { exact: true }).click();
   await expect(verifiedBaseline.getByText("引用关系：未检查。尚未运行引用图验证。", { exact: true })).toBeVisible();
   await expect(verifiedBaseline.getByText("仍缺少：可定位的 PDF 全文。", { exact: true })).toBeVisible();
@@ -2225,6 +2236,25 @@ test("gap and experiment views show abstract-only evidence boundaries", async ({
         opportunity: "Build a small counterfactual VQA set.",
         novelty_risk: "medium",
         feasibility: "one-week",
+        support_status: "single_source",
+        confidence: "low",
+        paper_ids: ["paper_abstract_gap"],
+        evidence_refs: [
+          {
+            paper_id: "paper_abstract_gap",
+            paper_title: "Abstract Gap Candidate",
+            snippet_id: "abstract-limitation",
+            source: "metadata.abstract",
+            section: "abstract",
+            page: "",
+            text: "The current benchmark covers only a narrow answer distribution.",
+            evidence_level: "abstract_only",
+          },
+        ],
+        validation_requirements: [
+          "补充第二篇独立论文的同类限制证据。",
+          "在统一 dataset、metric 与 baseline 下复核。",
+        ],
       },
     ],
     validation: {
@@ -2269,6 +2299,8 @@ test("gap and experiment views show abstract-only evidence boundaries", async ({
       abstract_only_card_count: 1,
       metadata_only_card_count: 0,
       full_text_card_count: 0,
+      grounded_gap_evidence_count: 1,
+      corroborated_gap_group_count: 0,
     },
     decision_intent: {
       raw_goal: restoredDecisionGoal,
@@ -2316,6 +2348,10 @@ test("gap and experiment views show abstract-only evidence boundaries", async ({
   await expect(page.getByRole("textbox", { name: "决策目标" })).toHaveValue(restoredDecisionGoal);
   await expect(page.getByText("摘要级证据，不是全文结论", { exact: true })).toBeVisible();
   await expect(page.getByText(/保守提示：当前不是确定科研结论。Only one abstract-level benchmark card supports this gap./)).toBeVisible();
+  await expect(page.getByText("single_source · low", { exact: true })).toBeVisible();
+  await page.getByText("查看原文证据锚点（1）", { exact: true }).click();
+  await expect(page.getByText("The current benchmark covers only a narrow answer distribution.", { exact: true })).toBeVisible();
+  await expect(page.getByText("补充第二篇独立论文的同类限制证据。", { exact: true })).toBeVisible();
 
   await page.goto("/#experiment-planner");
   await expect(page.getByText("摘要级证据，不是全文结论", { exact: true })).toBeVisible();

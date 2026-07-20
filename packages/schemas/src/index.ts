@@ -265,6 +265,10 @@ export interface ApiBaselineReference {
   evidence_snippets: ApiEvidenceSnippet[];
   confidence: string;
   evidence_gap: string;
+  comparison_role?: string;
+  actionability_status?: "ready" | "partial" | "blocked";
+  next_action?: string;
+  experiment_anchor?: Record<string, string>;
   verification?: ApiBaselineVerification;
 }
 
@@ -277,6 +281,7 @@ export interface ApiBaselineMap {
   common_benchmarks: string[];
   evaluation_risks: string[];
   open_questions: string[];
+  action_plan?: string[];
   generated_from: string[];
   evidence_summary: string;
   curator_notes: string;
@@ -406,6 +411,20 @@ export interface ApiGapDecision {
   opportunity: string;
   novelty_risk: "low" | "medium" | "high";
   feasibility: "one-week" | "one-month" | "thesis-scale";
+  support_status?: "insufficient" | "single_source" | "corroborated" | "conflicted";
+  confidence?: "low" | "medium" | "high";
+  paper_ids?: string[];
+  evidence_refs?: Array<{
+    paper_id: string;
+    paper_title: string;
+    snippet_id: string;
+    source: string;
+    section: string;
+    page: string;
+    text: string;
+    evidence_level: string;
+  }>;
+  validation_requirements?: string[];
 }
 
 export interface ApiIdeaValidation {
@@ -474,6 +493,8 @@ export interface ApiPaperMemoryHit {
   section_score: number;
   priority_score: number;
   snippets: string[];
+  matched_query_terms?: string[];
+  query_coverage?: number;
   evidence_quality?: ApiEvidenceLevel;
   evidence_refs?: Array<{
     id: string;
@@ -534,6 +555,14 @@ export interface ApiResearchMemoryQueryResponse {
   answer_summary?: string;
   claims?: ApiResearchMemoryClaim[];
   unanswered_parts?: string[];
+  query_coverage?: {
+    anchor_terms?: string[];
+    matched_terms?: string[];
+    missing_terms?: string[];
+    coverage?: number;
+    minimum_coverage?: number;
+    status?: "covered" | "partial" | "uncovered";
+  };
   artifact: ApiArtifact;
   warnings: string[];
   workflow_steps?: ApiWorkflowStepState[];

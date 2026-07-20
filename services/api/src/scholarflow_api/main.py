@@ -1708,7 +1708,7 @@ def create_project_direction_review(project_id: str, payload: DirectionReviewReq
             session_id,
             "baseline.curate",
             "done",
-            f"已生成 BaselineMap：经典 {len(baseline_map.classic_baselines)} 篇，近三年强参照 {len(baseline_map.recent_strong_baselines)} 篇，异质范式 {len(baseline_map.alternative_paradigms)} 篇。",
+            f"已生成 BaselineMap：经典证据参照 {len(baseline_map.classic_baselines)} 篇，近三年直接候选 {len(baseline_map.recent_strong_baselines)} 篇，异质范式 {len(baseline_map.alternative_paradigms)} 篇。",
             completed_at,
         )
         insert_tool_event(
@@ -1952,6 +1952,7 @@ def query_project_research_memory(project_id: str, payload: ResearchMemoryQueryR
         answer_summary=answer.answer_summary,
         claims=[claim.to_dict() for claim in answer.claims],
         unanswered_parts=answer.unanswered_parts,
+        query_coverage=answer.query_coverage,
         artifact=Artifact.model_validate(artifact),
         warnings=answer.warnings,
         workflow_steps=[

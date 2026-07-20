@@ -269,6 +269,8 @@ export function normalizeMemoryHit(hitPayload: unknown, artifactProjectId: strin
     section_score: asNumber(hit.section_score),
     priority_score: asNumber(hit.priority_score),
     snippets: asStringArray(hit.snippets),
+    matched_query_terms: asStringArray(hit.matched_query_terms),
+    query_coverage: asNumber(hit.query_coverage),
     evidence_quality: normalizeEvidenceLevel(asString(hit.evidence_quality)) as ApiPaperMemoryHit["evidence_quality"],
     evidence_refs: normalizeMemoryEvidenceRefs(hit.evidence_refs),
     abstract_translation: firstString(hit.abstract_translation, memory.abstract_translation),

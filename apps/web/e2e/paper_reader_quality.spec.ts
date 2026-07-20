@@ -608,7 +608,7 @@ test("paper memory refresh queries the persisted review direction instead of the
 
 test("paper memory prioritizes synthesis and collapses per-paper research notes", async ({ page }) => {
   const memoryPayload = {
-    schema_version: "research_memory_answer.v3",
+    schema_version: "research_memory_answer.v4",
     question: "对象幻觉在视觉证据冲突时为何恶化？",
     top_k: 3,
     answer: "结构化综合答案。",
@@ -635,6 +635,14 @@ test("paper memory prioritizes synthesis and collapses per-paper research notes"
       },
     ],
     unanswered_parts: ["仍缺少跨模型复现实验。"],
+    query_coverage: {
+      anchor_terms: ["对象幻觉", "视觉证据冲突", "跨模型复现"],
+      matched_terms: ["对象幻觉", "视觉证据冲突"],
+      missing_terms: ["跨模型复现"],
+      coverage: 0.6667,
+      minimum_coverage: 0.34,
+      status: "partial",
+    },
     hits: [
       {
         paper,
@@ -646,6 +654,8 @@ test("paper memory prioritizes synthesis and collapses per-paper research notes"
         section_score: 0.49,
         priority_score: 0.15,
         snippets: ["[pdf-results-p7|pdf.full_text] Object hallucination increases under conflicting visual evidence."],
+        matched_query_terms: ["对象幻觉", "视觉证据冲突"],
+        query_coverage: 0.6667,
         evidence_quality: "full_text",
         evidence_refs: [],
         abstract_translation: "本文研究视觉证据冲突。",
@@ -679,11 +689,14 @@ test("paper memory prioritizes synthesis and collapses per-paper research notes"
   await page.goto("/#paper-memory");
 
   await expect(page.getByText(memoryPayload.answer_summary, { exact: true })).toBeVisible();
+  await expect(page.locator('[aria-label="memory query coverage"]')).toContainText("未覆盖：跨模型复现");
+  await expect(page.getByTitle("可靠命中的原文证据对用户问题锚点的联合覆盖率。")).toHaveText("问题覆盖 67%");
   await expect(page.locator('[aria-label="memory synthesized claims"]')).toContainText("results · p.7");
   await expect(page.locator('[aria-label="memory unanswered parts"]')).toContainText("仍缺少跨模型复现实验");
   const details = page.locator(".memory-hit-details").first();
   await expect(details).not.toHaveAttribute("open", "");
   await expect(page.getByText("替换视觉证据但保持答案选项不变。", { exact: true })).not.toBeVisible();
   await details.locator("summary").click();
+  await expect(details).toContainText("直接命中：对象幻觉 / 视觉证据冲突");
   await expect(page.getByText("替换视觉证据但保持答案选项不变。", { exact: true })).toBeVisible();
 });

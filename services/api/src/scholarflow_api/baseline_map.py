@@ -31,18 +31,22 @@ TOP_VENUE_KEYWORDS = [
 ]
 
 COMMON_BENCHMARK_TERMS = [
-    "imagenet",
-    "coco",
-    "vqa",
-    "gqa",
-    "mme",
-    "mmbench",
-    "pope",
-    "set5",
-    "set14",
-    "bsd100",
-    "urban100",
-    "div2k",
+    "ImageNet",
+    "COCO",
+    "VQA v2",
+    "GQA",
+    "MME",
+    "MMBench",
+    "POPE",
+    "CHAIR",
+    "HallusionBench",
+    "MMMU",
+    "MM-Vet",
+    "Set5",
+    "Set14",
+    "BSD100",
+    "Urban100",
+    "DIV2K",
     "human preference",
     "win rate",
 ]
@@ -93,6 +97,10 @@ class BaselineReference:
     evidence_snippets: list[EvidenceSnippet]
     confidence: str
     evidence_gap: str
+    comparison_role: str
+    actionability_status: str
+    next_action: str
+    experiment_anchor: dict[str, str]
     verification: BaselineVerification
 
     def to_dict(self) -> dict[str, Any]:
@@ -110,6 +118,10 @@ class BaselineReference:
             "evidence_snippets": [snippet.to_dict() for snippet in self.evidence_snippets],
             "confidence": self.confidence,
             "evidence_gap": self.evidence_gap,
+            "comparison_role": self.comparison_role,
+            "actionability_status": self.actionability_status,
+            "next_action": self.next_action,
+            "experiment_anchor": self.experiment_anchor,
             "verification": self.verification.to_dict(),
         }
 
@@ -124,6 +136,7 @@ class BaselineMap:
     common_benchmarks: list[str]
     evaluation_risks: list[str]
     open_questions: list[str]
+    action_plan: list[str]
     generated_from: list[str]
     evidence_summary: str
     curator_notes: str
@@ -138,6 +151,7 @@ class BaselineMap:
             "common_benchmarks": self.common_benchmarks,
             "evaluation_risks": self.evaluation_risks,
             "open_questions": self.open_questions,
+            "action_plan": self.action_plan,
             "generated_from": self.generated_from,
             "evidence_summary": self.evidence_summary,
             "curator_notes": self.curator_notes,
@@ -154,6 +168,7 @@ def build_baseline_map(direction: str, candidate_papers: list[dict[str, Any]], s
     recent = select_recent_strong_baselines(scored, normalized_direction, limit=5)
     classic = select_classic_baselines(scored, recent, normalized_direction, limit=4)
     alternatives = select_alternative_paradigms(family_buckets, recent, classic, normalized_direction, limit=5)
+    references = [*recent, *classic, *alternatives]
     benchmarks = infer_common_benchmarks(normalized_direction, scored)
     risks = infer_evaluation_risks(normalized_direction, benchmarks, scored)
     questions = infer_open_questions(normalized_direction, alternatives, risks)
@@ -168,6 +183,7 @@ def build_baseline_map(direction: str, candidate_papers: list[dict[str, Any]], s
         common_benchmarks=benchmarks,
         evaluation_risks=risks,
         open_questions=questions,
+        action_plan=build_baseline_action_plan(references),
         generated_from=generated_from,
         evidence_summary=build_baseline_evidence_summary(scored, recent, classic, alternatives),
         curator_notes=(
@@ -196,6 +212,8 @@ def render_baseline_map_markdown(baseline_map: BaselineMap) -> str:
         "\n".join(f"- {item}" for item in baseline_map.evaluation_risks),
         "## Open Questions",
         "\n".join(f"- {item}" for item in baseline_map.open_questions),
+        "## Action Plan",
+        "\n".join(f"- {item}" for item in baseline_map.action_plan) or "- No executable baseline action yet.",
         "## Evidence Summary",
         baseline_map.evidence_summary,
         "## Curator Notes",
@@ -219,6 +237,8 @@ def render_reference_list(references: list[BaselineReference]) -> str:
                     f"code={item.verification.code_status}; "
                     f"reproduction={item.verification.reproduction_status}."
                 ),
+                f"Role: {item.comparison_role}; actionability={item.actionability_status}.",
+                f"Next action: {item.next_action}",
                 f"Evidence gap: {item.evidence_gap}",
             ],
         )
@@ -241,8 +261,6 @@ def build_task_definition(direction: str) -> str:
 
 def select_recent_strong_baselines(papers: list[dict[str, Any]], direction: str, limit: int) -> list[BaselineReference]:
     recent = [paper for paper in papers if parse_year(paper.get("year", "")) >= 2024]
-    if len(recent) < limit:
-        recent.extend([paper for paper in papers if paper not in recent])
     return [
         to_reference(
             paper,
@@ -264,7 +282,9 @@ def select_classic_baselines(
     older_or_foundational = [
         paper
         for paper in papers
-        if normalize_title_key(paper.get("title", "")) not in recent_titles and parse_year(paper.get("year", "")) <= 2023
+        if normalize_title_key(paper.get("title", "")) not in recent_titles
+        and parse_year(paper.get("year", "")) <= 2023
+        and has_classic_baseline_evidence(paper)
     ]
     return [
         to_reference(
@@ -275,6 +295,31 @@ def select_classic_baselines(
         )
         for paper in older_or_foundational[:limit]
     ]
+
+
+def has_classic_baseline_evidence(paper: dict[str, Any]) -> bool:
+    if bool(paper.get("is_foundational") or paper.get("is_classic_baseline")):
+        return True
+    try:
+        citation_count = int(paper.get("citation_count") or 0)
+    except (TypeError, ValueError):
+        citation_count = 0
+    if citation_count >= 50:
+        return True
+    relation = normalize_space(paper.get("relation", "")).lower()
+    return any(
+        marker in relation
+        for marker in [
+            "classic baseline",
+            "foundational",
+            "seminal",
+            "standard baseline",
+            "widely used baseline",
+            "经典基线",
+            "奠基",
+            "标准基线",
+        ]
+    )
 
 
 def select_alternative_paradigms(
@@ -422,7 +467,9 @@ def build_baseline_verification(
     else:
         evidence_level = "metadata_only"
 
-    method_ready = signal_is_available(signals.get("method", "")) or bool(method_family)
+    # A family inferred from title/topic is useful for grouping, but it is not
+    # sufficient evidence that the paper's actual method can be reproduced.
+    method_ready = signal_is_available(signals.get("method", ""))
     dataset_ready = signal_is_available(signals.get("dataset", ""))
     metric_ready = signal_is_available(signals.get("metric", ""))
     baseline_ready = signal_is_available(signals.get("baseline", ""))
@@ -545,14 +592,14 @@ def extract_method_sections(text: str) -> str:
 
 def infer_common_benchmarks(direction: str, papers: list[dict[str, Any]]) -> list[str]:
     text = " ".join(paper_text(paper) for paper in papers)
-    found = [term for term in COMMON_BENCHMARK_TERMS if term in text]
+    found = [term for term in COMMON_BENCHMARK_TERMS if term.casefold() in text.casefold()]
     lower = direction.lower()
-    if "hallucination" in lower and "POPE" not in found:
+    if "hallucination" in lower and not any(term.casefold() == "pope" for term in found):
         found.append("POPE / object hallucination style evaluation")
-    if ("super-resolution" in lower or "超分" in lower) and "DIV2K" not in found:
+    if ("super-resolution" in lower or "超分" in lower) and not any(
+        term.casefold() == "div2k" for term in found
+    ):
         found.extend(["DIV2K", "Set5 / Set14 / Urban100"])
-    if not found:
-        found.extend(["task-specific benchmark", "human or expert validation", "cross-dataset generalization"])
     return unique_preserve_order(found)[:8]
 
 
@@ -599,6 +646,7 @@ def to_reference(
     text = paper_text(paper)
     snippets, confidence, gap = build_baseline_reference_evidence(paper, direction, category)
     resolved_method_family = method_family or infer_method_family(paper)
+    verification = build_baseline_verification(paper, resolved_method_family)
     return BaselineReference(
         title=normalize_space(paper.get("title", "")) or "Untitled paper",
         year=normalize_space(str(paper.get("year", ""))),
@@ -613,8 +661,80 @@ def to_reference(
         evidence_snippets=snippets,
         confidence=confidence,
         evidence_gap=gap,
-        verification=build_baseline_verification(paper, resolved_method_family),
+        comparison_role=build_comparison_role(category, resolved_method_family),
+        actionability_status=verification.reproduction_status,
+        next_action=build_baseline_next_action(verification),
+        experiment_anchor=build_baseline_experiment_anchor(paper, verification),
+        verification=verification,
     )
+
+
+def build_comparison_role(category: str, method_family: str) -> str:
+    if category == "classic":
+        return "foundational_control"
+    if category == "alternative_paradigm":
+        return "paradigm_challenge"
+    if method_family in {"evaluation-metric", "evaluation-protocol"}:
+        return "diagnostic_evaluator"
+    return "direct_method_comparison"
+
+
+def build_baseline_next_action(verification: BaselineVerification) -> str:
+    if verification.reproduction_status == "ready":
+        return "先按原文 dataset、metric 与 baseline 协议复现，再冻结为主实验对照。"
+    missing = "、".join(verification.missing_evidence[:4]) or "未明确的复现条件"
+    if verification.reproduction_status == "partial":
+        return f"先补齐 {missing}；未补齐前只能作为候选参照，不能进入主结果表。"
+    return f"当前被 {missing} 阻塞；只保留为背景线索，不安排计算资源。"
+
+
+def build_baseline_experiment_anchor(
+    paper: dict[str, Any],
+    verification: BaselineVerification,
+) -> dict[str, str]:
+    signals_value = paper.get("paper_signals")
+    if isinstance(signals_value, dict):
+        signals = signals_value
+    elif hasattr(signals_value, "to_dict"):
+        signals = signals_value.to_dict()
+    else:
+        signals = {}
+    return {
+        "method": normalize_space(signals.get("method", "")),
+        "dataset": normalize_space(signals.get("dataset", "")),
+        "metric": normalize_space(signals.get("metric", "")),
+        "baseline": normalize_space(signals.get("baseline", "")),
+        "code_url": verification.code_url,
+        "evidence_level": verification.evidence_level,
+    }
+
+
+def build_baseline_action_plan(references: list[BaselineReference]) -> list[str]:
+    if not references:
+        return ["当前没有达到参照门槛的论文；先补充强相关方法/benchmark 论文及其 PDF。"]
+    ready = [reference for reference in references if reference.actionability_status == "ready"]
+    partial = [reference for reference in references if reference.actionability_status == "partial"]
+    blocked = [reference for reference in references if reference.actionability_status == "blocked"]
+    actions: list[str] = []
+    if ready:
+        actions.append(
+            "优先复现 ready 参照："
+            + " / ".join(reference.title for reference in ready[:3])
+            + "；复现成功后再运行新方法。"
+        )
+    if partial:
+        actions.append(
+            "证据补全队列："
+            + " / ".join(reference.title for reference in partial[:3])
+            + "；逐项补齐代码、dataset、metric 或 baseline。"
+        )
+    if blocked:
+        actions.append(
+            f"{len(blocked)} 篇 blocked 候选不进入主结果表，除非其缺失证据被核验。"
+        )
+    if not ready:
+        actions.append("当前没有 reproduction-ready baseline；实验计划应保持 blocked/partial。")
+    return actions
 
 
 def build_baseline_evidence_summary(
@@ -694,6 +814,17 @@ def score_reference_candidate(paper: dict[str, Any], direction: str) -> float:
         score += 0.5
     if "benchmark" in text or "survey" in text or "baseline" in text:
         score += 0.35
+    full_text = normalize_space(paper.get("full_text", ""))
+    provenance = paper.get("full_text_provenance") if isinstance(paper.get("full_text_provenance"), dict) else {}
+    if full_text and (not provenance or normalize_space(provenance.get("status", "")).lower() == "extracted"):
+        score += 1.2
+    signals = paper.get("paper_signals") if isinstance(paper.get("paper_signals"), dict) else {}
+    score += 0.22 * sum(
+        signal_is_available(signals.get(field, ""))
+        for field in ["method", "dataset", "metric", "baseline"]
+    )
+    if extract_repository_url(normalize_space(paper.get("code", ""))):
+        score += 0.2
     score += float(paper.get("relevance_score") or 0.0)
     return score
 

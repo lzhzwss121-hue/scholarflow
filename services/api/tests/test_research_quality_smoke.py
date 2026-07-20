@@ -938,7 +938,7 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         ]:
             self.assertIn(key, payload["papers"][0])
 
-    def test_research_memory_artifact_uses_v2_flat_hit_schema(self) -> None:
+    def test_research_memory_artifact_uses_v4_flat_hit_and_coverage_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "scholarflow.sqlite3"
             with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
@@ -998,10 +998,12 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                 )
                 payload = json.loads(response.artifact.content_json)
 
-        self.assertEqual(payload["schema_version"], "research_memory_answer.v3")
+        self.assertEqual(payload["schema_version"], "research_memory_answer.v4")
         self.assertIn("answer_summary", payload)
         self.assertIn("claims", payload)
         self.assertIn("unanswered_parts", payload)
+        self.assertIn("query_coverage", payload)
+        self.assertIn("coverage", payload["query_coverage"])
         self.assertGreaterEqual(len(payload["hits"]), 1)
         hit = payload["hits"][0]
         self.assertNotIn("memory", hit)
@@ -1011,6 +1013,8 @@ class ResearchQualitySmokeTest(unittest.TestCase):
             "round",
             "score",
             "snippets",
+            "matched_query_terms",
+            "query_coverage",
             "research_sight",
             "weakest_assumption",
             "minimal_reproduction",

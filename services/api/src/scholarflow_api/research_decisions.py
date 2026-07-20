@@ -106,6 +106,79 @@ KNOWN_EXPERIMENT_DATASETS = [
     "ImageNet",
 ]
 
+GAP_GENERIC_TERMS = {
+    "analysis",
+    "benchmark",
+    "current",
+    "dataset",
+    "evaluation",
+    "experiment",
+    "limited",
+    "limitation",
+    "metric",
+    "only",
+    "paper",
+    "result",
+    "results",
+    "study",
+    "测试",
+    "当前",
+    "局限",
+    "数据集",
+    "方法",
+    "评估",
+    "论文",
+}
+
+GAP_TOPIC_MARKERS = [
+    "object hallucination",
+    "visual grounding",
+    "evidence faithfulness",
+    "single-object",
+    "multi-object",
+    "cross-dataset",
+    "long-tail",
+    "failure mode",
+    "对象幻觉",
+    "物体幻觉",
+    "视觉定位",
+    "证据忠实性",
+    "单物体",
+    "多物体",
+    "跨数据集",
+    "长尾",
+    "失败模式",
+]
+
+GAP_CORROBORATION_MARKERS = {
+    "single-object",
+    "multi-object",
+    "cross-dataset",
+    "long-tail",
+    "failure mode",
+    "单物体",
+    "多物体",
+    "跨数据集",
+    "长尾",
+    "失败模式",
+}
+
+GAP_BROAD_TOPIC_TERMS = {
+    "evidence",
+    "faithfulness",
+    "grounding",
+    "hallucination",
+    "object",
+    "visual",
+    "object hallucination",
+    "visual grounding",
+    "evidence faithfulness",
+    "对象幻觉",
+    "物体幻觉",
+    "视觉定位",
+    "证据忠实性",
+}
+
 
 @dataclass
 class DecisionIntent:
@@ -131,8 +204,13 @@ class GapDecision:
     opportunity: str
     novelty_risk: str
     feasibility: str
+    support_status: str = "insufficient"
+    confidence: str = "low"
+    paper_ids: list[str] = field(default_factory=list)
+    evidence_refs: list[dict[str, str]] = field(default_factory=list)
+    validation_requirements: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -224,7 +302,6 @@ def generate_research_decisions(
     evidence_papers = filter_evidence_papers(papers)
     gap_evidence_papers = filter_gap_evidence_papers(evidence_papers, paper_cards)
     evidence_quality = build_evidence_quality(papers, evidence_papers, gap_evidence_papers, paper_cards)
-    warnings = build_evidence_quality_warnings(evidence_quality)
     decision_status = evidence_quality["decision_status"]
     focus = infer_focus(project, gap_evidence_papers or evidence_papers, paper_cards, goal)
     decision_intent = parse_decision_intent(goal, focus)
@@ -237,23 +314,36 @@ def generate_research_decisions(
         build_unblock_suggestions(gap_evidence_papers, paper_cards, decision_intent) if anchor is None else []
     )
     grounded_evidence = collect_grounded_gap_evidence(gap_evidence_papers, paper_cards)
+    evidence_groups = group_grounded_gap_evidence(grounded_evidence)
+    corroborated_groups = [
+        group for group in evidence_groups
+        if is_corroborated_gap_group(group)
+    ]
+    evidence_quality["grounded_gap_evidence_count"] = len(grounded_evidence)
+    evidence_quality["corroborated_gap_group_count"] = len(corroborated_groups)
     if decision_status == "complete" and not grounded_evidence:
         decision_status = "partial"
         evidence_quality["decision_status"] = decision_status
-        warnings.append(
-            "未找到同时绑定原文 snippet 与 limitation 的 Gap evidence；Research Decision 降级为 partial。"
-        )
     if decision_status == "complete" and len(grounded_evidence) < 2:
         decision_status = "partial"
         evidence_quality["decision_status"] = decision_status
-        warnings.append("方向级 Gap 至少需要 2 篇独立论文的原文限制证据；当前不足，已降级为 partial。")
+    if decision_status == "complete" and not corroborated_groups:
+        decision_status = "partial"
+        evidence_quality["decision_status"] = decision_status
+    warnings = build_evidence_quality_warnings(evidence_quality)
     gaps = build_gap_decisions(
         decision_status=decision_status,
         top_papers=top_papers,
         grounded_evidence=grounded_evidence,
+        evidence_groups=evidence_groups,
     )
 
-    validation = build_idea_validation(focus, decision_status, warnings, grounded_evidence)
+    validation = build_idea_validation(
+        focus,
+        decision_status,
+        warnings,
+        corroborated_groups[0] if corroborated_groups else [],
+    )
 
     experiment = build_experiment_plan_from_anchor(anchor, focus, unblock_suggestions, decision_intent)
 
@@ -277,9 +367,10 @@ def generate_research_decisions(
 def build_gap_decisions(
     decision_status: str,
     top_papers: str,
-    grounded_evidence: list[dict[str, str]],
+    grounded_evidence: list[dict[str, Any]],
+    evidence_groups: list[list[dict[str, Any]]] | None = None,
 ) -> list[GapDecision]:
-    if decision_status != "complete" or not grounded_evidence:
+    if not grounded_evidence:
         reason = (
             "无法判断：当前没有足够的 metadata.abstract 或 pdf.full_text 原文片段来证明一个方向级 gap。"
             f" 候选论文：{top_papers}。"
@@ -294,6 +385,10 @@ def build_gap_decisions(
                 opportunity="先补齐可追溯的 PDF/摘要证据，再比较不同论文是否报告了同一失败模式。",
                 novelty_risk="high",
                 feasibility="one-month",
+                validation_requirements=[
+                    "至少补充 2 篇独立论文的可定位 limitation 原文。",
+                    "确认两篇论文讨论的是同一任务、失败模式和评价协议。",
+                ],
             ),
             GapDecision(
                 id="gap_anchor_missing_fields",
@@ -304,35 +399,85 @@ def build_gap_decisions(
                 opportunity="为一篇非 survey 论文补充原文实验段，并把四个字段绑定到对应 paper_id。",
                 novelty_risk="high",
                 feasibility="one-month",
+                validation_requirements=[
+                    "同一 paper_id 下绑定 claim、dataset、metric 与 baseline。",
+                    "先复现原论文现象，再讨论新方法。",
+                ],
             ),
         ]
 
+    groups = evidence_groups or group_grounded_gap_evidence(grounded_evidence)
     decisions: list[GapDecision] = []
-    for index, item in enumerate(grounded_evidence[:3], start=1):
-        title = item["title"]
-        limitation = item["limitation"] or "原文未给出显式 limitation，不能扩展成确定缺口。"
-        locator = " / ".join(
-            part
-            for part in [
-                item.get("section", ""),
-                f"p.{item.get('page')}" if item.get("page") else "",
-            ]
-            if part
-        )
+    if decision_status != "complete":
         decisions.append(
             GapDecision(
-                id=f"gap_source_{index}",
-                title=f"待验证的原文限制：{title}",
-                kind="engineering_gap",
+                id="gap_evidence_boundary",
+                title="证据规模或一致性不足：只展示待验证候选",
+                kind="pseudo_gap",
                 evidence=(
-                    f"事实证据（{item['snippet_id']}，{item['source']}"
-                    f"{f'，{locator}' if locator else ''}）：{item['snippet']} "
-                    f"原文限制信号：{limitation}"
+                    f"当前有 {len(grounded_evidence)} 条可定位 limitation 证据，但尚未同时满足方向覆盖、"
+                    f"全文证据和同一失败模式独立佐证。候选论文：{top_papers}。"
                 ),
-                weakness="推断：该限制是否跨论文稳定出现仍需用相同任务和指标复核，不能仅凭单篇论文下结论。",
-                opportunity="只围绕这条原文限制补充对照实验或失败样本；若无法复现，则将其降级为单篇观察。",
-                novelty_risk="medium",
+                weakness="数量达标不等于语义一致；不同论文的 limitation 不能直接合并成方向级科研缺口。",
+                opportunity="先按失败模式聚类，再在统一 dataset、metric 和 baseline 下复核同一限制。",
+                novelty_risk="high",
                 feasibility="one-month",
+                support_status="insufficient",
+                confidence="low",
+                paper_ids=unique_preserve_order(
+                    [str(item.get("paper_id", "")) for item in grounded_evidence]
+                ),
+                evidence_refs=[build_gap_evidence_ref(item) for item in grounded_evidence[:3]],
+                validation_requirements=[
+                    "补足至少 5 篇 strong/medium 非综述论文的方向覆盖。",
+                    "同一失败模式至少由 2 篇独立论文直接支持，其中至少 1 条来自 PDF 全文。",
+                ],
+            ),
+        )
+
+    for index, group in enumerate(groups, start=1):
+        if len(decisions) >= 4:
+            break
+        primary = group[0]
+        corroborated = is_corroborated_gap_group(group)
+        can_label_true_gap = decision_status == "complete" and corroborated
+        paper_ids = unique_preserve_order([str(item.get("paper_id", "")) for item in group])
+        evidence_refs = [build_gap_evidence_ref(item) for item in group]
+        evidence_lines = [
+            format_grounded_gap_evidence(item)
+            for item in group[:3]
+        ]
+        decisions.append(
+            GapDecision(
+                id=f"gap_group_{index}",
+                title=(
+                    f"跨论文待验证缺口：{primary['title']}"
+                    if can_label_true_gap
+                    else f"单篇/弱佐证限制：{primary['title']}"
+                ),
+                kind="true_gap" if can_label_true_gap else "engineering_gap",
+                evidence=" 独立证据：".join(
+                    ["同一失败模式已形成可追溯候选。" if corroborated else "当前仅能确认论文自身限制。", "；".join(evidence_lines)]
+                ),
+                weakness=(
+                    "两篇独立论文报告了语义相近限制，但尚未证明它们由同一机制导致，也未完成相邻工作 novelty 检索。"
+                    if corroborated
+                    else "只有单篇或弱语义佐证，不能外推为方向共识，也不能直接声称 novelty。"
+                ),
+                opportunity=(
+                    "在统一 dataset、metric、强 baseline 和失败样本切片下复核该限制；复现后再决定方法创新。"
+                ),
+                novelty_risk="medium" if can_label_true_gap else "high",
+                feasibility="one-month",
+                support_status="corroborated" if corroborated else "single_source",
+                confidence="medium" if can_label_true_gap else "low",
+                paper_ids=paper_ids,
+                evidence_refs=evidence_refs,
+                validation_requirements=[
+                    "固定同一任务、dataset、metric 与 baseline，复现限制是否稳定出现。",
+                    "检索相邻工作，确认该限制尚未被已有方法或评价协议解决。",
+                    "预注册成功/失败判据，并保留不能复现的反证。",
+                ],
             ),
         )
     return decisions
@@ -341,9 +486,9 @@ def build_gap_decisions(
 def collect_grounded_gap_evidence(
     papers: list[dict[str, Any]],
     paper_cards: list[dict[str, Any]],
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     cards_by_paper_id = {str(card.get("paper_id") or ""): card for card in paper_cards if card.get("paper_id")}
-    grounded: list[dict[str, str]] = []
+    grounded: list[dict[str, Any]] = []
     for paper in papers:
         card = cards_by_paper_id.get(str(paper.get("id") or ""), {})
         signals = card.get("signals") if isinstance(card.get("signals"), dict) else {}
@@ -363,6 +508,7 @@ def collect_grounded_gap_evidence(
             continue
         grounded.append(
             {
+                "paper_id": normalize_space(paper.get("id", "")),
                 "title": normalize_space(paper.get("title", "")) or "Untitled paper",
                 "snippet_id": normalize_space(source_snippet.get("id", "")) or "source_snippet",
                 "source": normalize_space(source_snippet.get("source", "")),
@@ -370,9 +516,112 @@ def collect_grounded_gap_evidence(
                 "limitation": limitation,
                 "section": normalize_space(source_snippet.get("section", "")),
                 "page": normalize_space(source_snippet.get("page", "")),
+                "evidence_level": normalize_space(card.get("evidence_level", ""))
+                or (
+                    "full_text"
+                    if normalize_space(source_snippet.get("source", "")) == "pdf.full_text"
+                    else "abstract_only"
+                ),
             },
         )
     return grounded
+
+
+def group_grounded_gap_evidence(
+    grounded_evidence: list[dict[str, Any]],
+) -> list[list[dict[str, Any]]]:
+    groups: list[list[dict[str, Any]]] = []
+    for item in grounded_evidence:
+        for group in groups:
+            if any(gap_evidence_is_semantically_related(item, member) for member in group):
+                group.append(item)
+                break
+        else:
+            groups.append([item])
+    return sorted(
+        groups,
+        key=lambda group: (
+            -len({normalize_space(item.get("paper_id", "")) for item in group}),
+            str(group[0].get("title", "")) if group else "",
+        ),
+    )
+
+
+def gap_evidence_is_semantically_related(
+    left: dict[str, Any],
+    right: dict[str, Any],
+) -> bool:
+    left_terms = gap_signature_terms(left)
+    right_terms = gap_signature_terms(right)
+    shared = left_terms & right_terms
+    if not shared:
+        return False
+    if any(term in GAP_CORROBORATION_MARKERS for term in shared):
+        return True
+    informative_shared = {
+        term
+        for term in shared
+        if term not in GAP_GENERIC_TERMS
+        and term not in GAP_BROAD_TOPIC_TERMS
+        and (len(term) >= 5 or "-" in term or " " in term)
+    }
+    return len(informative_shared) >= 2
+
+
+def gap_signature_terms(item: dict[str, Any]) -> set[str]:
+    text = normalize_space(f"{item.get('limitation', '')} {item.get('snippet', '')}").lower()
+    terms = {
+        term
+        for term in extract_terms(text, limit=32)
+        if term not in GAP_GENERIC_TERMS
+    }
+    terms.update(marker for marker in GAP_TOPIC_MARKERS if marker in text)
+    return terms
+
+
+def is_corroborated_gap_group(group: list[dict[str, Any]]) -> bool:
+    paper_ids = {
+        normalize_space(item.get("paper_id", ""))
+        for item in group
+        if normalize_space(item.get("paper_id", ""))
+    }
+    has_full_text = any(
+        normalize_space(item.get("source", "")) == "pdf.full_text"
+        or normalize_space(item.get("evidence_level", "")).lower() == "full_text"
+        for item in group
+    )
+    return len(paper_ids) >= 2 and has_full_text
+
+
+def build_gap_evidence_ref(item: dict[str, Any]) -> dict[str, str]:
+    return {
+        "paper_id": normalize_space(item.get("paper_id", "")),
+        "paper_title": normalize_space(item.get("title", "")),
+        "snippet_id": normalize_space(item.get("snippet_id", "")),
+        "source": normalize_space(item.get("source", "")),
+        "section": normalize_space(item.get("section", "")),
+        "page": normalize_space(item.get("page", "")),
+        "text": normalize_space(item.get("snippet", "")),
+        "evidence_level": normalize_space(item.get("evidence_level", "")),
+    }
+
+
+def format_grounded_gap_evidence(item: dict[str, Any]) -> str:
+    locator = " / ".join(
+        part
+        for part in [
+            normalize_space(item.get("section", "")),
+            f"p.{normalize_space(item.get('page', ''))}" if normalize_space(item.get("page", "")) else "",
+        ]
+        if part
+    )
+    return (
+        f"[paper_id={normalize_space(item.get('paper_id', '')) or 'unknown'}；"
+        f"{normalize_space(item.get('snippet_id', '')) or 'source_snippet'}；"
+        f"{normalize_space(item.get('source', '')) or 'unknown'}"
+        f"{f'；{locator}' if locator else ''}] "
+        f"{normalize_space(item.get('snippet', ''))}"
+    )
 
 
 def normalize_limitation_evidence(value: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -432,9 +681,9 @@ def build_idea_validation(
     focus: str,
     decision_status: str,
     warnings: list[str],
-    grounded_evidence: list[dict[str, str]],
+    corroborated_evidence: list[dict[str, Any]],
 ) -> IdeaValidation:
-    if decision_status != "complete":
+    if decision_status != "complete" or len(corroborated_evidence) < 2:
         return IdeaValidation(
             idea=(
                 f"围绕 `{focus}` 暂不输出确定性研究判断：当前 strong/medium 且非 survey-only 的证据不足，"
@@ -454,8 +703,8 @@ def build_idea_validation(
                 "缺少非 survey 的方法或 benchmark paper，无法支撑可实验 gap。",
             ],
         )
-    anchor = grounded_evidence[0]
-    corroborating = grounded_evidence[1]
+    anchor = corroborated_evidence[0]
+    corroborating = corroborated_evidence[1]
     evidence_label = f"{anchor['title']} / {anchor['snippet_id']} / {anchor['source']}"
     corroborating_label = (
         f"{corroborating['title']} / {corroborating['snippet_id']} / {corroborating['source']}"
@@ -501,8 +750,25 @@ def build_evidence_quality(
     strong_count = sum(1 for paper in papers if normalize_space(paper.get("relevance_quality", "")).lower() == "strong")
     medium_count = sum(1 for paper in papers if normalize_space(paper.get("relevance_quality", "")).lower() == "medium")
     survey_only_count = max(0, len(evidence_papers) - len(gap_evidence_papers))
-    linked_card_count = sum(1 for card in paper_cards if normalize_space(card.get("paper_id", "")))
-    evidence_level_counts = count_card_evidence_levels(paper_cards)
+    evidence_paper_ids = {
+        normalize_space(paper.get("id", ""))
+        for paper in evidence_papers
+        if normalize_space(paper.get("id", ""))
+    }
+    card_level_rank = {"metadata_only": 0, "abstract_only": 1, "full_text": 2}
+    relevant_card_by_paper_id: dict[str, dict[str, Any]] = {}
+    for card in paper_cards:
+        paper_id = normalize_space(card.get("paper_id", ""))
+        if paper_id not in evidence_paper_ids:
+            continue
+        current = relevant_card_by_paper_id.get(paper_id)
+        current_level = normalize_space(current.get("evidence_level", "") if current else "").lower()
+        candidate_level = normalize_space(card.get("evidence_level", "")).lower()
+        if current is None or card_level_rank.get(candidate_level, -1) >= card_level_rank.get(current_level, -1):
+            relevant_card_by_paper_id[paper_id] = card
+    relevant_cards = list(relevant_card_by_paper_id.values())
+    linked_card_count = len(relevant_cards)
+    evidence_level_counts = count_card_evidence_levels(relevant_cards)
     if len(gap_evidence_papers) == 0:
         decision_status = "blocked"
     elif len(gap_evidence_papers) < 5 or linked_card_count == 0 or evidence_level_counts["full_text"] == 0:
@@ -556,6 +822,14 @@ def build_evidence_quality_warnings(evidence_quality: dict[str, Any]) -> list[st
         warnings.append("当前 Paper Card 主要是摘要级/元数据级证据，不是全文级深读结论。")
     if int(evidence_quality.get("survey_only_count") or 0) > 0:
         warnings.append("Survey/review 论文只用于背景，不作为主要 gap evidence。")
+    grounded_count = int(evidence_quality.get("grounded_gap_evidence_count") or 0)
+    corroborated_count = int(evidence_quality.get("corroborated_gap_group_count") or 0)
+    if gap_count > 0 and grounded_count == 0:
+        warnings.append("未找到同时绑定 paper_id、原文 snippet 与 limitation 的 Gap evidence；不能生成确定性 gap。")
+    elif grounded_count < 2:
+        warnings.append("方向级 Gap 至少需要 2 篇独立论文的可定位限制证据；当前只能作为单篇观察。")
+    elif corroborated_count == 0:
+        warnings.append("现有 limitation 证据没有形成语义一致的跨论文失败模式；不能把不同限制合并成方向级 gap。")
     return warnings
 
 
@@ -1626,11 +1900,29 @@ def render_gap_board_markdown(bundle: ResearchDecisionBundle) -> str:
                 [
                     f"## {gap.title}",
                     f"- Type: {gap.kind}",
+                    f"- Support: {gap.support_status}",
+                    f"- Confidence: {gap.confidence}",
                     f"- Novelty risk: {gap.novelty_risk}",
                     f"- Feasibility: {gap.feasibility}",
                     f"- Evidence: {gap.evidence}",
                     f"- Weakness: {gap.weakness}",
                     f"- Opportunity: {gap.opportunity}",
+                    "- Paper IDs: " + (", ".join(gap.paper_ids) if gap.paper_ids else "none"),
+                    "- Evidence refs: "
+                    + (
+                        "; ".join(
+                            f"{ref.get('paper_id', '')}/{ref.get('snippet_id', '')}/{ref.get('source', '')}"
+                            for ref in gap.evidence_refs
+                        )
+                        if gap.evidence_refs
+                        else "none"
+                    ),
+                    "- Validation requirements:\n"
+                    + (
+                        "\n".join(f"  - {item}" for item in gap.validation_requirements)
+                        if gap.validation_requirements
+                        else "  - none"
+                    ),
                 ],
             ),
         )
