@@ -1870,6 +1870,24 @@ function formatSignalEvidenceLocation(evidence?: ApiSignalEvidence): string {
   return `${location.join(" · ")} · 抽取置信度 ${evidence.confidence || "low"}`;
 }
 
+function formatResearchSignal(value: string | undefined, fallback = "未从已解析材料中定位"): string {
+  const normalized = formatAcademicText(value ?? "");
+  if (
+    !normalized ||
+    normalized.startsWith("当前证据不足") ||
+    normalized.startsWith("无法判断") ||
+    normalized.startsWith("未发现")
+  ) {
+    return fallback;
+  }
+  return normalized
+    .replace(
+      /^(?:方法证据|核心 claim 证据|本论文自身局限|已有研究不足|贡献证据|Baseline evidence)\s*[：:]\s*/i,
+      "",
+    )
+    .trim();
+}
+
 function MetricCard({
   amber = false,
   hint,
@@ -2014,8 +2032,8 @@ export function ProductPaperReaderView({
     "非增量 follow-up idea",
   ];
   const conciseSignal = (label: string, value: string | undefined) => {
-    const normalized = value?.trim() ?? "";
-    if (!normalized || normalized.startsWith("当前证据不足")) {
+    const normalized = formatResearchSignal(value, "");
+    if (!normalized) {
       return "";
     }
     const preview = normalized.length > 72 ? `${normalized.slice(0, 69)}…` : normalized;
@@ -2462,8 +2480,7 @@ function buildPaperDecisionBrief(card: ApiPaperCard | null): {
 } {
   const signals = card?.signals;
   const useful = (value: string | undefined, fallback: string) => {
-    const normalized = value?.trim() ?? "";
-    return normalized && !normalized.startsWith("当前证据不足") ? normalized : fallback;
+    return formatResearchSignal(value, fallback);
   };
   const coreSignalsReady = Boolean(
     signals &&
@@ -2501,15 +2518,15 @@ function buildPaperDecisionBrief(card: ApiPaperCard | null): {
     items: [
       {
         label: "研究任务",
-        value: useful(signals?.task, "当前证据尚未抽取出明确、可检验的研究任务。"),
+        value: useful(signals?.task, "尚未定位到明确、可检验的研究任务。"),
       },
       {
         label: "核心方法",
-        value: useful(signals?.method, "当前证据尚不足以确认具体方法机制。"),
+        value: useful(signals?.method, "尚未定位到具体方法机制。"),
       },
       {
         label: "主要主张",
-        value: useful(signals?.claim, "当前证据尚不足以确认论文的主要经验主张。"),
+        value: useful(signals?.claim, "尚未定位到论文的主要经验主张。"),
       },
     ],
     nextAction,
@@ -4193,7 +4210,7 @@ function DirectionPaperDetail({
           <div className="paper-signals-grid">
             <div>
               <strong>任务</strong>
-              <span>{signals.task || "暂无"}</span>
+              <span>{formatResearchSignal(signals.task)}</span>
             </div>
             <div>
               <strong>类型</strong>
@@ -4201,37 +4218,37 @@ function DirectionPaperDetail({
             </div>
             <div>
               <strong>方法</strong>
-              <span>{signals.method || "暂无"}</span>
+              <span>{formatResearchSignal(signals.method)}</span>
               <small className="critique-evidence-note">{formatSignalEvidenceLocation(signals.signal_evidence?.method)}</small>
             </div>
             <div>
               <strong>数据集</strong>
-              <span>{signals.dataset || "暂无"}</span>
+              <span>{formatResearchSignal(signals.dataset)}</span>
               <small className="critique-evidence-note">{formatSignalEvidenceLocation(signals.signal_evidence?.dataset)}</small>
             </div>
             <div>
               <strong>指标</strong>
-              <span>{signals.metric || "暂无"}</span>
+              <span>{formatResearchSignal(signals.metric)}</span>
               <small className="critique-evidence-note">{formatSignalEvidenceLocation(signals.signal_evidence?.metric)}</small>
             </div>
             <div>
               <strong>Claim</strong>
-              <span>{signals.claim || "暂无"}</span>
+              <span>{formatResearchSignal(signals.claim)}</span>
               <small className="critique-evidence-note">{formatSignalEvidenceLocation(signals.signal_evidence?.claim)}</small>
             </div>
             <div>
               <strong>本论文自身 Limitation</strong>
-              <span>{signals.limitation || "暂无"}</span>
+              <span>{formatResearchSignal(signals.limitation)}</span>
               <small className="critique-evidence-note">{formatSignalEvidenceLocation(signals.signal_evidence?.limitation)}</small>
             </div>
             <div>
               <strong>已有研究不足</strong>
-              <span>{signals.prior_work_limitation || "暂无可定位证据"}</span>
+              <span>{formatResearchSignal(signals.prior_work_limitation)}</span>
               <small className="critique-evidence-note">{formatSignalEvidenceLocation(signals.signal_evidence?.prior_work_limitation)}</small>
             </div>
             <div>
-              <strong>缺失字段</strong>
-              <span>{missingSignals.length ? missingSignals.join(", ") : "none"}</span>
+              <strong>未定位字段</strong>
+              <span>{missingSignals.length ? missingSignals.join(", ") : "无"}</span>
             </div>
           </div>
         </details>
@@ -4274,27 +4291,27 @@ function DirectionPaperDetail({
         <div className="research-sight-critique">
           <div>
             <strong>为什么好</strong>
-            <p>{researchSight.why_good || "当前证据不足。"}</p>
+            <p>{researchSight.why_good || "尚未形成可引用的正面评价。"}</p>
             {renderCritiqueEvidence("why_good")}
           </div>
           <div>
             <strong>为什么不好</strong>
-            <p>{researchSight.why_not_good || "当前证据不足。"}</p>
+            <p>{researchSight.why_not_good || "尚未形成可引用的局限评价。"}</p>
             {renderCritiqueEvidence("why_not_good")}
           </div>
           <div>
             <strong>更好角度</strong>
-            <p>{researchSight.better_angle || "当前证据不足。"}</p>
+            <p>{researchSight.better_angle || "尚未形成论文专属的研究角度。"}</p>
             {renderCritiqueEvidence("better_angle")}
           </div>
           <div>
             <strong>Baseline 对比</strong>
-            <p>{researchSight.baseline_comparison || "当前证据不足。"}</p>
+            <p>{researchSight.baseline_comparison || "尚未定位到可复核的对照结论。"}</p>
             {renderCritiqueEvidence("baseline_comparison")}
           </div>
           <div>
             <strong>下一步 proposal</strong>
-            <p>{researchSight.next_step_proposal || "当前证据不足。"}</p>
+            <p>{researchSight.next_step_proposal || "尚未形成论文专属的下一步建议。"}</p>
             {renderCritiqueEvidence("next_step_proposal")}
           </div>
         </div>
@@ -4394,6 +4411,10 @@ function DirectionPaperDetail({
                 <header>
                   <span>
                     Section {String(activeSectionIndex + 1).padStart(2, "0")} / {sections.length}
+                    {" · "}
+                    {reading.full_text?.status === "extracted"
+                      ? `PDF 全文 ${reading.full_text.page_count} 页`
+                      : formatEvidenceLevel(reading.evidence_level ?? "metadata_only")}
                   </span>
                   <h3 data-testid={`direction-paper-section-heading-${activeSectionIndex + 1}`}>
                     {formatPaperCardSectionTitle(activeSection.title)}

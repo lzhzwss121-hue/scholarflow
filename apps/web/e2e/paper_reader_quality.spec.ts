@@ -331,6 +331,7 @@ test("full-text paper detail exposes signal source section and page", async ({ p
   await mockReaderProject(page, [artifact, fullTextArtifact]);
   await page.goto(`/#paper-reader/${paper.id}?from=direction-review`);
 
+  await expect(page.getByText("Section 01 / 12 · PDF 全文 14 页", { exact: true })).toBeVisible();
   const signalPanel = page.locator('details[aria-label="paper evidence signals"]');
   await expect(signalPanel).toBeVisible();
   await expect(signalPanel).not.toHaveAttribute("open", "");

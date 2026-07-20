@@ -667,7 +667,7 @@ class ResearchQualitySmokeTest(unittest.TestCase):
             self.assertEqual(card.evidence_level, "metadata_only")
             self.assertTrue(all(len(section.content) < 180 for section in card.sections))
             self.assertNotIn("counterexample-first", " ".join(section.content for section in card.sections))
-            self.assertIn("无法判断", card.weakest_assumption)
+            self.assertIn("不生成论文专属", card.weakest_assumption)
         self.assertNotEqual(cards[0].sections[0].content, cards[1].sections[0].content)
 
     def test_abstract_without_dataset_metric_claim_keeps_research_sight_bounded(self) -> None:
@@ -1414,7 +1414,7 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         rendered = render_card_markdown(abstract_card, {"title": abstract_card.paper_title})
         self.assertIn("Evidence boundary: 证据边界（abstract_only）", rendered)
         self.assertIn("不能当作已讲清整篇论文", rendered)
-        self.assertIn("Status: blocked", abstract_card.minimal_reproduction)
+        self.assertIn("状态：待补充实验锚点", abstract_card.minimal_reproduction)
 
     def test_full_text_card_extracts_dataset_metric_baseline_and_ready_minimal_reproduction(self) -> None:
         from scholarflow_api.paper_card import generate_deep_paper_card
@@ -1442,8 +1442,8 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertIn("GQA", card.signals.dataset)
         self.assertTrue("accuracy" in card.signals.metric.lower() or "F1" in card.signals.metric)
         self.assertIn("LLaVA", card.signals.baseline)
-        self.assertIn("Status: ready", card.minimal_reproduction)
-        self.assertIn("Baseline:", card.minimal_reproduction)
+        self.assertIn("状态：可进入最小复现设计", card.minimal_reproduction)
+        self.assertIn("对照方法：", card.minimal_reproduction)
 
     def test_memory_and_gap_do_not_use_off_topic_papers(self) -> None:
         from scholarflow_api.paper_card import generate_deep_paper_card

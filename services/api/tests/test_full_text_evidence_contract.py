@@ -169,6 +169,69 @@ POPE: Polling-based Object Probing Evaluation for Object Hallucination.
         self.assertEqual(evidence.page, 8)
         self.assertIn("SceneFaith-500", evidence.quote)
 
+    def test_legomem_full_text_produces_research_facing_signals_and_sections(self) -> None:
+        from scholarflow_api.paper_card import generate_deep_paper_card
+
+        paper = {
+            "title": "LEGOMem: Modular Procedural Memory for Multi-agent LLM Systems for Workflow Automation",
+            "abstract": (
+                "We introduce LEGOMem, a modular procedural memory framework for multi-agent "
+                "large language model systems in workflow automation. Experiments on the "
+                "OfficeBench benchmark show that orchestrator memory is critical for effective "
+                "task decomposition and delegation. LEGOMem improves task success rates over "
+                "memory-less and baseline methods."
+            ),
+            "year": "2025",
+            "venue": "arXiv cs.AI",
+        }
+        structured_text = """
+[PDF page 2]
+[Section: related_work]
+Generalist multi-agent frameworks decompose goals and direct specialized agents.
+However, a key limitation remains that they are often stateless, solving each task
+from scratch and discarding valuable insights gained during execution.
+
+[PDF page 5]
+[Section: experiments]
+We evaluate LEGOMem on the OfficeBench benchmark.
+OfficeBench consists of 300 office automation tasks: 148 training instances for
+memory curation and 152 test instances for evaluation.
+The evaluation metric is the task success rate, i.e. the percentage of tasks solved correctly.
+We compare LEGOMem variants with three baselines: (i) No memory, (ii) Synapse, and (iii) AWM.
+
+[PDF page 6]
+[Section: results]
+We show that, compared with memory-less teams, LEGOMem improves overall task
+success rate by 12.61, 12.72, and 13.38 absolute percentage points for LLM,
+hybrid, and SLM teams.
+
+[PDF page 9]
+[Section: conclusion]
+Future work may explore continual learning from failed past trajectories and scaling
+LEGOMem to open-ended environments and tool ecosystems.
+"""
+
+        card = generate_deep_paper_card(paper, structured_text)
+
+        self.assertEqual(card.evidence_level, "full_text")
+        self.assertEqual(card.signals.dataset, "OfficeBench")
+        self.assertIn("task success rate", card.signals.metric)
+        self.assertIn("No memory", card.signals.baseline)
+        self.assertIn("Synapse", card.signals.baseline)
+        self.assertIn("AWM", card.signals.baseline)
+        self.assertIn("stateless", card.signals.prior_work_limitation)
+        self.assertIn("Future work", card.signals.limitation)
+        self.assertNotIn("memory-less team fails", card.signals.limitation)
+
+        rendered_sections = "\n".join(section.content for section in card.sections)
+        self.assertIn("OfficeBench", rendered_sections)
+        self.assertIn("task success rate", rendered_sections)
+        self.assertNotIn("当前证据不足", rendered_sections)
+        self.assertNotIn("dataset=", rendered_sections)
+        self.assertNotIn("Baseline evidence:", rendered_sections)
+        self.assertNotIn("VLM hallucination", rendered_sections)
+        self.assertNotIn("摘要/PDF 原文没有", rendered_sections)
+
     def test_evidence_pack_reserves_slots_for_pdf_before_abstract_metadata(self) -> None:
         from scholarflow_api.evidence import build_paper_evidence_pack
 
