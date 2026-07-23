@@ -2191,7 +2191,10 @@ export function ProductPaperReaderView({
               <div className="paper-decision-grid">
                 {decisionBrief.items.map((item) => (
                   <article key={item.label}>
-                    <span>{item.label}</span>
+                    <div className="paper-decision-field-head">
+                      <span>{item.label}</span>
+                      <small data-source={item.sourceStatus}>{item.sourceLabel}</small>
+                    </div>
                     <strong>{item.value}</strong>
                   </article>
                 ))}
@@ -2295,9 +2298,16 @@ export function ProductPaperReaderView({
                     </header>
 
                     <div className="paper-reader-section-body">
-                      {activeSectionParagraphs.map((paragraph, index) => (
-                        <p key={`${activeSection.id}-paragraph-${index}`}>{paragraph}</p>
-                      ))}
+                      {activeSectionParagraphs.length ? (
+                        activeSectionParagraphs.map((paragraph, index) => (
+                          <p key={`${activeSection.id}-paragraph-${index}`}>{paragraph}</p>
+                        ))
+                      ) : (
+                        <div className="paper-reader-section-empty" role="status">
+                          <strong>本段暂无可定位内容</strong>
+                          <span>所需字段已汇总在上方“待补证据与核验清单”。</span>
+                        </div>
+                      )}
                     </div>
 
                     {activeSectionContent.outline ||
@@ -2474,7 +2484,12 @@ export function ProductPaperReaderView({
 function buildPaperDecisionBrief(card: ApiPaperCard | null): {
   readiness: "ready" | "partial" | "blocked";
   label: string;
-  items: Array<{ label: string; value: string }>;
+  items: Array<{
+    label: string;
+    value: string;
+    sourceLabel: string;
+    sourceStatus: "full_text" | "abstract_only" | "missing" | "invalid";
+  }>;
   nextAction: string;
   evidence: Array<{ label: string; location: string }>;
 } {
@@ -2482,16 +2497,38 @@ function buildPaperDecisionBrief(card: ApiPaperCard | null): {
   const useful = (value: string | undefined, fallback: string) => {
     return formatResearchSignal(value, fallback);
   };
-  const coreSignalsReady = Boolean(
-    signals &&
-    useful(signals.task, "") &&
-    useful(signals.method, "") &&
-    useful(signals.claim, ""),
+  const classifyEvidence = (
+    evidence: ApiSignalEvidence | undefined,
+  ): { label: string; status: "full_text" | "abstract_only" | "missing" | "invalid" } => {
+    if (!evidence) {
+      return { label: "未定位", status: "missing" };
+    }
+    if (evidence.availability === "invalid" || evidence.validation_errors.length > 0) {
+      return { label: "证据异常", status: "invalid" };
+    }
+    const refs = evidence.evidence_refs?.length ? evidence.evidence_refs : [evidence];
+    const allFullText = refs.every(
+      (ref) => ref.source === "pdf.full_text" && ref.validation_errors.length === 0,
+    );
+    if (allFullText && evidence.availability !== "partial") {
+      return { label: "全文", status: "full_text" };
+    }
+    return { label: "摘要/元数据", status: "abstract_only" };
+  };
+  const coreEvidence = [
+    signals?.signal_evidence?.task,
+    signals?.signal_evidence?.method,
+    signals?.signal_evidence?.claim,
+  ];
+  const coreSignalsPresent = Boolean(
+    signals && useful(signals.task, "") && useful(signals.method, "") && useful(signals.claim, ""),
   );
+  const coreEvidenceStatuses = coreEvidence.map((evidence) => classifyEvidence(evidence).status);
+  const coreSignalsVerified = coreEvidenceStatuses.every((status) => status === "full_text");
   const readiness =
-    card?.evidence_level === "full_text" && coreSignalsReady
+    card?.evidence_level === "full_text" && coreSignalsPresent && coreSignalsVerified
       ? "ready"
-      : card?.evidence_level === "abstract_only" || coreSignalsReady
+      : coreSignalsPresent || card?.evidence_level === "abstract_only"
         ? "partial"
         : "blocked";
   const label =
@@ -2501,11 +2538,13 @@ function buildPaperDecisionBrief(card: ApiPaperCard | null): {
         ? "仅作选读线索"
         : "证据不足";
   const nextAction =
-    card?.evidence_level === "full_text"
+    readiness === "ready"
       ? useful(
-          card.minimal_reproduction,
+          card?.minimal_reproduction,
           "先回到 PDF 核对方法、实验设置和失败案例，再决定是否进入复现。",
         )
+      : card?.evidence_level === "full_text"
+        ? "卡片已绑定全文，但任务、方法或主要主张仍有字段缺少全文定位；请先核对对应 PDF 段落，再决定是否进入复现。"
       : "上传或绑定论文 PDF，重点补齐方法、实验设置、baseline、ablation 与失败案例后重新生成。";
   const evidenceFields: Array<[string, ApiSignalEvidence | undefined]> = [
     ["研究任务", signals?.signal_evidence?.task],
@@ -2519,14 +2558,20 @@ function buildPaperDecisionBrief(card: ApiPaperCard | null): {
       {
         label: "研究任务",
         value: useful(signals?.task, "尚未定位到明确、可检验的研究任务。"),
+        sourceLabel: classifyEvidence(signals?.signal_evidence?.task).label,
+        sourceStatus: classifyEvidence(signals?.signal_evidence?.task).status,
       },
       {
         label: "核心方法",
         value: useful(signals?.method, "尚未定位到具体方法机制。"),
+        sourceLabel: classifyEvidence(signals?.signal_evidence?.method).label,
+        sourceStatus: classifyEvidence(signals?.signal_evidence?.method).status,
       },
       {
         label: "主要主张",
         value: useful(signals?.claim, "尚未定位到论文的主要经验主张。"),
+        sourceLabel: classifyEvidence(signals?.signal_evidence?.claim).label,
+        sourceStatus: classifyEvidence(signals?.signal_evidence?.claim).status,
       },
     ],
     nextAction,
@@ -3000,6 +3045,9 @@ function formatPaperCardSectionTitle(title: string): string {
 }
 
 function splitPaperCardSectionParagraphs(content: string): string[] {
+  if (!content.trim()) {
+    return [];
+  }
   const withSignalBreaks = content.replace(
     /;\s*(?=(?:method|dataset|metric|baseline|claim|limitation|type)=)/gi,
     ";\n",
@@ -3021,7 +3069,7 @@ function splitPaperCardSectionParagraphs(content: string): string[] {
       paragraphs.push(current);
     }
   }
-  return paragraphs.length ? paragraphs : [content];
+  return paragraphs.length ? paragraphs : [];
 }
 
 function ConferenceMarquee() {
@@ -4949,10 +4997,10 @@ export function GapBoardView({
   const gaps = decision?.gaps ?? [];
   const decisionStatus = decision?.decision_status ?? "complete";
   const evidenceQuality = decision?.evidence_quality ?? {};
-  const gapEvidenceCount = Number(evidenceQuality.gap_evidence_paper_count ?? 0);
-  const evidenceThreshold = Number(evidenceQuality.minimum_gap_evidence_threshold ?? 5);
   const groundedGapCount = Number(evidenceQuality.grounded_gap_evidence_count ?? 0);
+  const specificGapCount = Number(evidenceQuality.specific_gap_evidence_count ?? 0);
   const corroboratedGapCount = Number(evidenceQuality.corroborated_gap_group_count ?? 0);
+  const conflictedGapCount = Number(evidenceQuality.conflicted_gap_group_count ?? 0);
   const decisionEvidenceBoundary = buildDecisionEvidenceBoundary(decision);
   const isConservative = Boolean(decision && (decisionStatus !== "complete" || decisionEvidenceBoundary));
 
@@ -4985,7 +5033,7 @@ export function GapBoardView({
             <span>
               候选匹配术语：{decision.decision_intent.required_terms.join(" / ") || "未指定"}
             </span>
-            <span>显式硬约束会在实验计划中逐项校验，缺少任意一项都不会标记为 ready。</span>
+            <span>显式硬约束按 all_of 逐项校验；“A/B/C 任一”按 any_of 校验，组内命中一项即可。</span>
             <span>
               对照对象：{decision.decision_intent.contrast_terms.join(" / ") || "未指定"}
             </span>
@@ -5007,11 +5055,10 @@ export function GapBoardView({
             <p>{decision.validation.idea}</p>
             <span className={`risk ${decision.validation.novelty_risk}`}>{decision.validation.novelty_risk}</span>
             <span>{decision.validation.feasibility}</span>
-            <span>
-              gap evidence {gapEvidenceCount}/{evidenceThreshold}
-            </span>
             <span>可定位限制 {groundedGapCount}</span>
-            <span>跨论文一致组 {corroboratedGapCount}</span>
+            <span>满足具体性要求 {specificGapCount}</span>
+            <span>全文跨论文一致 {corroboratedGapCount} 组</span>
+            <span>冲突证据 {conflictedGapCount} 组</span>
           </div>
         ) : null}
       </section>
@@ -5059,6 +5106,9 @@ export function GapBoardView({
                 <div className={`gap-kind ${gap.kind}`}>{gap.kind}</div>
                 <span className={`confidence ${gap.confidence ?? "low"}`}>
                   {gap.support_status ?? "insufficient"} · {gap.confidence ?? "low"}
+                </span>
+                <span className="gap-consistency-score">
+                  一致性 {Math.round((gap.consistency_score ?? 0) * 100)}%
                 </span>
               </div>
               {isConservative ? (
@@ -5142,6 +5192,7 @@ export function ExperimentPlannerView({
 }) {
   const plan = decision?.experiment;
   const isBlocked = plan?.status === "blocked";
+  const isPartial = plan?.status === "partial";
   const decisionEvidenceBoundary = buildDecisionEvidenceBoundary(decision);
 
   return (
@@ -5156,7 +5207,9 @@ export function ExperimentPlannerView({
                   ? plan.anchor_paper_title
                     ? "实验约束尚未满足"
                     : "缺少可复现实验 anchor"
-                  : "One-week Minimal Experiment"
+                  : isPartial
+                    ? "科研锚点已确认，执行条件待补齐"
+                    : "Executable Minimal Experiment"
                 : "从 gap 生成实验计划"}
             </h2>
           </div>
@@ -5213,8 +5266,21 @@ export function ExperimentPlannerView({
         </section>
       ) : null}
 
+      {plan && isPartial ? (
+        <section className="experiment-partial-banner" role="status" aria-label="experiment partial reason">
+          <AlertTriangle size={18} />
+          <div>
+            <strong>当前计划不能直接执行</strong>
+            <p>
+              claim、dataset、metric 和 baseline 已有全文锚点，但仍存在未确认的代码/API、模型版本、
+              样本量、seed、资源预算或停止阈值。
+            </p>
+          </div>
+        </section>
+      ) : null}
+
       {plan ? (
-        <section className={`experiment-detail ${isBlocked ? "blocked" : "ready"}`}>
+        <section className={`experiment-detail ${plan.status}`}>
           <h2>{plan.claim || (isBlocked ? "当前证据不足，无法形成可执行 claim" : "实验 claim 待补充")}</h2>
           <dl>
             <div>
@@ -5266,7 +5332,19 @@ export function ExperimentPlannerView({
                 {Object.entries(plan.readiness_checks).map(([key, value]) => (
                   <div key={key}>
                     <dt>{key}</dt>
-                    <dd className={value.startsWith("ready:") ? "ready" : "unknown"}>{value}</dd>
+                    <dd
+                      className={
+                        value.startsWith("ready:")
+                          ? "ready"
+                          : value.startsWith("not_required:")
+                            ? "not-required"
+                            : value.startsWith("blocked:")
+                              ? "blocked"
+                              : "unknown"
+                      }
+                    >
+                      {value}
+                    </dd>
                   </div>
                 ))}
               </dl>
@@ -5282,7 +5360,7 @@ export function ExperimentPlannerView({
               ) : null}
             </div>
           ) : null}
-          {isBlocked && plan.unblock_suggestions.length ? (
+          {(isBlocked || isPartial) && plan.unblock_suggestions.length ? (
             <div className="experiment-unblock">
               <strong>Unblock Suggestions</strong>
               <ul>

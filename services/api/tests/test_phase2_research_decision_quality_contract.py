@@ -8,6 +8,7 @@ from scholarflow_api import research_memory as research_memory_module
 from scholarflow_api.baseline_map import build_baseline_map
 from scholarflow_api.research_decisions import (
     build_gap_decisions,
+    gap_group_consistency_score,
     group_grounded_gap_evidence,
 )
 from scholarflow_api.research_memory import query_research_memory
@@ -120,8 +121,8 @@ class Phase2ResearchDecisionQualityContractTest(unittest.TestCase):
         self.assertFalse(any(gap.kind == "true_gap" for gap in gaps))
         self.assertTrue(all(gap.support_status == "single_source" for gap in gaps))
 
-    def test_gap_classification_binds_corroborated_evidence_and_validation_requirements(self) -> None:
-        corroborated = [
+    def test_abstract_evidence_cannot_upgrade_a_gap_to_corroborated(self) -> None:
+        mixed_evidence = [
             {
                 "paper_id": "paper_a",
                 "title": "Single Object Evaluation A",
@@ -145,17 +146,80 @@ class Phase2ResearchDecisionQualityContractTest(unittest.TestCase):
                 "evidence_level": "abstract_only",
             },
         ]
+        groups = group_grounded_gap_evidence(mixed_evidence)
+        gaps = build_gap_decisions("complete", "Paper A, Paper B", mixed_evidence, groups)
+        gap = gaps[0]
+
+        self.assertEqual(len(groups), 1)
+        self.assertNotEqual(gap.kind, "true_gap")
+        self.assertNotEqual(gap.support_status, "corroborated")
+
+    def test_gap_classification_requires_two_consistent_full_text_sources(self) -> None:
+        corroborated = [
+            {
+                "paper_id": "paper_a",
+                "title": "Single Object Evaluation A",
+                "snippet_id": "a",
+                "source": "pdf.full_text",
+                "snippet": "Our evaluation is limited to single-object scenes.",
+                "limitation": "limited to single-object scenes",
+                "section": "limitations",
+                "page": "9",
+                "evidence_level": "full_text",
+            },
+            {
+                "paper_id": "paper_b",
+                "title": "Single Object Evaluation B",
+                "snippet_id": "b",
+                "source": "pdf.full_text",
+                "snippet": "The benchmark covers only single-object scenes.",
+                "limitation": "covers only single-object scenes",
+                "section": "limitations",
+                "page": "11",
+                "evidence_level": "full_text",
+            },
+        ]
         groups = group_grounded_gap_evidence(corroborated)
         gaps = build_gap_decisions("complete", "Paper A, Paper B", corroborated, groups)
         gap = gaps[0]
 
         self.assertEqual(len(groups), 1)
+        self.assertGreaterEqual(gap_group_consistency_score(groups[0]), 0.70)
         self.assertEqual(gap.kind, "true_gap")
         self.assertEqual(gap.support_status, "corroborated")
         self.assertEqual(gap.confidence, "medium")
         self.assertEqual(gap.paper_ids, ["paper_a", "paper_b"])
         self.assertEqual(len(gap.evidence_refs), 2)
         self.assertTrue(gap.validation_requirements)
+
+    def test_complete_link_does_not_chain_incompatible_failure_modes(self) -> None:
+        evidence = [
+            {
+                "paper_id": "paper_a",
+                "title": "Single Object A",
+                "source": "pdf.full_text",
+                "snippet": "Evaluation is limited to single-object scenes.",
+                "limitation": "limited to single-object scenes",
+            },
+            {
+                "paper_id": "paper_b",
+                "title": "Single Object B",
+                "source": "pdf.full_text",
+                "snippet": "The benchmark only covers single-object scenes.",
+                "limitation": "only covers single-object scenes",
+            },
+            {
+                "paper_id": "paper_c",
+                "title": "English Coverage",
+                "source": "pdf.full_text",
+                "snippet": "The benchmark only supports English prompts.",
+                "limitation": "only supports English prompts",
+            },
+        ]
+
+        groups = group_grounded_gap_evidence(evidence)
+
+        self.assertEqual(sorted(len(group) for group in groups), [1, 2])
 
     def test_baseline_map_exposes_actionability_and_does_not_promote_age_alone(self) -> None:
         selected = [

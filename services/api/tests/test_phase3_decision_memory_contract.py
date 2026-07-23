@@ -29,20 +29,65 @@ def make_paper(paper_id: str, title: str, abstract: str) -> dict[str, object]:
 
 
 def make_anchor_card(paper_id: str, title: str, dataset: str) -> dict[str, object]:
+    claim = "the benchmark exposes multi-object hallucination failures"
+    metric = "accuracy"
+    baseline = "LLaVA-1.5"
+
+    def evidence(field: str, value: str) -> dict[str, object]:
+        refs = [
+            {
+                "canonical_value": item.strip(),
+                "raw_value": item.strip(),
+                "source": "pdf.full_text",
+                "section": "experiments" if field != "claim" else "results",
+                "page": 7,
+                "quote": f"{field.title()}: {value}",
+                "confidence": "high",
+                "validation_errors": [],
+            }
+            for item in value.split(",")
+            if item.strip()
+        ]
+        return {
+            "field": field,
+            "canonical_value": value,
+            "raw_value": value,
+            "source": "pdf.full_text",
+            "section": "experiments" if field != "claim" else "results",
+            "page": 7,
+            "quote": f"{field.title()}: {value}",
+            "confidence": "high",
+            "validation_errors": [],
+            "evidence_refs": refs,
+            "availability": "verified",
+        }
+
     return {
         "paper_id": paper_id,
         "paper_title": title,
         "evidence_level": "full_text",
         "minimal_reproduction": "\n".join(
             [
-                "Claim: the benchmark exposes multi-object hallucination failures.",
+                f"Claim: {claim}.",
                 f"Dataset: {dataset}",
-                "Metric: accuracy",
-                "Baseline: LLaVA-1.5",
+                f"Metric: {metric}",
+                f"Baseline: {baseline}",
             ],
         ),
         "sections_json": "Evaluation uses GPU inference and human annotation.",
         "weakest_assumption": "The benchmark reflects multi-object interactions.",
+        "signals": {
+            "claim": claim,
+            "dataset": dataset,
+            "metric": metric,
+            "baseline": baseline,
+            "signal_evidence": {
+                "claim": evidence("claim", claim),
+                "dataset": evidence("dataset", dataset),
+                "metric": evidence("metric", metric),
+                "baseline": evidence("baseline", baseline),
+            },
+        },
     }
 
 
@@ -129,12 +174,42 @@ class PhaseThreeDecisionMemoryContractTest(unittest.TestCase):
             goal="7 day multi-object hallucination evaluation; do not use POPE",
         )
 
-        self.assertEqual(bundle.experiment.status, "ready")
+        self.assertEqual(bundle.experiment.status, "partial")
         self.assertEqual(bundle.experiment.anchor_paper_id, "paper_multi")
         self.assertEqual(bundle.experiment.goal_alignment["status"], "aligned")
         self.assertNotIn("50-100", bundle.experiment.resources)
-        self.assertEqual(bundle.experiment.readiness_checks["code_or_api"], "unknown: 未发现可验证代码仓库或 API 权限信息")
+        self.assertTrue(bundle.experiment.readiness_checks["code_or_api"].startswith("unknown:"))
         self.assertTrue(bundle.experiment.timeline[0].startswith("Day 1"))
+
+    def test_card_level_full_text_cannot_hide_abstract_only_experiment_fields(self) -> None:
+        paper = make_paper(
+            "paper_mixed_anchor",
+            "Mixed Evidence Benchmark",
+            "An abstract describing a hallucination benchmark.",
+        )
+        card = make_anchor_card("paper_mixed_anchor", str(paper["title"]), "POPE")
+        evidence_map = card["signals"]["signal_evidence"]
+        for evidence in evidence_map.values():
+            evidence["source"] = "metadata.abstract"
+            evidence["availability"] = "partial"
+            for ref in evidence["evidence_refs"]:
+                ref["source"] = "metadata.abstract"
+
+        bundle = generate_research_decisions(
+            project={"title": "Mixed evidence decision", "keyword": "object hallucination"},
+            papers=[paper],
+            paper_cards=[card],
+            goal="Evaluate object hallucination on POPE",
+        )
+
+        self.assertEqual(bundle.experiment.status, "blocked")
+        self.assertEqual(bundle.experiment.anchor_paper_id, "")
+        self.assertTrue(
+            any(
+                "缺 claim" in suggestion and "PDF" in suggestion
+                for suggestion in bundle.experiment.unblock_suggestions
+            ),
+        )
 
     def test_experiment_is_blocked_when_explicit_hard_constraints_are_missing(self) -> None:
         paper = make_paper(
@@ -163,6 +238,7 @@ class PhaseThreeDecisionMemoryContractTest(unittest.TestCase):
         self.assertIn("failure sample slices", bundle.experiment.goal_alignment["missing_hard_constraints"])
         self.assertIn("evidence faithfulness metric", bundle.experiment.goal_alignment["missing_hard_constraints"])
         self.assertEqual(bundle.experiment.goal_alignment["hard_constraint_checks"]["POPE / CHAIR"], "ready")
+        self.assertEqual(bundle.experiment.goal_alignment["constraint_groups"][0]["operator"], "any_of")
         self.assertEqual(bundle.experiment.goal_alignment["hard_constraint_checks"]["strong baseline"], "ready")
         self.assertTrue(bundle.experiment.readiness_checks["goal_constraints"].startswith("blocked:"))
         self.assertEqual(bundle.decision_status, "partial")
@@ -221,6 +297,7 @@ class PhaseThreeDecisionMemoryContractTest(unittest.TestCase):
             "First Logit Boosting for Object Hallucination Mitigation",
             "A decoding-time First Logit Boosting method evaluated on CHAIR.",
         )
+        paper["code"] = "https://github.com/example/flb"
         bundle = generate_research_decisions(
             project={"title": "FLB reproduction", "keyword": "object hallucination"},
             papers=[paper],
@@ -235,9 +312,18 @@ class PhaseThreeDecisionMemoryContractTest(unittest.TestCase):
                             "Baseline: VCD, ICD, no-op baseline",
                         ],
                     ),
-                    "sections_json": (
-                        "First Logit Boosting decoding experiment on CHAIR "
-                        "with VCD, ICD, and no-op baseline."
+                    "sections_json": "\n".join(
+                        [
+                            "First Logit Boosting decoding experiment on CHAIR with VCD, ICD, and no-op baseline.",
+                            "Model version: LLaVA-1.5",
+                            "Sample size: 500 CHAIR examples",
+                            "Seed: 42",
+                            "Protocol: run the released FLB evaluation command with frozen decoding parameters",
+                            "Compute: 1x A100 40GB",
+                            "Resource budget: 8 GPU-hours",
+                            "Success threshold: CHAIRs decreases by at least 2.0 points over VCD",
+                            "Stop threshold: stop after three failed seeds or 12 GPU-hours",
+                        ],
                     ),
                 }
             ],
@@ -252,6 +338,12 @@ class PhaseThreeDecisionMemoryContractTest(unittest.TestCase):
         self.assertEqual(bundle.experiment.goal_alignment["status"], "aligned")
         self.assertEqual(bundle.experiment.goal_alignment["required_term_coverage"], 1.0)
         self.assertFalse(bundle.experiment.goal_alignment["missing_hard_constraints"])
+        self.assertTrue(
+            all(
+                value.startswith(("ready:", "not_required:"))
+                for value in bundle.experiment.readiness_checks.values()
+            ),
+        )
 
     def test_gap_evidence_uses_the_limitation_quote_and_locator(self) -> None:
         paper = make_paper("paper_grounded", "Grounded Limitation Paper", "A benchmark paper.")

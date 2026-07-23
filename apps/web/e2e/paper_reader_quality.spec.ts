@@ -55,13 +55,16 @@ const sectionTitles = [
 const sections = sectionTitles.map((title, index) => ({
   id: `quality_section_${index + 1}`,
   title,
-  content: [
-    legacyBoundary,
-    `阅读提纲：阅读原文时应重点核验「${title}」对应的证据。`,
-    `当前可见线索：第 ${index + 1} 段唯一科研内容，用于确认切换目录后不会显示另一段。`,
-    "证据缺口：缺少 PDF 中的方法、实验表、消融和失败样本。",
-    "需要验证的问题：补充 PDF 后检查原文证据是否支持该判断。",
-  ].join("\n"),
+  content:
+    index === 11
+      ? ""
+      : [
+          legacyBoundary,
+          `阅读提纲：阅读原文时应重点核验「${title}」对应的证据。`,
+          `当前可见线索：第 ${index + 1} 段唯一科研内容，用于确认切换目录后不会显示另一段。`,
+          "证据缺口：缺少 PDF 中的方法、实验表、消融和失败样本。",
+          "需要验证的问题：补充 PDF 后检查原文证据是否支持该判断。",
+        ].join("\n"),
 }));
 
 const directionPayload = {
@@ -105,6 +108,44 @@ const directionPayload = {
         limitation: "abstract does not expose ablation details",
         contribution_type: "benchmark",
         missing_signals: ["full-text ablation"],
+        signal_evidence: {
+          task: {
+            field: "task",
+            canonical_value: "VQA evidence faithfulness evaluation",
+            raw_value: "This paper evaluates whether VQA answers remain faithful to visual evidence.",
+            source: "metadata.abstract",
+            section: "abstract",
+            page: null,
+            quote: "This paper evaluates whether VQA answers remain faithful to visual evidence.",
+            confidence: "medium",
+            validation_errors: [],
+            availability: "partial",
+          },
+          method: {
+            field: "method",
+            canonical_value: "counterfactual grounding benchmark",
+            raw_value: "counterfactual grounding benchmark",
+            source: "metadata.abstract",
+            section: "abstract",
+            page: null,
+            quote: "The abstract describes a counterfactual grounding benchmark.",
+            confidence: "medium",
+            validation_errors: [],
+            availability: "partial",
+          },
+          claim: {
+            field: "claim",
+            canonical_value: "counterfactual evidence exposes hallucination",
+            raw_value: "counterfactual evidence exposes hallucination",
+            source: "metadata.abstract",
+            section: "abstract",
+            page: null,
+            quote: "The abstract claims that counterfactual evidence exposes hallucination.",
+            confidence: "medium",
+            validation_errors: [],
+            availability: "partial",
+          },
+        },
       },
       sections,
       research_sight: {
@@ -246,6 +287,41 @@ function fullTextCardArtifact(id: string, createdAt: string) {
       contribution_evidence: "贡献证据：We introduce a benchmark and evaluate against LLaVA.",
       missing_signals: [],
       signal_evidence: {
+        task: {
+          field: "task",
+          canonical_value: "VQA evidence faithfulness evaluation",
+          raw_value: "We study whether VQA outputs remain faithful to image evidence.",
+          source: "pdf.full_text",
+          section: "introduction",
+          page: 2,
+          quote: "We study whether VQA outputs remain faithful to image evidence.",
+          confidence: "high",
+          validation_errors: [],
+          availability: "verified",
+        },
+        method: {
+          field: "method",
+          canonical_value: "component-aware mitigation",
+          raw_value: "We propose a component-aware mitigation.",
+          source: "pdf.full_text",
+          section: "method",
+          page: 4,
+          quote: "We propose a component-aware mitigation for visual hallucination.",
+          confidence: "high",
+          validation_errors: [],
+          availability: "verified",
+        },
+        claim: {
+          field: "claim",
+          canonical_value: "grounded intervention reduces object hallucination",
+          raw_value: "We show that the grounded intervention reduces object hallucination.",
+          source: "pdf.full_text",
+          section: "results",
+          page: 8,
+          quote: "We show that the grounded intervention reduces object hallucination.",
+          confidence: "high",
+          validation_errors: [],
+        },
         dataset: {
           field: "dataset",
           canonical_value: "POPE",
@@ -305,6 +381,7 @@ test("12-section reader uses a table of contents and one readable section instea
   await expect(decisionBrief).toBeVisible();
   await expect(decisionBrief.getByRole("heading", { name: "先判断这篇论文是否值得继续投入" })).toBeVisible();
   await expect(decisionBrief.getByText("仅作选读线索", { exact: true })).toBeVisible();
+  await expect(decisionBrief.getByText("摘要/元数据", { exact: true })).toHaveCount(3);
   await expect(decisionBrief).toContainText("VQA evidence faithfulness evaluation");
   await expect(decisionBrief).toContainText("上传或绑定论文 PDF");
   await expect(toc).toBeVisible();
@@ -324,6 +401,11 @@ test("12-section reader uses a table of contents and one readable section instea
   await expect(board.locator("#paper-reader-section-7")).toBeVisible();
   await expect(board.locator(".paper-reader-section-body")).toContainText("第 7 段唯一科研内容");
   await expect(board.locator(".paper-reader-section-body")).not.toContainText("第 1 段唯一科研内容");
+
+  await tocItems.nth(11).click();
+  await expect(board.locator("#paper-reader-section-12")).toBeVisible();
+  await expect(board.locator(".paper-reader-section-empty")).toContainText("本段暂无可定位内容");
+  await expect(board.locator(".paper-reader-section-empty")).toContainText("待补证据与核验清单");
 });
 
 test("full-text paper detail exposes signal source section and page", async ({ page }) => {
@@ -453,6 +535,7 @@ test("uploaded PDF immediately replaces a stale abstract card for the same paper
   await expect(page.getByRole("heading", { name: "全文级深读 · Paper Card" })).toBeVisible();
   await expect(page.locator('.reader-evidence-level.full_text').getByText("全文已验证", { exact: true })).toBeVisible();
   await expect(page.getByTestId("paper-research-decision-brief").getByText("可进入人工核验", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("paper-research-decision-brief").getByText("全文", { exact: true })).toHaveCount(3);
   const provenance = page.getByTestId("paper-card-provenance");
   await expect(provenance.getByText("已解析 14 页 / 50,000 字符", { exact: true })).toBeVisible();
   await expect(provenance.getByText("来源：用户上传 PDF", { exact: true })).toBeVisible();

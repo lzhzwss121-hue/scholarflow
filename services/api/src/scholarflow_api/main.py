@@ -241,7 +241,11 @@ def memory_step_status(hit_count: int, warnings: list[str]) -> str:
 
 
 def experiment_step_status(status: str) -> str:
-    return "blocked" if status == "blocked" else "complete"
+    if status == "blocked":
+        return "blocked"
+    if status == "partial":
+        return "partial"
+    return "complete"
 
 
 def agent_run_summary(plan: dict, outputs: dict[str, object] | None, paper_count: int, artifacts: list[dict] | None = None) -> dict[str, object]:
@@ -286,6 +290,8 @@ def agent_run_summary(plan: dict, outputs: dict[str, object] | None, paper_count
             warnings.append(f"Gap Board {decision_status}: evidence quality is insufficient.")
         if decision_output.get("experiment_status") == "blocked":
             warnings.append("Experiment Plan blocked: missing reproducible anchor.")
+        elif decision_output.get("experiment_status") == "partial":
+            warnings.append("Experiment Plan partial: research anchors exist but execution conditions remain unknown.")
         for warning in decision_output.get("warnings", []) or []:
             warnings.append(f"Research Decision warning: {warning}")
 
@@ -409,7 +415,7 @@ def agent_workflow_steps(outputs: dict[str, object] | None, artifacts: list[dict
                     if experiment_status == "blocked"
                     else f"实验 anchor：{decision_output.get('anchor_paper_title') or 'N/A'}。"
                 ),
-                warnings=warnings if experiment_status == "blocked" else [],
+                warnings=warnings if experiment_status in {"blocked", "partial"} else [],
                 updated_at=updated_at,
                 artifacts=decision_artifacts[2:],
             )
@@ -2195,10 +2201,12 @@ def create_project_research_decisions(project_id: str, payload: ResearchDecision
             connection,
             session_id,
             "experiment.plan",
-            "done" if bundle.experiment.status == "ready" else "blocked",
+            "done" if bundle.experiment.status == "ready" else bundle.experiment.status,
             (
                 "已生成包含目标对齐、baseline、dataset、metric、ablation 与资源就绪检查的实验计划。"
                 if bundle.experiment.status == "ready"
+                else "实验计划为 partial：科研锚点存在，但执行条件尚未全部确认。"
+                if bundle.experiment.status == "partial"
                 else "实验计划被阻塞：缺少满足目标约束的全文级可复现 anchor。"
             ),
             now,
@@ -2237,6 +2245,8 @@ def create_project_research_decisions(project_id: str, payload: ResearchDecision
                 summary=(
                     "缺少可复现实验 anchor。"
                     if bundle.experiment.status == "blocked"
+                    else "科研锚点完整，但执行条件仍需补齐。"
+                    if bundle.experiment.status == "partial"
                     else f"实验 anchor：{bundle.experiment.anchor_paper_title or 'N/A'}。"
                 ),
                 warnings=bundle.experiment.unblock_suggestions,

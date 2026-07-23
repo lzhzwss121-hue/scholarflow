@@ -373,6 +373,33 @@ function normalizePaperSignals(payload: unknown): ApiPaperSignals | undefined {
                 quote: asString(item.quote),
                 confidence: asString(item.confidence) || "low",
                 validation_errors: asStringArray(item.validation_errors),
+                evidence_refs: Array.isArray(item.evidence_refs)
+                  ? item.evidence_refs.flatMap((ref) => {
+                      if (!isRecord(ref)) {
+                        return [];
+                      }
+                      return [{
+                        canonical_value: asString(ref.canonical_value),
+                        raw_value: asString(ref.raw_value),
+                        source: asString(ref.source),
+                        section: asString(ref.section),
+                        page: typeof ref.page === "number" ? ref.page : null,
+                        quote: asString(ref.quote),
+                        confidence: asString(ref.confidence) || "low",
+                        validation_errors: asStringArray(ref.validation_errors),
+                      }];
+                    })
+                  : [],
+                availability:
+                  item.availability === "verified" ||
+                  item.availability === "partial" ||
+                  item.availability === "missing" ||
+                  item.availability === "invalid"
+                    ? item.availability
+                    : asString(item.source) === "pdf.full_text" &&
+                        asStringArray(item.validation_errors).length === 0
+                      ? "verified"
+                      : "partial",
               },
             ]];
           }),

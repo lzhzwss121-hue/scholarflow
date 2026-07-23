@@ -5199,6 +5199,11 @@ td a {
   background: #fffaf0;
 }
 
+.experiment-detail.partial {
+  border-color: #b8c9dc;
+  background: #f8fbfe;
+}
+
 .experiment-unblock {
   margin-top: 14px;
   border-top: 1px solid rgba(122, 80, 16, 0.2);
@@ -5564,6 +5569,14 @@ td a {
 
 .experiment-readiness dd.unknown {
   color: #95610a;
+}
+
+.experiment-readiness dd.not-required {
+  color: #5d6c7b;
+}
+
+.experiment-readiness dd.blocked {
+  color: #a23b32;
 }
 
 .experiment-readiness ul {
@@ -9674,6 +9687,23 @@ td a {
   white-space: pre-wrap;
 }
 
+.paper-reader-section-empty {
+  display: grid;
+  gap: 3px;
+  padding: 8px 11px;
+  border-left: 2px solid var(--sf-border);
+  background: var(--sf-surface-soft);
+  color: var(--sf-ink-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.paper-reader-section-empty strong {
+  color: var(--sf-ink-secondary);
+  font-size: 13px;
+  font-weight: 620;
+}
+
 .paper-reader-section-notes {
   margin-top: 20px;
   border-top: 1px solid var(--sf-border-soft);
@@ -10143,6 +10173,38 @@ td a {
   background: #ffffff;
 }
 
+.paper-decision-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.paper-decision-field-head small {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 2px 6px;
+  font-size: 9px;
+  font-weight: 680;
+  line-height: 1.35;
+}
+
+.paper-decision-field-head small[data-source="full_text"] {
+  color: #0f6b49;
+  background: #e5f3ec;
+}
+
+.paper-decision-field-head small[data-source="abstract_only"] {
+  color: #315d86;
+  background: #e8f0f8;
+}
+
+.paper-decision-field-head small[data-source="missing"],
+.paper-decision-field-head small[data-source="invalid"] {
+  color: #6f4d14;
+  background: #f8edcf;
+}
+
 .paper-decision-grid span,
 .paper-decision-grid strong {
   display: block;
@@ -10423,6 +10485,28 @@ td a {
   gap: 10px;
   color: #725418;
   background: #fffaee;
+}
+
+.experiment-partial-banner {
+  border: 1px solid #b8c9dc;
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 10px;
+  color: #315d86;
+  background: #f4f8fc;
+}
+
+.experiment-partial-banner strong,
+.experiment-partial-banner p {
+  margin: 0;
+}
+
+.experiment-partial-banner p {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .experiment-blocked-banner strong,

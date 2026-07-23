@@ -302,19 +302,21 @@ Gap Board 用于整理研究空白和潜在方向。它不会简单输出“可�
 - 主流方法忽略的低成本替代范式。
 - 不同论文之间互相矛盾的结论。
 
+每条可定位 limitation 会被整理为 `failure_mode`、`affected_capability`、`condition`、`consequence`、`evaluation_context`、`dataset_or_slice`、`metric_or_observation` 和 `source_level`。系统使用 complete-link 方式聚类，避免仅因 A 接近 B、B 接近 C 就把 A 与 C 合并。只有同一具体失败模式得到至少 2 篇独立论文、2 条 PDF 全文证据支持，组内最低一致性不低于 `0.70` 且没有直接冲突时，才会标记为 `true_gap`；其他结果保持 `engineering_gap` 或 `pseudo_gap`。
+
 ### 8. Experiment Plan
 
-Experiment Plan 会从论文中选择适合复现的 anchor paper，并生成一周实验计划，但不会替用户下载数据集、运行训练或验证实验结果。
+Experiment Plan 会从论文中选择适合复现的 anchor paper，并按照用户给出的时间约束生成计划；未指定时间时不会自动假设“一周”。它不会替用户下载数据集、运行训练或验证实验结果。
 
 系统会优先选择同时具备以下信息的论文：
 
-- 具体 claim。
-- 明确 dataset。
-- 明确 metric。
-- 可对比 baseline。
+- 具有 PDF 全文字段级证据锚点的具体 claim。
+- 具有 PDF 全文字段级证据锚点的明确 dataset。
+- 具有 PDF 全文字段级证据锚点的明确 metric。
+- 具有 PDF 全文字段级证据锚点的可对比 baseline。
 - 非 survey、非 review、非 overview。
 
-如果没有合格 anchor，系统会提示“缺少可复现 anchor”，而不是强行生成看似完整但不可执行的实验计划。
+计划状态分为 `ready`、`partial`、`blocked`：缺少合格 anchor 或违反目标硬约束时为 `blocked`；科研锚点完整但代码/API、精确模型版本、样本量、seed、运行协议、算力、资源预算或成功/停止阈值仍未知时为 `partial`；只有全部执行检查明确时才是 `ready`。类似“POPE、CHAIR 或 AMBER”会按 `any_of` 处理，命中组内一项即可；普通硬约束按 `all_of` 校验。系统不会用摘要字段或卡片整体的 `full_text` 标签掩盖字段级证据缺失，也不会强行生成看似完整但不可执行的实验计划。
 
 ## 工作流
 

@@ -654,8 +654,8 @@ class ResearchQualitySmokeTest(unittest.TestCase):
 
         enforce_research_sight_diversity(readings)
 
-        self.assertNotEqual(readings[0].card.follow_up_idea, readings[1].card.follow_up_idea)
-        self.assertIn("无法提出独立 follow-up", readings[1].card.follow_up_idea)
+        self.assertEqual(readings[0].card.follow_up_idea, "")
+        self.assertEqual(readings[1].card.follow_up_idea, "")
 
     def test_two_metadata_only_cards_do_not_emit_long_repeated_research_templates(self) -> None:
         cards = [
@@ -667,7 +667,10 @@ class ResearchQualitySmokeTest(unittest.TestCase):
             self.assertEqual(card.evidence_level, "metadata_only")
             self.assertTrue(all(len(section.content) < 180 for section in card.sections))
             self.assertNotIn("counterexample-first", " ".join(section.content for section in card.sections))
-            self.assertIn("不生成论文专属", card.weakest_assumption)
+            self.assertEqual(card.weakest_assumption, "")
+            self.assertEqual(card.minimal_reproduction, "")
+            self.assertEqual(card.counterexample, "")
+            self.assertEqual(card.follow_up_idea, "")
         self.assertNotEqual(cards[0].sections[0].content, cards[1].sections[0].content)
 
     def test_abstract_without_dataset_metric_claim_keeps_research_sight_bounded(self) -> None:
@@ -689,9 +692,14 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         )
 
         self.assertEqual(card.evidence_level, "abstract_only")
-        self.assertIn("当前证据不足", card.signals.dataset)
-        self.assertIn("当前证据不足", card.signals.metric)
-        self.assertIn("当前证据不足", card.signals.claim)
+        self.assertEqual(card.signals.dataset, "")
+        self.assertEqual(card.signals.metric, "")
+        self.assertEqual(card.signals.claim, "")
+        self.assertTrue({"dataset", "metric", "claim"}.issubset(set(card.signals.missing_signals)))
+        rendered_sections = "\n".join(section.content for section in card.sections)
+        self.assertNotIn("当前证据不足", rendered_sections)
+        self.assertNotIn("已解析材料", rendered_sections)
+        self.assertNotIn("无法判断", rendered_sections)
         self.assertIn("无法判断", sight.why_not_good)
         self.assertIn("无法判断", sight.better_angle)
         self.assertNotIn("counterexample-first", sight.better_angle)
@@ -1390,7 +1398,10 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                 )
 
         self.assertEqual(len(response.card.sections), 12)
-        self.assertTrue(response.card.weakest_assumption)
+        self.assertNotIn("claim", response.card.signals.missing_signals)
+        self.assertEqual(response.card.signals.signal_evidence["claim"].availability, "partial")
+        self.assertEqual(response.card.weakest_assumption, "")
+        self.assertEqual(response.card.minimal_reproduction, "")
         self.assertTrue(response.artifact.id)
 
     def test_paper_card_metadata_and_abstract_levels_mark_evidence_boundary(self) -> None:
@@ -1410,11 +1421,12 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertTrue(
             all("证据边界（abstract_only）：" not in section.content for section in abstract_card.sections),
         )
-        self.assertEqual(len({section.content for section in abstract_card.sections}), 12)
+        self.assertTrue(any(not section.content for section in abstract_card.sections))
+        self.assertNotIn("已解析材料", " ".join(section.content for section in abstract_card.sections))
         rendered = render_card_markdown(abstract_card, {"title": abstract_card.paper_title})
         self.assertIn("Evidence boundary: 证据边界（abstract_only）", rendered)
         self.assertIn("不能当作已讲清整篇论文", rendered)
-        self.assertIn("状态：待补充实验锚点", abstract_card.minimal_reproduction)
+        self.assertEqual(abstract_card.minimal_reproduction, "")
 
     def test_full_text_card_extracts_dataset_metric_baseline_and_ready_minimal_reproduction(self) -> None:
         from scholarflow_api.paper_card import generate_deep_paper_card

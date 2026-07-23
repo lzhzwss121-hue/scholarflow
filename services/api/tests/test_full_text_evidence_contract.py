@@ -117,7 +117,8 @@ POPE: Polling-based Object Probing Evaluation for Object Hallucination.
         self.assertNotIn("POPE", signals.dataset)
         self.assertEqual(set(signals.metric.split(", ")), {"accuracy", "grounding accuracy"})
         self.assertNotIn("acc,", signals.metric.lower())
-        self.assertIn("当前证据不足", signals.limitation)
+        self.assertEqual(signals.limitation, "")
+        self.assertIn("limitation", signals.missing_signals)
         self.assertIn("these models suffer", signals.prior_work_limitation)
         dataset_evidence = signals.signal_evidence["dataset"]
         self.assertEqual(dataset_evidence.source, "pdf.full_text")
@@ -163,11 +164,152 @@ POPE: Polling-based Object Probing Evaluation for Object Hallucination.
         )
 
         self.assertEqual(signals.dataset, "OmniHall, ObjectScope, SceneFaith-500")
-        self.assertIn("当前证据不足", signals.limitation)
+        self.assertEqual(signals.limitation, "")
+        self.assertIn("limitation", signals.missing_signals)
         evidence = signals.signal_evidence["dataset"]
         self.assertEqual(evidence.source, "pdf.full_text")
         self.assertEqual(evidence.page, 8)
         self.assertIn("SceneFaith-500", evidence.quote)
+        self.assertEqual(
+            {ref.canonical_value for ref in evidence.evidence_refs},
+            {"OmniHall", "ObjectScope", "SceneFaith-500"},
+        )
+        self.assertTrue(all(ref.source == "pdf.full_text" for ref in evidence.evidence_refs))
+        self.assertEqual(evidence.availability, "verified")
+
+    def test_hardware_resources_are_not_extracted_as_datasets(self) -> None:
+        from scholarflow_api.paper_card import extract_paper_signals
+
+        signals = extract_paper_signals(
+            title="Efficient Grounding Intervention",
+            abstract="We introduce an efficient grounding intervention.",
+            paper_text=(
+                "[PDF page 4]\n[Section: method]\n"
+                "We propose a grounding intervention that suppresses unsupported visual tokens.\n"
+                "[PDF page 6]\n[Section: experiments]\n"
+                "Experiments run on 4 A100 GPUs with a batch size of 32. Evaluation uses accuracy."
+            ),
+            venue="CVPR",
+        )
+
+        self.assertEqual(signals.dataset, "")
+        self.assertIn("dataset", signals.missing_signals)
+        self.assertNotIn("A100", signals.dataset)
+        self.assertNotIn("dataset", signals.signal_evidence)
+
+    def test_model_configuration_sentence_is_not_promoted_to_owned_method(self) -> None:
+        from scholarflow_api.paper_card import extract_paper_signals
+
+        signals = extract_paper_signals(
+            title="CLIP-B Reliability Analysis",
+            abstract="We analyze reliability failures in vision-language encoders.",
+            paper_text=(
+                "[PDF page 4]\n[Section: method]\n"
+                "CLIP-B/32 represents CLIP with a ViT-B/32 backbone and 224 pixel resolution."
+            ),
+            venue="NeurIPS",
+        )
+
+        self.assertEqual(signals.method, "")
+        self.assertIn("method", signals.missing_signals)
+        self.assertNotIn("method", signals.signal_evidence)
+
+    def test_generic_limitation_lead_requires_a_specific_follow_up(self) -> None:
+        from scholarflow_api.paper_card import extract_paper_signals
+
+        generic = extract_paper_signals(
+            title="Grounded Evaluation",
+            abstract="We introduce a grounded evaluation protocol.",
+            paper_text=(
+                "[PDF page 9]\n[Section: limitations]\n"
+                "Although we conducted broad explorations, our research still has two limitations."
+            ),
+            venue="ACL",
+        )
+        specific = extract_paper_signals(
+            title="Grounded Evaluation",
+            abstract="We introduce a grounded evaluation protocol.",
+            paper_text=(
+                "[PDF page 9]\n[Section: limitations]\n"
+                "Our method still has two limitations. First, it only supports English prompts."
+            ),
+            venue="ACL",
+        )
+
+        self.assertEqual(generic.limitation, "")
+        self.assertIn("limitation", generic.missing_signals)
+        self.assertIn("only supports English prompts", specific.limitation)
+        self.assertIn("Our method still has two limitations", specific.signal_evidence["limitation"].quote)
+
+    def test_multi_value_signals_keep_one_locatable_reference_per_entity(self) -> None:
+        from scholarflow_api.paper_card import extract_paper_signals
+
+        signals = extract_paper_signals(
+            title="Faithful Evaluation on POPE and COCO",
+            abstract="We study faithful multimodal evaluation.",
+            paper_text=(
+                "[PDF page 7]\n[Section: experiments]\n"
+                "We evaluate our method on POPE and COCO datasets. "
+                "Evaluation metrics include CHAIRs, CHAIRi, and accuracy. "
+                "Baselines include LLaVA, VCD, and ICD. "
+                "We show that our method improves accuracy over LLaVA."
+            ),
+            venue="CVPR",
+        )
+
+        for field, expected in {
+            "dataset": {"POPE", "COCO"},
+            "metric": {"CHAIRs", "CHAIRi", "accuracy"},
+            "baseline": {"LLaVA", "VCD", "ICD"},
+        }.items():
+            evidence = signals.signal_evidence[field]
+            self.assertEqual(
+                {ref.canonical_value for ref in evidence.evidence_refs},
+                expected,
+            )
+            self.assertTrue(all(ref.source == "pdf.full_text" for ref in evidence.evidence_refs))
+            self.assertTrue(all(ref.quote for ref in evidence.evidence_refs))
+            self.assertEqual(evidence.availability, "verified")
+        self.assertIn("improves accuracy", signals.claim)
+        self.assertEqual(signals.signal_evidence["claim"].availability, "verified")
+        self.assertEqual(signals.signal_evidence["claim"].page, 7)
+
+    def test_task_evidence_prefers_a_locatable_full_text_statement(self) -> None:
+        from scholarflow_api.paper_card import extract_paper_signals
+
+        signals = extract_paper_signals(
+            title="Grounded Evaluation for Visual Question Answering",
+            abstract="This paper discusses grounded evaluation.",
+            paper_text=(
+                "[PDF page 2]\n[Section: introduction]\n"
+                "We study whether visual question answering outputs remain faithful to image evidence."
+            ),
+            venue="ACL",
+        )
+
+        task_evidence = signals.signal_evidence["task"]
+        self.assertEqual(task_evidence.source, "pdf.full_text")
+        self.assertEqual(task_evidence.page, 2)
+        self.assertEqual(task_evidence.availability, "verified")
+
+    def test_legacy_pdf_signal_evidence_is_hydrated_as_verified(self) -> None:
+        from scholarflow_api.schemas import SignalEvidence
+
+        evidence = SignalEvidence.model_validate(
+            {
+                "field": "method",
+                "canonical_value": "grounded intervention",
+                "raw_value": "We propose a grounded intervention.",
+                "source": "pdf.full_text",
+                "section": "method",
+                "page": 4,
+                "quote": "We propose a grounded intervention.",
+                "confidence": "high",
+                "validation_errors": [],
+            }
+        )
+
+        self.assertEqual(evidence.availability, "verified")
 
     def test_legomem_full_text_produces_research_facing_signals_and_sections(self) -> None:
         from scholarflow_api.paper_card import generate_deep_paper_card
@@ -220,7 +362,8 @@ LEGOMem to open-ended environments and tool ecosystems.
         self.assertIn("Synapse", card.signals.baseline)
         self.assertIn("AWM", card.signals.baseline)
         self.assertIn("stateless", card.signals.prior_work_limitation)
-        self.assertIn("Future work", card.signals.limitation)
+        self.assertEqual(card.signals.limitation, "")
+        self.assertIn("limitation", card.signals.missing_signals)
         self.assertNotIn("memory-less team fails", card.signals.limitation)
 
         rendered_sections = "\n".join(section.content for section in card.sections)
@@ -526,6 +669,8 @@ LEGOMem to open-ended environments and tool ecosystems.
         self.assertEqual(signals.contribution_type, "method")
         self.assertIn("First Logit Boosting", signals.method)
         self.assertNotIn("several approaches", signals.method)
+        self.assertEqual(signals.signal_evidence["method"].source, "pdf.full_text")
+        self.assertEqual(signals.signal_evidence["method"].page, 4)
         self.assertIn("We show that FLB reduces", signals.claim)
         self.assertNotIn("Existing retraining methods", signals.claim)
         self.assertEqual(signals.baseline, "Baseline evidence: LLaVA-1.5, InstructBLIP, GPT-4V")
@@ -979,7 +1124,9 @@ LEGOMem to open-ended environments and tool ecosystems.
         self.assertIn("network timeout", serialized["full_text"]["error"])
         section_contents = [section["content"] for section in serialized["sections"]]
         self.assertEqual(len(section_contents), 12)
-        self.assertEqual(len(set(section_contents)), 12)
+        self.assertTrue(any(not content for content in section_contents))
+        self.assertTrue(all("已解析材料" not in content for content in section_contents))
+        self.assertTrue(all("无法判断" not in content for content in section_contents))
         self.assertTrue(all("证据边界（abstract_only）" not in content for content in section_contents))
 
     def test_paper_card_endpoint_auto_fetches_pdf_and_persists_truthful_failure_state(self) -> None:

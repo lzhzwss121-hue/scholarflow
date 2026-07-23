@@ -1792,13 +1792,16 @@ function buildWorkflowSteps(input: {
           ? input.researchDecision?.experiment?.anchor_paper_title
             ? "实验硬约束尚未满足"
             : "缺少可复现 anchor"
+          : experimentStatus === "partial"
+            ? "科研锚点已核验，执行参数尚未补齐"
           : input.researchDecision
             ? "已生成实验计划"
             : "检查 anchor 后生成计划",
       status: resolveStepStatus({
         blocked: !hasProject || input.apiStatus === "offline" || experimentStatus === "blocked",
         running: input.decisionBusy,
-        complete: Boolean(experimentStatus && experimentStatus !== "blocked"),
+        partial: experimentStatus === "partial",
+        complete: experimentStatus === "ready",
       }),
       warnings: input.researchDecision?.experiment?.unblock_suggestions ?? [],
       errors: [],
@@ -1814,13 +1817,18 @@ function isDecisionEvidencePartial(decision: ApiResearchDecisionResponse | null)
   if (!quality) {
     return false;
   }
-  const gapEvidenceCount = Number(quality.gap_evidence_paper_count ?? 0);
-  const threshold = Number(quality.minimum_gap_evidence_threshold ?? 5);
-  const fullTextCount = Number(quality.full_text_card_count ?? 0);
-  const limitedEvidenceCount = Number(quality.abstract_only_card_count ?? 0) + Number(quality.metadata_only_card_count ?? 0);
+  const groundedCount = Number(quality.grounded_gap_evidence_count ?? 0);
+  const specificCount = Number(quality.specific_gap_evidence_count ?? 0);
+  const corroboratedCount = Number(quality.corroborated_gap_group_count ?? 0);
+  const conflictedCount = Number(quality.conflicted_gap_group_count ?? 0);
   return (
-    (Number.isFinite(gapEvidenceCount) && Number.isFinite(threshold) && gapEvidenceCount < threshold) ||
-    (Number.isFinite(limitedEvidenceCount) && limitedEvidenceCount > 0 && (!Number.isFinite(fullTextCount) || fullTextCount === 0))
+    !Number.isFinite(groundedCount) ||
+    groundedCount < 2 ||
+    !Number.isFinite(specificCount) ||
+    specificCount < 2 ||
+    !Number.isFinite(corroboratedCount) ||
+    corroboratedCount < 1 ||
+    (Number.isFinite(conflictedCount) && conflictedCount > 0)
   );
 }
 

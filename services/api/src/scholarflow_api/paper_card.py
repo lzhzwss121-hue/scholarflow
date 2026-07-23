@@ -17,6 +17,21 @@ class PaperCardSection:
 
 
 @dataclass
+class SignalEvidenceRef:
+    canonical_value: str
+    raw_value: str
+    source: str
+    section: str
+    page: int | None
+    quote: str
+    confidence: str
+    validation_errors: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class SignalEvidence:
     field: str
     canonical_value: str
@@ -27,6 +42,8 @@ class SignalEvidence:
     quote: str
     confidence: str
     validation_errors: list[str] = field(default_factory=list)
+    evidence_refs: list[SignalEvidenceRef] = field(default_factory=list)
+    availability: str = "partial"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -104,6 +121,11 @@ def generate_deep_paper_card(paper: dict[str, Any], extra_context: str = "") -> 
     minimal_reproduction = build_minimal_reproduction(signals, title)
     counterexample = build_counterexample(signals, focus)
     follow_up = build_follow_up_idea(signals, focus)
+    if evidence_level == "metadata_only":
+        weakest_assumption = ""
+        minimal_reproduction = ""
+        counterexample = ""
+        follow_up = ""
 
     sections = apply_evidence_boundary_to_sections(
         [
@@ -418,25 +440,14 @@ def apply_evidence_boundary_to_sections(
     paper_title: str,
 ) -> list[PaperCardSection]:
     if evidence_level == "metadata_only":
-        prompts = {
-            "research_problem": "需要补充 abstract 后确认论文实际研究问题、背景与价值。",
-            "prior_work": "需要原文 related work 或 abstract 才能判断已有研究不足。",
-            "author_reasoning": "没有作者动机或失败模式原文，不能重建作者思考路径。",
-            "intuition": "没有 method/claim 原文，不能概括核心 intuition。",
-            "method_pipeline": "需要 PDF 方法段后再拆解 input、processing 与 output。",
-            "math_theory": "没有公式、目标函数或方法描述，不能生成数学解释。",
-            "experiment_logic": "需要 dataset、metric、baseline 与 claim 原文后判断实验闭环。",
-            "takeaways": "当前只能记录标题线索，不能形成论文级 take-away。",
-            "weakest_assumption": "没有 claim/limitation/dataset/metric 原文，无法判断最脆弱假设。",
-            "minimal_reproduction": "缺少可验证 anchor，本节保持 blocked。",
-            "counterexample": "没有可测试 claim，不能为该论文设计反例。",
-            "follow_up": "没有 limitation/claim/evaluation 证据，不提出论文专属 follow-up。",
-        }
+        # Keep the only available paper-specific signal (the title) in the
+        # research-problem section. Evidence diagnostics belong to the card
+        # boundary/checklist, not in twelve pseudo-research paragraphs.
         return [
             PaperCardSection(
                 section.id,
                 section.title,
-                f"`{paper_title}` 当前仅有 metadata/title。{prompts.get(section.id, '需要补充原文证据后再判断。')}",
+                f"`{paper_title}`" if section.id == "research_problem" else "",
             )
             for section in sections
         ]
@@ -482,7 +493,13 @@ def extract_paper_signals(title: str, abstract: str, paper_text: str = "", venue
         contribution_body,
         venue,
     )
-    task = extract_task_signal(title, abstract, combined, contribution_type)
+    task, task_evidence = extract_task_signal_from_segments(
+        segments,
+        title,
+        abstract,
+        combined,
+        contribution_type,
+    )
     method, method_evidence = extract_method_signal_from_segments(segments, contribution_type)
     dataset, dataset_evidence = extract_named_signal_from_segments(
         segments,
@@ -505,6 +522,7 @@ def extract_paper_signals(title: str, abstract: str, paper_text: str = "", venue
     signal_evidence = {
         field_name: evidence
         for field_name, evidence in [
+            ("task", task_evidence),
             ("method", method_evidence),
             ("dataset", dataset_evidence),
             ("metric", metric_evidence),
@@ -663,7 +681,7 @@ def extract_method_signal_from_segments(
             segment, sentence = hit
             value = f"评测/benchmark 构造方法：{sentence}"
             return value, make_signal_evidence("method", value, sentence, segment)
-    return insufficient("摘要/正文中没有抽到明确方法机制、模型结构、训练策略或评测协议"), None
+    return "", None
 
 
 def extract_named_signal_from_segments(
@@ -674,9 +692,8 @@ def extract_named_signal_from_segments(
     *,
     context_markers: list[str],
 ) -> tuple[str, SignalEvidence | None]:
-    found: list[str] = []
-    raw_found: list[str] = []
-    first_hit: tuple[EvidenceSegment, str] | None = None
+    matches_by_key: dict[str, tuple[int, int, SignalEvidenceRef]] = {}
+    match_order = 0
     for segment in segments:
         if segment.source == "metadata.title" or segment.section in {"references", "related_work", "front_matter"}:
             continue
@@ -705,26 +722,46 @@ def extract_named_signal_from_segments(
             dynamic_matches = extract_dynamic_dataset_names(sentence) if field_name == "dataset" else []
             if not sentence_matches and not dynamic_matches:
                 continue
-            if first_hit is None:
-                first_hit = (segment, sentence)
             for canonical, raw_value in sentence_matches:
-                found.append(canonical)
-                raw_found.append(raw_value)
+                ref = make_signal_evidence_ref(canonical, raw_value, segment, quote=sentence)
+                key = canonical.casefold()
+                current = matches_by_key.get(key)
+                priority = signal_source_priority(segment.source)
+                if current is None or priority > current[0]:
+                    matches_by_key[key] = (priority, match_order, ref)
+                match_order += 1
             for dynamic_value in dynamic_matches:
-                if not any(dynamic_value.lower() == value.lower() for value in found):
-                    found.append(dynamic_value)
-                    raw_found.append(dynamic_value)
-    canonical_values = unique_preserve_order(found)
-    if not canonical_values or first_hit is None:
-        return insufficient(missing_reason), None
-    value = ", ".join(canonical_values)
-    segment, quote = first_hit
+                ref = make_signal_evidence_ref(dynamic_value, dynamic_value, segment, quote=sentence)
+                key = dynamic_value.casefold()
+                current = matches_by_key.get(key)
+                priority = signal_source_priority(segment.source)
+                if current is None or priority > current[0]:
+                    matches_by_key[key] = (priority, match_order, ref)
+                match_order += 1
+    ordered_matches = sorted(matches_by_key.values(), key=lambda item: item[1])
+    evidence_refs = [item[2] for item in ordered_matches]
+    if not evidence_refs:
+        return "", None
+    value = ", ".join(ref.canonical_value for ref in evidence_refs)
+    primary_ref = max(
+        evidence_refs,
+        key=lambda ref: (
+            signal_source_priority(ref.source),
+            1 if ref.page is not None else 0,
+        ),
+    )
     evidence = make_signal_evidence(
         field_name,
         value,
-        ", ".join(unique_preserve_order(raw_found)),
-        segment,
-        quote=quote,
+        ", ".join(ref.raw_value for ref in evidence_refs),
+        EvidenceSegment(
+            source=primary_ref.source,
+            section=primary_ref.section,
+            page=primary_ref.page,
+            text=primary_ref.quote,
+        ),
+        quote=primary_ref.quote,
+        evidence_refs=evidence_refs,
     )
     return value, evidence
 
@@ -748,6 +785,12 @@ def extract_dynamic_dataset_names(sentence: str) -> list[str]:
         "various benchmarks",
         "various datasets",
     }
+    resource_pattern = re.compile(
+        r"\b(?:gpu|gpus|a100|h100|v100|tpu|cuda|cpu|cpus|gb|gib|"
+        r"batch(?:\s+size)?|epochs?|learning\s+rate|parameters?|flops?|"
+        r"nodes?|machines?|servers?|workers?)\b",
+        flags=re.IGNORECASE,
+    )
     values: list[str] = []
     for pattern in patterns:
         match = re.search(pattern, sentence, flags=re.IGNORECASE)
@@ -770,6 +813,8 @@ def extract_dynamic_dataset_names(sentence: str) -> list[str]:
                 or len(cleaned) > 64
                 or len(cleaned.split()) > 5
                 or not re.search(r"[A-Z0-9-]", cleaned)
+                or resource_pattern.search(cleaned)
+                or re.fullmatch(r"\d+(?:\.\d+)?\s*[A-Za-z0-9-]+", cleaned)
             ):
                 continue
             values.append(cleaned)
@@ -800,32 +845,50 @@ def extract_baseline_signal_from_segments(
                 quote = sentence_containing_offset(segment.text, match.start())
                 canonical_value = ", ".join(baseline_names)
                 value = f"Baseline evidence: {canonical_value}"
+                evidence_refs = [
+                    make_signal_evidence_ref(
+                        baseline_name,
+                        baseline_name,
+                        segment,
+                        quote=quote,
+                    )
+                    for baseline_name in baseline_names
+                ]
                 return value, make_signal_evidence(
                     "baseline",
                     value,
                     canonical_value,
                     segment,
                     quote=quote,
+                    evidence_refs=evidence_refs,
                 )
-    return insufficient("未发现 Baseline:, compared with, outperform, vs. 或 comparison 等对照信号"), None
+    return "", None
 
 
 def extract_claim_signal_from_segments(
     segments: list[EvidenceSegment],
     title: str,
 ) -> tuple[str, SignalEvidence | None]:
+    for segment in segments:
+        if segment.section not in {"abstract", "experiments", "results", "conclusion", "unknown"}:
+            continue
+        for sentence in split_sentences(segment.text):
+            if not re.match(r"^\s*claim\s*[:：]\s*\S+", sentence, flags=re.IGNORECASE):
+                continue
+            value = f"核心 claim 证据：{sentence}"
+            return value, make_signal_evidence("claim", value, sentence, segment)
     hit = find_ranked_own_sentence(
         segments,
         purpose="claim",
-        allowed_sections={"abstract", "results", "conclusion", "unknown"},
+        allowed_sections={"abstract", "experiments", "results", "conclusion", "unknown"},
     )
     if hit:
         segment, sentence = hit
         value = f"核心 claim 证据：{sentence}"
         return value, make_signal_evidence("claim", value, sentence, segment)
     if "?" in title:
-        return insufficient("标题更像研究问题，摘要/正文未给出明确结论型 claim"), None
-    return insufficient("未发现 we show/demonstrate/outperform/improve 等明确 claim 句"), None
+        return "", None
+    return "", None
 
 
 def extract_own_limitation_signal(
@@ -834,7 +897,8 @@ def extract_own_limitation_signal(
     for segment in segments:
         if segment.section not in {"abstract", "limitations", "results", "conclusion", "unknown"}:
             continue
-        for sentence in split_sentences(segment.text):
+        sentences = split_sentences(segment.text)
+        for index, sentence in enumerate(sentences):
             lower = sentence.lower()
             resolution_statement = bool(
                 re.search(
@@ -862,7 +926,6 @@ def extract_own_limitation_signal(
                     "we do not",
                     "failure",
                     "fails",
-                    "future work",
                     "challenge",
                 ]
             )
@@ -877,10 +940,55 @@ def extract_own_limitation_signal(
                     lower,
                 )
             )
-            if explicit_section or owned_statement or explicit_limitation or explicit_failure:
-                value = f"本论文自身局限：{sentence}"
-                return value, make_signal_evidence("limitation", value, sentence, segment)
-    return insufficient("未发现本论文作者明确承认的 limitation、failure case 或 future work"), None
+            if not (explicit_section or owned_statement or explicit_limitation or explicit_failure):
+                continue
+            quote = sentence
+            if is_generic_limitation_lead(sentence):
+                follow_ups = [
+                    candidate
+                    for candidate in sentences[index + 1 : index + 3]
+                    if is_specific_limitation_sentence(candidate)
+                ]
+                if not follow_ups:
+                    continue
+                quote = normalize_space(" ".join([sentence, *follow_ups]))
+            elif not is_specific_limitation_sentence(sentence):
+                continue
+            value = f"本论文自身局限：{quote}"
+            return value, make_signal_evidence("limitation", value, quote, segment, quote=quote)
+    return "", None
+
+
+def is_generic_limitation_lead(sentence: str) -> bool:
+    lower = normalize_space(sentence).lower().rstrip(".;:。；：")
+    generic_patterns = [
+        r"\b(?:our|this) (?:method|approach|model|system|framework|work|paper|research)"
+        r".{0,30}\b(?:has|have|faces?|contains?|still has)\b.{0,15}\blimitations?\b$",
+        r"\b(?:there are|we identify|we acknowledge)\b.{0,20}\b(?:two|three|several|some)?\s*limitations?\b$",
+        r"\b(?:although|while|despite)\b.{0,100}\b(?:has|have|faces?)\b.{0,15}\blimitations?\b$",
+        r"\b(?:a|one|the) (?:key |main |important )?limitation remains\b$",
+    ]
+    return any(re.search(pattern, lower) for pattern in generic_patterns)
+
+
+def is_specific_limitation_sentence(sentence: str) -> bool:
+    lower = normalize_space(sentence).lower()
+    if not lower or is_generic_limitation_lead(sentence):
+        return False
+    if re.match(r"^(?:future work|in future work|we plan to|we will)\b", lower):
+        return False
+    specific_patterns = [
+        r"\blimited (?:to|by|in)\b.{3,}",
+        r"\brestricted to\b.{3,}",
+        r"\b(?:cannot|can't|unable to|fail(?:s|ed)? to|struggle(?:s|d)? to)\b.{3,}",
+        r"\b(?:does not|do not|cannot)\s+(?:support|handle|generalize|transfer|verify|cover|capture)\b.{3,}",
+        r"\bonly\s+(?:supports?|covers?|evaluates?|handles?|works? (?:for|on|with))\b.{3,}",
+        r"\b(?:suffers?|degrades?|breaks?|fails?)\s+(?:under|on|when|for|with)\b.{3,}",
+        r"\b(?:depends?|relies?)\s+(?:on|upon)\b.{3,}",
+        r"\b(?:limitation|drawback|weakness|shortcoming)\s+(?:is|comes from|lies in)\b.{3,}",
+        r"\bremains? (?:a )?(?:challenge|challenging|unresolved)\b.{3,}",
+    ]
+    return any(re.search(pattern, lower) for pattern in specific_patterns)
 
 
 def extract_prior_work_limitation_signal(
@@ -941,7 +1049,7 @@ def extract_prior_work_limitation_signal(
                     segment,
                     quote=quote,
                 )
-    return insufficient("未发现以 existing/prior/previous methods 为主语的可定位不足证据"), None
+    return "", None
 
 
 def find_segment_sentence(
@@ -972,7 +1080,18 @@ def find_ranked_own_sentence(
             r"(?<![A-Za-z0-9])(?:[A-Z][A-Z0-9-]{3,}|[A-Z][A-Za-z0-9-]*[A-Z][A-Za-z0-9-]*)(?![A-Za-z0-9])",
             title,
         )
-        if token.lower() not in {"this", "with", "from"}
+        if token.lower()
+        not in {
+            "this",
+            "with",
+            "from",
+            "vqa",
+            "llm",
+            "vlm",
+            "lvlm",
+            "mllm",
+            "clip",
+        }
     }
     ranked: list[tuple[int, int, EvidenceSegment, str]] = []
     for segment_index, segment in enumerate(segments):
@@ -980,6 +1099,8 @@ def find_ranked_own_sentence(
             continue
         for sentence in split_sentences(segment.text):
             lower = sentence.lower()
+            if purpose == "method" and is_method_configuration_sentence(sentence):
+                continue
             if re.search(
                 r"\bwe\s+(?:first\s+)?(?:introduce|present|provide|describe)\b"
                 r".{0,50}\b(?:experimental|implementation)\s+(?:setup|details?|settings?|results?)\b",
@@ -1001,7 +1122,9 @@ def find_ranked_own_sentence(
             named_method = any(
                 re.search(r"(?<![a-z0-9])" + re.escape(identifier) + r"(?![a-z0-9])", lower)
                 and re.search(
-                    r"\b(?:decomposes?|allocates?|retrieves?|represents?|uses?|enables?|supports?|consists?|comprises?)\b",
+                    r"\b(?:decomposes?|allocates?|retrieves?|suppresses?|aligns?|optimizes?|"
+                    r"intervenes?|aggregates?|routes?|updates?|stores?|selects?|generates?|"
+                    r"adapts?|enables?|consists?|comprises?)\b",
                     lower,
                 )
                 for identifier in title_identifiers
@@ -1049,7 +1172,11 @@ def find_ranked_own_sentence(
                     score += 3
                 if named_method:
                     score += 5
-                if re.search(r"\b(?:decomposes?|allocates?|retrieves?|represents?|enables?)\b", lower):
+                if re.search(
+                    r"\b(?:decomposes?|allocates?|retrieves?|suppresses?|aligns?|optimizes?|"
+                    r"intervenes?|aggregates?|routes?|updates?|stores?|selects?|generates?|adapts?|enables?)\b",
+                    lower,
+                ):
                     score += 4
                 if re.search(r"\b(?:use|employ)\b", lower):
                     score -= 2
@@ -1066,6 +1193,24 @@ def find_ranked_own_sentence(
         return None
     _score, _order, segment, sentence = max(ranked, key=lambda item: (item[0], item[1]))
     return segment, sentence
+
+
+def is_method_configuration_sentence(sentence: str) -> bool:
+    lower = normalize_space(sentence).lower()
+    configuration_patterns = [
+        r"\b(?:backbone|resolution|image size|input size|embedding dimension|hidden size)\b",
+        r"\b(?:batch size|learning rate|weight decay|epochs?|warmup|optimizer)\b",
+        r"\b(?:parameters?|flops?|fps|a100|h100|v100|tpu|cuda)\b",
+        r"\b(?:we use|we employ)\b.{0,80}\b(?:as (?:the )?(?:backbone|encoder|decoder|baseline)|for comparison)\b",
+        r"\b(?:respectively|pre-?trained|initialized from)\b",
+    ]
+    if any(re.search(pattern, lower) for pattern in configuration_patterns):
+        return True
+    numeric_tokens = re.findall(r"(?<![A-Za-z])\d+(?:\.\d+)?(?:[A-Za-z]+)?", sentence)
+    return len(numeric_tokens) >= 4 and not re.search(
+        r"\b(?:improve|reduce|outperform|achieve|gain)\b",
+        lower,
+    )
 
 
 def is_prior_work_sentence(sentence: str) -> bool:
@@ -1160,7 +1305,27 @@ def make_signal_evidence(
     segment: EvidenceSegment,
     *,
     quote: str | None = None,
+    evidence_refs: list[SignalEvidenceRef] | None = None,
 ) -> SignalEvidence:
+    refs = evidence_refs or [
+        make_signal_evidence_ref(
+            canonical_value,
+            raw_value,
+            segment,
+            quote=quote,
+        )
+    ]
+    has_validation_error = bool(
+        any(ref.validation_errors for ref in refs)
+    )
+    sources = {ref.source for ref in refs}
+    availability = (
+        "invalid"
+        if has_validation_error
+        else "verified"
+        if refs and sources == {"pdf.full_text"}
+        else "partial"
+    )
     return SignalEvidence(
         field=field_name,
         canonical_value=canonical_value,
@@ -1177,7 +1342,44 @@ def make_signal_evidence(
             else "low"
         ),
         validation_errors=[],
+        evidence_refs=refs,
+        availability=availability,
     )
+
+
+def make_signal_evidence_ref(
+    canonical_value: str,
+    raw_value: str,
+    segment: EvidenceSegment,
+    *,
+    quote: str | None = None,
+) -> SignalEvidenceRef:
+    return SignalEvidenceRef(
+        canonical_value=canonical_value,
+        raw_value=raw_value,
+        source=segment.source,
+        section=segment.section,
+        page=segment.page,
+        quote=truncate_text(quote or raw_value, 360),
+        confidence=(
+            "high"
+            if segment.source == "pdf.full_text"
+            else "medium"
+            if segment.source == "metadata.abstract"
+            else "low"
+        ),
+        validation_errors=[],
+    )
+
+
+def signal_source_priority(source: str) -> int:
+    if source == "pdf.full_text":
+        return 3
+    if source == "metadata.abstract":
+        return 2
+    if source == "metadata.title":
+        return 1
+    return 0
 
 
 def sentence_containing_offset(text: str, offset: int) -> str:
@@ -1313,6 +1515,64 @@ def extract_task_signal(title: str, abstract: str, text: str, contribution_type:
     return infer_focus(title, abstract)
 
 
+def extract_task_signal_from_segments(
+    segments: list[EvidenceSegment],
+    title: str,
+    abstract: str,
+    text: str,
+    contribution_type: str,
+) -> tuple[str, SignalEvidence | None]:
+    value = extract_task_signal(title, abstract, text, contribution_type)
+    title_terms = {
+        token
+        for token in re.findall(r"[a-z][a-z0-9-]{3,}", normalize_space(title).lower())
+        if token not in {"with", "from", "using", "towards", "through"}
+    }
+    ranked: list[tuple[int, int, EvidenceSegment, str]] = []
+    for segment_index, segment in enumerate(segments):
+        if segment.section in {"references", "related_work", "front_matter"}:
+            continue
+        for sentence in split_sentences(segment.text):
+            lower = sentence.lower()
+            explicit_task = bool(
+                re.search(
+                    r"\bwe\s+(?:study|investigate|analyze|analyse|address|tackle|evaluate|"
+                    r"examine|focus on|aim to|seek to)\b",
+                    lower,
+                )
+                or re.search(
+                    r"\bthis (?:paper|work)\s+(?:studies|investigates|analyzes|analyses|"
+                    r"addresses|evaluates|examines|focuses on)\b",
+                    lower,
+                )
+                or re.search(r"\b(?:task|problem|goal|objective)\s+(?:is|of this work|we address)\b", lower)
+            )
+            overlap = len(
+                title_terms
+                & {
+                    token
+                    for token in re.findall(r"[a-z][a-z0-9-]{3,}", lower)
+                }
+            )
+            title_for_task = segment.source == "metadata.title" and bool(
+                re.search(r"\bfor\b", lower)
+            )
+            if not explicit_task and overlap < 2 and not title_for_task:
+                continue
+            score = signal_source_priority(segment.source) * 4
+            if explicit_task:
+                score += 5
+            if segment.section in {"introduction", "abstract"}:
+                score += 2
+            if title_for_task:
+                score += 2
+            ranked.append((score, -segment_index, segment, sentence))
+    if not ranked:
+        return value, None
+    _score, _order, segment, sentence = max(ranked, key=lambda item: (item[0], item[1]))
+    return value, make_signal_evidence("task", value, sentence, segment, quote=sentence)
+
+
 def extract_method_signal(text: str, contribution_type: str) -> str:
     if contribution_type == "survey":
         return "综述/调研型贡献：主要方法应是组织、比较和归纳已有文献，而不是提出可训练模型。"
@@ -1413,6 +1673,22 @@ def has_signal(value: str) -> bool:
     return bool(normalized) and not normalized.startswith(INSUFFICIENT_PREFIX)
 
 
+def has_verified_signals(signals: PaperSignals, *fields: str) -> bool:
+    return all(
+        (evidence := signals.signal_evidence.get(field_name)) is not None
+        and evidence.availability == "verified"
+        and not evidence.validation_errors
+        for field_name in fields
+    )
+
+
+def has_any_verified_signal(signals: PaperSignals) -> bool:
+    return any(
+        evidence.availability == "verified" and not evidence.validation_errors
+        for evidence in signals.signal_evidence.values()
+    )
+
+
 def academic_signal_text(value: str) -> str:
     """Return research-facing content without extractor/debug prefixes."""
     normalized = normalize_space(value)
@@ -1475,13 +1751,11 @@ def build_prior_work_section(signals: PaperSignals) -> str:
     paragraphs: list[str] = []
     if prior_limitation:
         paragraphs.append(f"已有工作的关键不足是：{prior_limitation}")
-    else:
-        paragraphs.append("原文没有给出可独立引用的 prior-work limitation，本节不补写推测性批评。")
     if dataset and metric:
         experiment = f"论文在 `{dataset}` 上使用 `{metric}` 评估"
         if baseline:
             experiment += f"，对照 `{baseline}`"
-        paragraphs.append(f"{experiment}，用于判断所提方法是否真正缓解上述问题。")
+        paragraphs.append(f"{experiment}。")
     if own_limitation:
         paragraphs.append(f"作者明确留下的后续边界是：{own_limitation}")
     return "\n\n".join(paragraphs)
@@ -1492,8 +1766,8 @@ def build_author_reasoning_section(signals: PaperSignals) -> str:
     method = academic_signal_text(signals.method)
     claim = academic_signal_text(signals.claim)
     prior_limitation = academic_signal_text(signals.prior_work_limitation)
-    if not method:
-        return "已解析材料未定位到足够具体的方法机制，因此本节不重建作者思考路径。"
+    if not method or not has_verified_signals(signals, "method"):
+        return ""
     starting_point = prior_limitation or f"`{task}` 中尚未被稳定解决的流程问题"
     ending = f"，并以“{claim}”作为待验证结果" if claim else ""
     return (
@@ -1510,8 +1784,8 @@ def build_intuition_section(signals: PaperSignals) -> str:
     metric = primary_metric_text(signals.metric)
     baseline = academic_signal_text(signals.baseline)
     claim = academic_signal_text(signals.claim)
-    if not method:
-        return "已解析材料未定位到具体方法机制，本节不生成通用 intuition。"
+    if not method or not has_verified_signals(signals, "method"):
+        return ""
     intuition = f"核心直觉是用 `{method}` 处理 `{task}`"
     if dataset and metric:
         intuition += f"，再在 `{dataset}` 上以 `{metric}` 进行检验"
@@ -1534,12 +1808,6 @@ def render_signal_summary(signals: PaperSignals) -> str:
         f"prior_work_limitation={signals.prior_work_limitation}; type={signals.contribution_type}; "
         f"contribution_evidence={signals.contribution_evidence}; evidence_locations={locations or 'none'}"
     )
-
-
-def missing_signal_sentence(signals: PaperSignals, fields: list[str]) -> str:
-    # Missing fields are already explicit in PaperSignals. Repeating a generic
-    # boundary sentence across sections made artifacts and memories unreadable.
-    return ""
 
 
 def unique_preserve_order(values: list[str]) -> list[str]:
@@ -1594,11 +1862,8 @@ def build_method_pipeline_section(signals: PaperSignals) -> str:
     metric = primary_metric_text(signals.metric)
     baseline = academic_signal_text(signals.baseline)
     claim = academic_signal_text(signals.claim)
-    if not method:
-        return (
-            "已解析材料未定位到具体方法机制，因此本节不生成通用 pipeline。"
-            "需要从方法段补充输入、处理步骤和输出定义后再形成论文级流程。"
-        )
+    if not method or not has_verified_signals(signals, "method"):
+        return ""
     input_text = f"`{dataset}` 中面向 `{task}` 的任务实例" if dataset else f"面向 `{task}` 的任务实例"
     output_parts = []
     if metric:
@@ -1617,6 +1882,8 @@ def build_method_pipeline_section(signals: PaperSignals) -> str:
 
 def build_experiment_logic_section(signals: PaperSignals) -> str:
     if signals.contribution_type == "survey":
+        if not has_any_verified_signal(signals):
+            return ""
         return (
             "这篇论文更像 survey/review，不适合按方法论文写“复现实验”。"
             "实验层面应改为验证它的文献图谱是否完整：它覆盖了哪些范式，遗漏了哪些近三年关键 baseline，"
@@ -1637,11 +1904,8 @@ def build_experiment_logic_section(signals: PaperSignals) -> str:
         ]
         if not value
     ]
-    if missing:
-        return (
-            f"实验闭环尚缺少可定位的 `{', '.join(missing)}` 字段。"
-            "本节暂不判断实验是否支持论文主张，需回到实验设置、结果表和消融段补齐对应原文。"
-        )
+    if missing or not has_verified_signals(signals, "claim", "dataset", "metric", "baseline"):
+        return ""
     return (
         f"研究问题：`{task}` 是否被所提方法真正改善。\n"
         f"实验设置：在 `{dataset}` 上使用 `{metric}`，并与 `{baseline}` 对照。\n"
@@ -1652,6 +1916,8 @@ def build_experiment_logic_section(signals: PaperSignals) -> str:
 
 def build_takeaways_section(signals: PaperSignals, focus: str) -> str:
     if signals.contribution_type == "survey":
+        if not has_any_verified_signal(signals):
+            return ""
         return (
             "Take-away 不是复现某个模型，而是提取它的文献组织价值：它如何划分问题空间、哪些范式被认为重要、"
             "哪些失败模式仍未解决。读这类论文时要特别检查 survey 的覆盖面和分类轴是否有明确纳入规则。"
@@ -1662,14 +1928,21 @@ def build_takeaways_section(signals: PaperSignals, focus: str) -> str:
     metric = primary_metric_text(signals.metric)
     baseline = academic_signal_text(signals.baseline)
     claim = academic_signal_text(signals.claim)
-    missing = [name for name, value in [("claim", claim), ("dataset", dataset), ("metric", metric)] if not value]
-    if missing:
-        return (
-            f"已解析材料尚未同时定位 `{', '.join(missing)}`，本节不把通用任务描述包装成论文结论。"
-        )
+    missing = [
+        name
+        for name, value in [
+            ("method", method),
+            ("claim", claim),
+            ("dataset", dataset),
+            ("metric", metric),
+        ]
+        if not value
+    ]
+    if missing or not has_verified_signals(signals, "method", "claim", "dataset", "metric"):
+        return ""
     return (
         f"任务：`{task}`。\n"
-        f"方法：{method or '原文方法机制仍需进一步定位。'}\n"
+        f"方法：{method}\n"
         f"主要结论：{claim}\n"
         f"实验锚点：`{dataset}`、`{metric}`"
         + (f"、对照 `{baseline}`。" if baseline else "。")
@@ -1683,7 +1956,7 @@ def build_weakest_assumption(focus: str, signals: PaperSignals) -> str:
     metric = primary_metric_text(signals.metric)
     limitation = academic_signal_text(signals.limitation)
     missing = [name for name, value in [("claim", claim), ("dataset", dataset), ("metric", metric)] if not value]
-    if not missing:
+    if not missing and has_verified_signals(signals, "claim", "dataset", "metric"):
         if not limitation:
             return (
                 f"推断性弱假设（作者未明确陈述 limitation）：`{metric}` 在 `{dataset}` 上"
@@ -1694,9 +1967,7 @@ def build_weakest_assumption(focus: str, signals: PaperSignals) -> str:
             f"推断性弱假设：作者指出“{limitation}”。这可能使 `{metric}` 在 `{dataset}` 上"
             f"不足以支持“{claim}”，仍需结合对应实验和失败案例复核。"
         )
-    return (
-        f"已解析材料尚未定位 `{', '.join(missing)}`，本节不生成论文专属的最脆弱假设。"
-    )
+    return ""
 
 
 def build_math_section(focus: str, signals: PaperSignals) -> str:
@@ -1704,30 +1975,37 @@ def build_math_section(focus: str, signals: PaperSignals) -> str:
     method = academic_signal_text(signals.method)
     metric = primary_metric_text(signals.metric)
     claim = academic_signal_text(signals.claim)
-    if not metric and not method:
-        return (
-            "已解析材料没有定位到可解释的公式、指标或方法机制，因此本节不补写数学推导。"
-        )
-    if "agent" in focus:
+    verified_method = bool(method) and has_verified_signals(signals, "method")
+    verified_evaluation = bool(task and metric and claim) and has_verified_signals(
+        signals,
+        "task",
+        "metric",
+        "claim",
+    )
+    if not verified_method and not verified_evaluation:
+        return ""
+    if "agent" in focus and verified_method:
         return (
             f"这项工作以系统流程为核心，未把贡献建立在新的损失函数或定理上。可将 `{task}` 表示为状态转移："
             "历史任务轨迹 → 结构化程序性记忆 → 按任务或子任务检索 → 分配给协调器与任务智能体 → 执行并评价。"
             f"方法机制是：{method}"
             + (f" 主要实验量化指标为 `{metric}`。" if metric else "")
         )
-    if "hallucination" in focus or "证据" in focus or "benchmark" in focus or metric:
+    if verified_evaluation and (
+        "hallucination" in focus or "证据" in focus or "benchmark" in focus or metric
+    ):
         return (
             f"理论上先把论文目标拆成三个变量：任务对象 `{task}`、评价指标 `{metric}`、核心 claim `{claim}`。"
             "0 基础可以这样理解：平均准确率像总成绩，证据一致性、failure rate 或分层指标像解题过程；"
             "总成绩高但过程错，说明模型能力判断不可靠。若论文有公式，重点检查公式是否真的对应它声称要测的能力。"
         )
-    return (
-        "已解析材料没有表明论文依赖关键数学推导；本节应回到方法段核对变量、目标函数和理论假设。"
-    )
+    return ""
 
 
 def build_minimal_reproduction(signals: PaperSignals, title: str) -> str:
     if signals.contribution_type == "survey":
+        if not has_any_verified_signal(signals):
+            return ""
         return (
             "这篇论文更像 survey/review，不应作为一周复现实验 anchor。"
             "更合适的一周任务是：用它的分类轴抽取 10 篇候选方法/benchmark 论文，检查是否遗漏近三年关键 baseline，"
@@ -1742,18 +2020,8 @@ def build_minimal_reproduction(signals: PaperSignals, title: str) -> str:
         for name, value in [("claim", claim), ("dataset", dataset), ("metric", metric), ("baseline", baseline)]
         if not value
     ]
-    if missing:
-        checklist = "\n".join(
-            f"- [ ] 补充 {field}: {unblock_hint_for_signal(field)}"
-            for field in missing
-        )
-        return (
-            "状态：待补充实验锚点\n"
-            f"尚未定位 {', '.join(missing)}，因此暂不生成论文专属的一周复现实验。\n"
-            "补充清单：\n"
-            f"{checklist}\n"
-            "补齐后，最小复现必须同时绑定 claim + dataset + metric + baseline；否则只会退化成泛泛跑模型。"
-        )
+    if missing or not has_verified_signals(signals, "claim", "dataset", "metric", "baseline"):
+        return ""
     return (
         "状态：可进入最小复现设计\n"
         f"待检验主张：{claim}\n"
@@ -1766,28 +2034,16 @@ def build_minimal_reproduction(signals: PaperSignals, title: str) -> str:
     )
 
 
-def unblock_hint_for_signal(field: str) -> str:
-    hints = {
-        "claim": "从 introduction/abstract/results 中找到 Claim: ... 或 we show/demonstrate 句子。",
-        "dataset": "从 experiment setup 中找到 Dataset: ... 或 benchmark/subset 名称。",
-        "metric": "从 evaluation metrics 中找到 Metric: ...，至少包含论文主指标。",
-        "baseline": "从 comparisons 中找到 Baseline: ...、compared with、vs. 或 outperform 对照对象。",
-    }
-    return hints.get(field, "补充原文证据。")
-
-
 def build_counterexample(signals: PaperSignals, focus: str) -> str:
     claim = academic_signal_text(signals.claim)
     dataset = academic_signal_text(signals.dataset)
     metric = primary_metric_text(signals.metric)
-    if claim and dataset and metric:
+    if claim and dataset and metric and has_verified_signals(signals, "claim", "dataset", "metric"):
         return (
             f"待检验主张是“{claim}”。围绕 `{dataset}` 构造任务目标不变、但难度、历史轨迹质量或执行环境发生变化的样本，"
             f"继续用 `{metric}` 评估。若优势在这些设置中消失，可据此界定该主张的泛化边界。"
         )
-    return (
-        "已解析材料尚未同时定位 claim、dataset 与 metric，因此本节不生成通用反例模板。"
-    )
+    return ""
 
 
 def build_follow_up_idea(signals: PaperSignals, focus: str) -> str:
@@ -1795,10 +2051,13 @@ def build_follow_up_idea(signals: PaperSignals, focus: str) -> str:
     dataset = academic_signal_text(signals.dataset)
     metric = primary_metric_text(signals.metric)
     limitation = academic_signal_text(signals.limitation)
-    if not claim or not dataset or not metric:
-        return (
-            "已解析材料尚未同时定位 claim、dataset 与 metric，因此本节不生成论文专属 follow-up。"
-        )
+    if (
+        not claim
+        or not dataset
+        or not metric
+        or not has_verified_signals(signals, "claim", "dataset", "metric")
+    ):
+        return ""
     if not limitation:
         return (
             f"Follow-up（待验证推断）：固定原文主张“{claim}”，在 `{dataset}` 中构造"

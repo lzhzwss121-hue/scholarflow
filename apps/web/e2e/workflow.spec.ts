@@ -721,7 +721,7 @@ test("agent execute refreshes timeline artifacts and keeps partial blocked workf
                 status: "partial",
                 label: "Gap Board",
                 summary: "partial: gap evidence=1",
-                warnings: ["Gap evidence 只有 1 篇，低于 5 篇阈值。"],
+                warnings: ["只有 1 篇论文提供可定位限制证据，尚未形成跨论文一致失败模式。"],
                 errors: [],
                 artifact_refs: [],
                 updated_at: artifact.updated_at,
@@ -2355,7 +2355,9 @@ test("gap and experiment views show abstract-only evidence boundaries", async ({
     decision_status: "partial",
     evidence_quality: {
       gap_evidence_paper_count: 1,
-      minimum_gap_evidence_threshold: 5,
+      minimum_true_gap_paper_count: 2,
+      minimum_true_gap_full_text_count: 2,
+      minimum_gap_consistency_score: 0.7,
       abstract_only_card_count: 1,
       metadata_only_card_count: 0,
       full_text_card_count: 0,
@@ -2418,4 +2420,115 @@ test("gap and experiment views show abstract-only evidence boundaries", async ({
   await expect(page.getByRole("listitem").filter({ hasText: "补充 PDF 或正文方法/实验部分。" })).toBeVisible();
   await expect(page.getByText("24GB: blocked；POPE / CHAIR: ready", { exact: true })).toBeVisible();
   await expect(page.getByText("[object Object]", { exact: true })).toHaveCount(0);
+});
+
+test("experiment planner keeps verified anchors partial until execution details are known", async ({ page }) => {
+  const project = {
+    id: "project_e2e_partial_experiment",
+    title: "Partial Experiment Contract",
+    description: "verified research anchor with incomplete execution details",
+    keyword: "hallucination evaluation",
+    field: "Artificial Intelligence",
+    language: "zh-CN",
+    workflow: "survey-to-experiment",
+    stage: "experiment-planning",
+    active_session_id: "session_e2e_partial_experiment",
+    created_at: "2026-07-03T00:00:00+00:00",
+    updated_at: "2026-07-03T00:00:00+00:00",
+  };
+  const decisionPayload = {
+    gaps: [],
+    validation: {
+      idea: "Evaluate object hallucination under controlled visual evidence removal.",
+      why_not_incremental: "It isolates a concrete failure mode.",
+      difference_from_existing_work: "Uses controlled evidence removal.",
+      novelty_risk: "medium",
+      feasibility: "one-month",
+      key_risks: [],
+    },
+    experiment: {
+      status: "partial",
+      anchor_paper_id: "paper_verified_anchor",
+      anchor_paper_title: "Verified Hallucination Benchmark",
+      claim: "Test whether evidence removal increases object hallucination.",
+      dataset: "POPE",
+      baseline: "LLaVA-1.5",
+      metrics: ["accuracy", "hallucination rate"],
+      ablations: ["remove visual evidence"],
+      resources: "Research fields are verified; execution details remain unknown.",
+      timeline: ["Confirm model/API access", "Run registered evaluation"],
+      success_criterion: "A preregistered reduction in hallucination rate.",
+      failure_criterion: "Stop if the registered sample size cannot be obtained.",
+      unblock_suggestions: ["补齐执行条件 `sample_size: 未提供样本量`。"],
+      goal_alignment: {
+        status: "aligned",
+        score: 100,
+        constraint_groups: [
+          { mode: "any_of", terms: ["POPE", "CHAIR", "AMBER"], satisfied_by: ["POPE"] },
+        ],
+      },
+      readiness_checks: {
+        anchor: "ready: verified PDF evidence",
+        dataset: "ready: POPE",
+        baseline: "ready: LLaVA-1.5",
+        metric: "ready: accuracy",
+        sample_size: "unknown: 未提供样本量",
+      },
+      assumptions: ["sample_size"],
+    },
+    artifacts: [],
+    decision_status: "partial",
+    evidence_quality: {
+      grounded_gap_evidence_count: 2,
+      specific_gap_evidence_count: 2,
+      corroborated_gap_group_count: 1,
+      conflicted_gap_group_count: 0,
+      full_text_card_count: 2,
+      abstract_only_card_count: 0,
+      metadata_only_card_count: 0,
+    },
+    warnings: [],
+  };
+  const decisionArtifact = {
+    id: "artifact_e2e_partial_experiment",
+    project_id: project.id,
+    title: "experiment_plan_partial.md",
+    kind: "markdown",
+    content_markdown: "# Partial Experiment Plan",
+    content_json: JSON.stringify(decisionPayload),
+    diff: "+ partial experiment contract",
+    created_at: project.created_at,
+    updated_at: project.updated_at,
+  };
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
+  });
+  await page.route("**/projects", async (route) => {
+    await route.fulfill({ json: [project] });
+  });
+  await page.route(`**/projects/${project.id}/papers`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/timeline`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
+    await route.fulfill({ json: [artifactSummary(decisionArtifact)] });
+  });
+  await page.route("**/artifacts/artifact_e2e_partial_experiment", async (route) => {
+    await route.fulfill({ json: decisionArtifact });
+  });
+
+  await page.goto("/#experiment-planner");
+  await expect(page.getByRole("heading", { name: "科研锚点已确认，执行条件待补齐" })).toBeVisible();
+  await expect(page.getByRole("status", { name: "experiment partial reason" })).toBeVisible();
+  await expect(page.locator(".experiment-detail").getByText("partial", { exact: true })).toBeVisible();
+  await expect(page.getByText("unknown: 未提供样本量", { exact: true })).toBeVisible();
+  await expect(page.getByText(/mode: any_of/)).toBeVisible();
+
+  await page.goto("/#dashboard");
+  const experimentStep = page.locator(".workflow-step", { hasText: "Experiment Plan" });
+  await expect(experimentStep.getByText("partial", { exact: true })).toBeVisible();
+  await expect(experimentStep.getByText("科研锚点已核验，执行参数尚未补齐", { exact: true })).toBeVisible();
 });

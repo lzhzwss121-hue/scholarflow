@@ -6,7 +6,7 @@ from typing import Any
 
 from scholarflow_api.baseline_map import BaselineMap
 from scholarflow_api.evidence import EvidencePack, EvidenceSnippet, build_paper_evidence_pack
-from scholarflow_api.paper_card import PaperSignals, SignalEvidence
+from scholarflow_api.paper_card import PaperSignals, SignalEvidence, SignalEvidenceRef
 
 
 @dataclass
@@ -197,30 +197,50 @@ def append_signal_evidence_snippets(
         evidence = signal_evidence if isinstance(signal_evidence, SignalEvidence) else None
         if evidence is None or evidence.validation_errors or not evidence.quote:
             continue
-        supported.add(field)
-        snippet_id = f"signal_{field}_{'pdf' if evidence.source == 'pdf.full_text' else 'abstract'}"
-        if snippet_id in existing_ids:
-            continue
-        evidence_pack.snippets.append(
-            EvidenceSnippet(
-                id=snippet_id,
+        refs = evidence.evidence_refs or [
+            SignalEvidenceRef(
+                canonical_value=evidence.canonical_value,
+                raw_value=evidence.raw_value,
                 source=evidence.source,
-                kind={
-                    "method": "method",
-                    "claim": "evaluation",
-                    "dataset": "evaluation",
-                    "metric": "evaluation",
-                    "baseline": "evaluation",
-                    "limitation": "risk",
-                }[field],
-                text=evidence.quote[:360],
-                note=f"PaperSignals.{field} 的定位证据；section={evidence.section or 'unknown'}。",
-                confidence=evidence.confidence,
                 section=evidence.section,
                 page=evidence.page,
-            ),
-        )
-        existing_ids.add(snippet_id)
+                quote=evidence.quote,
+                confidence=evidence.confidence,
+                validation_errors=evidence.validation_errors,
+            )
+        ]
+        valid_refs = [ref for ref in refs if not ref.validation_errors and ref.quote]
+        if not valid_refs:
+            continue
+        supported.add(field)
+        for index, ref in enumerate(valid_refs):
+            source_label = "pdf" if ref.source == "pdf.full_text" else "abstract"
+            snippet_id = f"signal_{field}_{source_label}_{index + 1}"
+            if snippet_id in existing_ids:
+                continue
+            evidence_pack.snippets.append(
+                EvidenceSnippet(
+                    id=snippet_id,
+                    source=ref.source,
+                    kind={
+                        "method": "method",
+                        "claim": "evaluation",
+                        "dataset": "evaluation",
+                        "metric": "evaluation",
+                        "baseline": "evaluation",
+                        "limitation": "risk",
+                    }[field],
+                    text=ref.quote[:360],
+                    note=(
+                        f"PaperSignals.{field}={ref.canonical_value} 的定位证据；"
+                        f"section={ref.section or 'unknown'}。"
+                    ),
+                    confidence=ref.confidence,
+                    section=ref.section,
+                    page=ref.page,
+                ),
+            )
+            existing_ids.add(snippet_id)
 
     source_texts = [
         ("pdf.full_text", normalize_space(paper.get("full_text", "")), "high"),
@@ -527,6 +547,37 @@ def normalize_signal_evidence_map(value: object) -> dict[str, SignalEvidence]:
             ]
             if isinstance(item.get("validation_errors"), list)
             else [],
+            evidence_refs=[
+                SignalEvidenceRef(
+                    canonical_value=normalize_space(ref.get("canonical_value", "")),
+                    raw_value=normalize_space(ref.get("raw_value", "")),
+                    source=normalize_space(ref.get("source", "")),
+                    section=normalize_space(ref.get("section", "")),
+                    page=int(ref["page"]) if isinstance(ref.get("page"), int) else None,
+                    quote=normalize_space(ref.get("quote", "")),
+                    confidence=normalize_space(ref.get("confidence", "")) or "low",
+                    validation_errors=[
+                        normalize_space(error)
+                        for error in ref.get("validation_errors", [])
+                        if normalize_space(error)
+                    ]
+                    if isinstance(ref.get("validation_errors"), list)
+                    else [],
+                )
+                for ref in item.get("evidence_refs", [])
+                if isinstance(ref, dict)
+            ]
+            if isinstance(item.get("evidence_refs"), list)
+            else [],
+            availability=(
+                normalize_space(item.get("availability", ""))
+                or (
+                    "verified"
+                    if normalize_space(item.get("source", "")) == "pdf.full_text"
+                    and not item.get("validation_errors")
+                    else "partial"
+                )
+            ),
         )
     return output
 

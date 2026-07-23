@@ -155,6 +155,17 @@ class PaperCardSection(BaseModel):
     content: str
 
 
+class SignalEvidenceRef(BaseModel):
+    canonical_value: str = ""
+    raw_value: str = ""
+    source: str = ""
+    section: str = ""
+    page: int | None = None
+    quote: str = ""
+    confidence: str = ""
+    validation_errors: list[str] = Field(default_factory=list)
+
+
 class SignalEvidence(BaseModel):
     field: str = ""
     canonical_value: str = ""
@@ -165,6 +176,22 @@ class SignalEvidence(BaseModel):
     quote: str = ""
     confidence: str = ""
     validation_errors: list[str] = Field(default_factory=list)
+    evidence_refs: list[SignalEvidenceRef] = Field(default_factory=list)
+    availability: Literal["verified", "partial", "missing", "invalid"] = "partial"
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_legacy_availability(cls, value):
+        if not isinstance(value, dict) or value.get("availability"):
+            return value
+        normalized = dict(value)
+        if normalized.get("validation_errors"):
+            normalized["availability"] = "invalid"
+        elif normalized.get("source") == "pdf.full_text":
+            normalized["availability"] = "verified"
+        else:
+            normalized["availability"] = "partial"
+        return normalized
 
 
 class PaperSignals(BaseModel):
@@ -654,6 +681,9 @@ class GapDecision(BaseModel):
     paper_ids: list[str] = Field(default_factory=list)
     evidence_refs: list[dict[str, str]] = Field(default_factory=list)
     validation_requirements: list[str] = Field(default_factory=list)
+    gap_signature: dict[str, str] = Field(default_factory=dict)
+    consistency_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    conflict_detected: bool = False
 
 
 class IdeaValidation(BaseModel):
@@ -676,7 +706,7 @@ class DecisionIntent(BaseModel):
 
 
 class ExperimentPlan(BaseModel):
-    status: Literal["ready", "blocked"] = "ready"
+    status: Literal["ready", "partial", "blocked"] = "ready"
     anchor_paper_id: str = ""
     anchor_paper_title: str = ""
     claim: str

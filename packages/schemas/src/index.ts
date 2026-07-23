@@ -185,6 +185,19 @@ export interface ApiSignalEvidence {
   quote: string;
   confidence: string;
   validation_errors: string[];
+  evidence_refs?: ApiSignalEvidenceRef[];
+  availability?: "verified" | "partial" | "missing" | "invalid";
+}
+
+export interface ApiSignalEvidenceRef {
+  canonical_value: string;
+  raw_value: string;
+  source: string;
+  section: string;
+  page: number | null;
+  quote: string;
+  confidence: string;
+  validation_errors: string[];
 }
 
 export type ApiFullTextStatus =
@@ -451,6 +464,9 @@ export interface ApiGapDecision {
     evidence_level: string;
   }>;
   validation_requirements?: string[];
+  gap_signature?: Record<string, string>;
+  consistency_score?: number;
+  conflict_detected?: boolean;
 }
 
 export interface ApiIdeaValidation {
@@ -473,7 +489,7 @@ export interface ApiDecisionIntent {
 }
 
 export interface ApiExperimentPlan {
-  status: "ready" | "blocked";
+  status: "ready" | "partial" | "blocked";
   anchor_paper_id: string;
   anchor_paper_title: string;
   claim: string;
