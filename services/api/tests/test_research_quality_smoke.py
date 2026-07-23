@@ -583,14 +583,9 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertEqual(answer.reliability_status, "reliable")
         self.assertEqual(len(answer.hits), 1)
         self.assertIn("paper_id=paper_grounded", answer.answer)
-        self.assertEqual(
-            answer.answer_summary,
-            (
-                "当前找到 1 篇可靠命中；0 条回答证据直接来自 PDF 全文，"
-                "0 篇 Paper Card 整体达到全文级；"
-                "证据可以定位与问题直接相关的单篇陈述，但尚未形成可跨论文复核的一致结论。"
-            ),
-        )
+        self.assertIn("当前找到 1 条可定位证据", answer.answer_summary)
+        self.assertIn("0/1 篇命中论文的 Paper Card 整体达到全文级", answer.answer_summary)
+        self.assertIn("尚未形成可跨论文复核的一致结论", answer.answer_summary)
         self.assertEqual(answer.claims[0].confidence, "low")
         self.assertEqual(answer.claims[0].evidence_refs[0]["snippet_id"], "abstract_1")
         self.assertTrue(any("第二篇独立论文" in item for item in answer.unanswered_parts))
@@ -1803,6 +1798,7 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                     timeline = main_module.get_project_timeline(project.id)
 
         literature_step = next(step for step in status.steps if step.tool == "literature_search")
+        direction_step = next(step for step in status.steps if step.tool == "direction_review")
         self.assertIn(status.status, {"partial", "completed_with_warnings"})
         self.assertEqual(literature_step.status, "done")
         self.assertGreater(status.paper_count, 0)
@@ -1812,6 +1808,23 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertTrue(any(step.step_id == "experiment-planner" for step in status.workflow_steps))
         self.assertIsNotNone(status.artifact)
         self.assertEqual(int(status.summary_metrics.get("warning_count") or 0), len(status.warnings))
+        self.assertGreaterEqual(
+            int(status.summary_metrics.get("warning_count_raw") or 0),
+            int(status.summary_metrics.get("warning_count_unique") or 0),
+        )
+        self.assertIsInstance(status.summary_metrics.get("warning_groups"), list)
+        direction_coverage = direction_step.metrics.get("relevance_coverage") or {}
+        self.assertEqual(
+            int(direction_step.metrics.get("off_topic_count") or 0),
+            int(direction_coverage.get("off_topic_count") or 0),
+        )
+        self.assertIn("round_read_count", direction_step.metrics)
+        self.assertIn("total_read_count", direction_step.metrics)
+        self.assertTrue(status.queued_at)
+        self.assertTrue(status.started_at)
+        self.assertTrue(status.completed_at)
+        self.assertTrue(status.last_heartbeat)
+        self.assertEqual(status.current_tool, "")
         self.assertTrue(any(event.tool == "agent.execute" and event.status == "partial" for event in timeline))
 
     def test_agent_run_cancel_marks_planned_run_cancelled(self) -> None:

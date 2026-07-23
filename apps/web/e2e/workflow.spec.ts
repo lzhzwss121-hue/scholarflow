@@ -218,7 +218,10 @@ test("paper table uses structured relevance coverage and partial workflow status
         expanded_queries: [project.keyword],
         papers,
         artifact,
-        errors: ["openalex_cooldown:mock: mocked retrieval degradation"],
+        errors: [
+          "openalex_cooldown:mock: mocked retrieval degradation",
+          "arxiv timeout: mocked secondary source degradation",
+        ],
         relevance_coverage: {
           candidate_count: 50,
           returned_count: 1,
@@ -234,7 +237,10 @@ test("paper table uses structured relevance coverage and partial workflow status
             status: "partial",
             label: "Paper Table",
             summary: "50 candidates / 1 returned / 1 strong / 0 medium / 37 off-topic filtered",
-            warnings: ["openalex_cooldown:mock: mocked retrieval degradation"],
+            warnings: [
+              "openalex_cooldown:mock: mocked retrieval degradation",
+              "arxiv timeout: mocked secondary source degradation",
+            ],
             errors: [],
             artifact_refs: [
               {
@@ -257,10 +263,20 @@ test("paper table uses structured relevance coverage and partial workflow status
   const latestNotice = page.locator(".workflow-latest-notice");
   await expect(latestNotice).toContainText("检索使用了降级、缓存或放宽后的候选");
   await expect(latestNotice).not.toContainText("openalex_cooldown");
+  await expect(page.locator(".table-warning-summary")).toContainText("检索使用了降级、缓存或放宽后的候选");
   const warningDetails = page.locator(".table-warning-summary details");
-  await expect(warningDetails.getByText("查看技术详情", { exact: true })).toBeVisible();
-  await warningDetails.getByText("查看技术详情", { exact: true }).click();
-  await expect(warningDetails.getByText("openalex_cooldown:mock: mocked retrieval degradation", { exact: true })).toBeVisible();
+  await expect(warningDetails).toBeVisible();
+  await expect(warningDetails).not.toHaveAttribute("open", "");
+  await warningDetails.getByText("查看诊断详情", { exact: true }).click();
+  await expect(warningDetails).toContainText("外部检索源暂时限流或超时");
+  await expect(
+    page.locator(".workflow-content").getByText(/openalex_cooldown|arxiv timeout/),
+  ).toHaveCount(0);
+  await page.locator(".workflow-header").getByRole("button", { name: /研究轨迹/ }).click();
+  await expect(
+    page.locator(".workflow-inspector").getByText("openalex_cooldown:mock: mocked retrieval degradation", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "关闭研究轨迹" }).last().click();
   await expect(page.locator('.metric-card[aria-label="离题已过滤：37"]')).toBeVisible();
   await expect(page.locator('.metric-card[aria-label="弱相关已过滤：12"]')).toBeVisible();
   await expect(page.getByTestId("project-saved-paper-count")).toHaveText("项目已保存 1");
@@ -677,6 +693,10 @@ test("agent execute refreshes timeline artifacts and keeps partial blocked workf
         artifact_refs: [],
         workflow_steps: [],
         current_tool: "literature_search",
+        queued_at: "2026-07-02T00:00:00+00:00",
+        started_at: "2026-07-02T00:01:00+00:00",
+        completed_at: null,
+        last_heartbeat: "2026-07-02T00:02:00+00:00",
         updated_at: artifact.updated_at,
         steps: planSteps.map((step, index) => ({
           ...step,
@@ -701,6 +721,10 @@ test("agent execute refreshes timeline artifacts and keeps partial blocked workf
         summary_metrics: isFinal ? { paper_count: 1, warning_count: 2 } : {},
         run_status_summary: isFinal ? "partial: 2 warning(s); latest artifact count=1." : "running: literature_search.",
         current_tool: isFinal ? "" : "literature_search",
+        queued_at: "2026-07-02T00:00:00+00:00",
+        started_at: "2026-07-02T00:01:00+00:00",
+        completed_at: isFinal ? "2026-07-02T00:03:00+00:00" : null,
+        last_heartbeat: isFinal ? "2026-07-02T00:03:00+00:00" : "2026-07-02T00:02:00+00:00",
         warnings: isFinal
           ? ["Direction Review partial: relevant_read_count=1.", "Experiment Plan blocked: missing reproducible anchor."]
           : [],
@@ -749,7 +773,14 @@ test("agent execute refreshes timeline artifacts and keeps partial blocked workf
         steps: planSteps.map((step, index) => ({
           ...step,
           status: isFinal ? "done" : index === 0 ? "running" : "queued",
-          metrics: isFinal && step.tool === "research_decision" ? { experiment_status: "blocked", warning_count: 1 } : {},
+          metrics: isFinal && step.tool === "research_decision"
+            ? {
+                experiment_status: "blocked",
+                warning_count: 1,
+                warning_count_unique: 1,
+                warning_count_raw: 3,
+              }
+            : {},
         })),
       },
     });
@@ -768,6 +799,11 @@ test("agent execute refreshes timeline artifacts and keeps partial blocked workf
   await page.getByRole("button", { name: /研究轨迹/ }).click();
   await expect(page.getByTestId("workflow-timeline")).toContainText("literature_search");
   await expect(agentPanel.getByText("partial: 2 warning(s); latest artifact count=1.")).toBeVisible({ timeout: 5000 });
+  await expect(agentPanel.locator(".agent-run-time-grid")).toContainText("排队：");
+  await expect(agentPanel.locator(".agent-run-time-grid")).toContainText("启动：");
+  await expect(agentPanel.locator(".agent-run-time-grid")).toContainText("心跳：");
+  await expect(agentPanel.locator(".agent-run-time-grid")).toContainText("完成：");
+  await expect(agentPanel).toContainText("1 类警告（原始 3 条）");
   await expect(page.locator(".workflow-artifact-list").getByText("agent_run_e2e.md")).toBeVisible();
   await expect(page.locator(".workflow-step", { hasText: "Gap Board" }).locator(".workflow-status.partial")).toBeVisible();
   await expect(page.locator(".workflow-step", { hasText: "Experiment Plan" }).locator(".workflow-status.blocked")).toBeVisible();
@@ -1277,9 +1313,10 @@ test("project switch clears project-specific retrieval state", async ({ page }) 
   await page.goto("/#paper-table");
   await page.getByRole("button", { name: /重新检索/ }).click();
   await expect(page.getByTestId("current-search-returned-count")).toHaveText("当前检索返回 1");
-  const projectWarningPanel = page.locator(".table-warning-summary");
-  await projectWarningPanel.getByText("查看技术详情", { exact: true }).click();
-  await expect(projectWarningPanel.getByText(projectWarning, { exact: true })).toBeVisible();
+  await expect(page.locator(".workflow-content").getByText(projectWarning, { exact: true })).toHaveCount(0);
+  await page.locator(".workflow-header").getByRole("button", { name: /研究轨迹/ }).click();
+  await expect(page.locator(".workflow-inspector").getByText(projectWarning, { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "关闭研究轨迹" }).last().click();
 
   await page.getByLabel("项目").selectOption(projectB.id);
   await expect(page.getByTestId("project-saved-paper-count")).toHaveText("项目已保存 0");
@@ -1702,9 +1739,11 @@ test("created Chinese research workflow keeps uploaded full text after refresh a
   await expect(page.getByText(paper.title, { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: paper.title, exact: true })).toHaveAttribute("href", paper.url);
   await expect(page.getByRole("link", { name: `打开论文来源：${paper.title}` })).toHaveAttribute("href", paper.url);
-  const technicalDetails = page.locator(".table-warning-summary .research-warning-details");
-  await technicalDetails.locator("summary").click();
-  await expect(technicalDetails.getByText(/mock_api_e2e/)).toBeVisible();
+  await expect(page.locator(".table-warning-summary")).toBeVisible();
+  await expect(page.locator(".workflow-content").getByText(/mock_api_e2e/)).toHaveCount(0);
+  await page.locator(".workflow-header").getByRole("button", { name: /研究轨迹/ }).click();
+  await expect(page.locator(".workflow-inspector").getByText(/mock_api_e2e/)).toBeVisible();
+  await page.getByRole("button", { name: "关闭研究轨迹" }).last().click();
   await expect(page.locator(".workflow-step", { hasText: "Paper Table" }).getByText("partial")).toBeVisible();
   expect(artifactSummaryReads).toBeGreaterThan(0);
 
@@ -2409,8 +2448,9 @@ test("gap and experiment views show abstract-only evidence boundaries", async ({
   await page.goto("/#gap-board");
   await expect(page.getByRole("textbox", { name: "决策目标" })).toHaveValue(restoredDecisionGoal);
   await expect(page.getByText("摘要级证据，不是全文结论", { exact: true })).toBeVisible();
-  await expect(page.getByText(/保守提示：当前不是确定科研结论。Only one abstract-level benchmark card supports this gap./)).toBeVisible();
-  await expect(page.getByText("single_source · low", { exact: true })).toBeVisible();
+  await expect(page.getByText("Only one abstract-level benchmark card supports this gap.", { exact: true })).toBeVisible();
+  await expect(page.getByText("单一来源 · 低置信", { exact: true })).toBeVisible();
+  await expect(page.getByText("保守提示：当前不是确定科研结论。", { exact: true })).toHaveCount(0);
   await page.getByText("查看原文证据锚点（1）", { exact: true }).click();
   await expect(page.getByText("The current benchmark covers only a narrow answer distribution.", { exact: true })).toBeVisible();
   await expect(page.getByText("补充第二篇独立论文的同类限制证据。", { exact: true })).toBeVisible();
@@ -2418,8 +2458,11 @@ test("gap and experiment views show abstract-only evidence boundaries", async ({
   await page.goto("/#experiment-planner");
   await expect(page.getByText("摘要级证据，不是全文结论", { exact: true })).toBeVisible();
   await expect(page.getByRole("listitem").filter({ hasText: "补充 PDF 或正文方法/实验部分。" })).toBeVisible();
-  await expect(page.getByText("24GB: blocked；POPE / CHAIR: ready", { exact: true })).toBeVisible();
+  await expect(page.getByRole("article", { name: "goal constraints" })).toContainText("未满足硬约束");
+  await expect(page.getByRole("article", { name: "goal constraints" })).toContainText("24GB");
+  await expect(page.getByRole("article", { name: "goal constraints" })).toContainText("POPE / CHAIR");
   await expect(page.getByText("[object Object]", { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/hard_constraint_checks|goal_alignment|blocked:/)).toHaveCount(0);
 });
 
 test("experiment planner keeps verified anchors partial until execution details are known", async ({ page }) => {
@@ -2520,12 +2563,30 @@ test("experiment planner keeps verified anchors partial until execution details 
     await route.fulfill({ json: decisionArtifact });
   });
 
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/#experiment-planner");
   await expect(page.getByRole("heading", { name: "科研锚点已确认，执行条件待补齐" })).toBeVisible();
-  await expect(page.getByRole("status", { name: "experiment partial reason" })).toBeVisible();
-  await expect(page.locator(".experiment-detail").getByText("partial", { exact: true })).toBeVisible();
-  await expect(page.getByText("unknown: 未提供样本量", { exact: true })).toBeVisible();
-  await expect(page.getByText(/mode: any_of/)).toBeVisible();
+  await expect(page.getByRole("status", { name: "experiment plan notice" })).toBeVisible();
+  await expect(page.locator(".experiment-status-badge")).toHaveText("待补执行条件");
+  const sampleSizeCheck = page.locator(".experiment-check-list li", { hasText: "样本量" });
+  await expect(sampleSizeCheck).toContainText("待补充");
+  await expect(sampleSizeCheck).toContainText("未提供样本量");
+  await expect(page.getByText("必需约束 · 任一满足", { exact: true })).toBeVisible();
+  await expect(page.getByText(/mode: any_of|unknown:|constraint_groups/)).toHaveCount(0);
+
+  const informationGroups = page.locator(".experiment-information-group");
+  await expect(informationGroups).toHaveCount(3);
+  const firstGroup = await informationGroups.nth(0).boundingBox();
+  const secondGroup = await informationGroups.nth(1).boundingBox();
+  expect(firstGroup).not.toBeNull();
+  expect(secondGroup).not.toBeNull();
+  expect(Math.abs((firstGroup?.x ?? 0) - (secondGroup?.x ?? 0))).toBeLessThanOrEqual(2);
+  expect(secondGroup?.y ?? 0).toBeGreaterThan((firstGroup?.y ?? 0) + (firstGroup?.height ?? 0) - 1);
+  const overflow = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 1);
 
   await page.goto("/#dashboard");
   const experimentStep = page.locator(".workflow-step", { hasText: "Experiment Plan" });

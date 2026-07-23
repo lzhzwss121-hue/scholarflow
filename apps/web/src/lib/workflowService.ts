@@ -726,9 +726,13 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
         artifact_refs: result.artifact_refs ?? [],
         workflow_steps: result.workflow_steps ?? [],
         run_status_summary: result.run_status_summary,
-        current_tool: result.steps.find((step) => step.status === "running")?.tool ?? "",
+        current_tool: result.current_tool ?? result.steps.find((step) => step.status === "running")?.tool ?? "",
         paper_count: result.paper_count,
         artifact: result.artifact,
+        queued_at: result.queued_at,
+        started_at: result.started_at,
+        completed_at: result.completed_at,
+        last_heartbeat: result.last_heartbeat,
         updated_at: result.updated_at ?? new Date().toISOString(),
       });
       await refreshAgentProjectResources(agentPlan.project_id);

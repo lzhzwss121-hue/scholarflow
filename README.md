@@ -127,6 +127,8 @@ Direction Review 和单篇 Paper Card 会优先尝试解析 arXiv/OpenAlex 提�
 
 阅读页会在 12 段正文前显示一张简洁的 Research Decision Brief，集中呈现研究任务、核心方法、主要主张、当前证据可用程度和建议下一步。`abstract_only` 只能标为“仅作选读线索”；只有绑定全文且核心 signals 已抽取时才显示“可进入人工核验”，仍不表示系统已经验证论文结论。
 
+任务、方法、数据集、指标、基线、主张和局限分别显示 `全文`、`摘要`、`缺失` 或 `异常`，证据等级按字段计算，不再用整张卡片的单一标签覆盖所有字段。移动端使用单列 12 段目录与受限正文宽度，证据缺口集中在页面顶部和折叠清单中，不会在每段正文重复。
+
 ### 5. Research Sight 科研判断
 
 ScholarFlow 不只整理摘要，还会生成一份启发式科研判断草稿。Research Sight 关注四个维度，但其结论仍需用户回到原文核验：
@@ -166,6 +168,8 @@ ScholarFlow 会把已读论文转成结构化记忆，而不是依赖聊天窗�
 - 长期项目可以持续积累方向理解。
 
 网页中的“原文 RAG”和“结构化 Paper Memory”是两条独立查询通道，各自保存问题、top-k、运行状态和结果。原文 RAG 检索摘要/PDF chunk 并返回 citation；Paper Memory 检索 Paper Card 与 ResearchSight。执行其中一种查询不会覆盖另一种查询的输入或已恢复结果。
+
+中文长问题会先拆成“科研检索式、回答约束、指定回答维度”三部分。类似“请只返回可定位证据、分别说明、不要总结、当前项目中”的表达只控制答案，不会再生成“请只、只返、回可、可定”一类无意义检索词。`dataset`、`metric`、`failure_mode`、`baseline` 等指定维度会分别寻找原文证据；缺失维度进入 `unanswered_parts`，不会由主题相似度自动补成结论。接口会返回 `scientific_query`、`answer_constraints`、`requested_facets`，Memory 还会返回 `covered_facets`、`missing_facets` 和 `facet_status`，网页按维度展示覆盖情况。
 
 #### RAG 第一阶段：可追溯原文索引
 
@@ -304,6 +308,8 @@ Gap Board 用于整理研究空白和潜在方向。它不会简单输出“可�
 
 每条可定位 limitation 会被整理为 `failure_mode`、`affected_capability`、`condition`、`consequence`、`evaluation_context`、`dataset_or_slice`、`metric_or_observation` 和 `source_level`。系统使用 complete-link 方式聚类，避免仅因 A 接近 B、B 接近 C 就把 A 与 C 合并。只有同一具体失败模式得到至少 2 篇独立论文、2 条 PDF 全文证据支持，组内最低一致性不低于 `0.70` 且没有直接冲突时，才会标记为 `true_gap`；其他结果保持 `engineering_gap` 或 `pseudo_gap`。
 
+网页使用中文科研标签展示空白类型、证据支持状态、置信度与一致性。证据降级说明只在顶部出现一次；原文锚点和升级条件默认折叠，避免技术诊断与科研结论混在同一阅读层。
+
 ### 8. Experiment Plan
 
 Experiment Plan 会从论文中选择适合复现的 anchor paper，并按照用户给出的时间约束生成计划；未指定时间时不会自动假设“一周”。它不会替用户下载数据集、运行训练或验证实验结果。
@@ -317,6 +323,8 @@ Experiment Plan 会从论文中选择适合复现的 anchor paper，并按照用
 - 非 survey、非 review、非 overview。
 
 计划状态分为 `ready`、`partial`、`blocked`：缺少合格 anchor 或违反目标硬约束时为 `blocked`；科研锚点完整但代码/API、精确模型版本、样本量、seed、运行协议、算力、资源预算或成功/停止阈值仍未知时为 `partial`；只有全部执行检查明确时才是 `ready`。类似“POPE、CHAIR 或 AMBER”会按 `any_of` 处理，命中组内一项即可；普通硬约束按 `all_of` 校验。系统不会用摘要字段或卡片整体的 `full_text` 标签掩盖字段级证据缺失，也不会强行生成看似完整但不可执行的实验计划。
+
+网页不会直接展开 `goal_alignment` 或 `readiness_checks` 的内部 JSON，而是整理为“科研锚点、目标约束、执行条件”三组。已确认项使用绿色，阻塞项使用红色，尚未核验项使用中性灰色；原始技术 warning 只保留在“研究轨迹”中，当前页面只显示用户可以采取行动的提示。
 
 ## 工作流
 
@@ -338,6 +346,8 @@ flowchart TD
   M --> N["检索 3-8 篇相关论文记忆"]
   N --> O["基于证据回答"]
 ```
+
+Agent 与 Direction Review 的运行状态来自后端持久化记录。响应明确区分 `queued_at`、`started_at`、`completed_at`、`current_tool` 和 `last_heartbeat`；方向工具同时返回本轮可靠阅读、累计可靠阅读、弱相关数和离题数。警告统计区分原始条数 `warning_count_raw` 与去重后的 `warning_count_unique`，并通过 `warning_groups` 给出错误类别、出现次数和示例，避免把重复上游报错误显示成多个不同问题。
 
 ## 技术架构
 

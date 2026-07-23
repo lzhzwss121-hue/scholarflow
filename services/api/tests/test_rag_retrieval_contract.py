@@ -16,6 +16,7 @@ from scholarflow_api.rag_retrieval import (
     cosine_similarity,
     matched_retrieval_anchors,
     retrieval_anchor_terms,
+    split_query_intent,
 )
 
 
@@ -60,6 +61,29 @@ def candidate(
 
 
 class RagRetrievalContractTest(unittest.TestCase):
+    def test_chinese_answer_instructions_do_not_pollute_retrieval_anchors(self) -> None:
+        question = (
+            "当前项目中请只返回可定位证据，分别说明 POPE、CHAIR 的数据集、"
+            "指标、失败模式和 baseline，不要总结。"
+        )
+
+        intent = split_query_intent(question)
+        anchors = retrieval_anchor_terms(question)
+
+        self.assertEqual(
+            intent["requested_facets"],
+            ["dataset", "metric", "failure_mode", "baseline"],
+        )
+        self.assertIn("只返回证据", intent["answer_constraints"])
+        self.assertIn("必须可定位", intent["answer_constraints"])
+        self.assertIn("不要总结", intent["answer_constraints"])
+        self.assertNotIn("当前项目中", intent["scientific_query"])
+        self.assertNotIn("请只返回", intent["scientific_query"])
+        self.assertTrue({"pope", "chair", "dataset", "metric", "failure mode", "baseline"}.issubset(anchors))
+        self.assertTrue(
+            {"请只", "只返", "返回", "回可", "可定", "定位", "证据"}.isdisjoint(anchors),
+        )
+
     def test_bilingual_concept_aliases_match_in_both_directions(self) -> None:
         english_anchors = retrieval_anchor_terms(
             "How does visual grounding reduce object hallucination?"

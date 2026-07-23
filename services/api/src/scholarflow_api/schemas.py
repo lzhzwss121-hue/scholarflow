@@ -481,6 +481,9 @@ class RagSearchHit(BaseModel):
 
 class RagSearchResponse(BaseModel):
     query: str
+    scientific_query: str = ""
+    answer_constraints: list[str] = Field(default_factory=list)
+    requested_facets: list[str] = Field(default_factory=list)
     status: Literal["complete", "partial", "no_reliable_hit", "failed"]
     retrieval_mode: Literal["hybrid", "lexical_only"]
     provider: str = ""
@@ -658,6 +661,10 @@ class DirectionReviewRunStatusResponse(BaseModel):
     message: str
     notices: list[WorkflowNoticeMessage] = Field(default_factory=list)
     result: DirectionReviewResponse | None = None
+    queued_at: str = ""
+    started_at: str = ""
+    current_tool: str = ""
+    last_heartbeat: str = ""
     created_at: str
     updated_at: str
     completed_at: str | None = None
@@ -778,6 +785,7 @@ class DirectionMemory(BaseModel):
 
 class ResearchMemoryClaim(BaseModel):
     id: str
+    facet: str = ""
     statement: str
     support_status: Literal["corroborated", "single_source", "conflicted"]
     confidence: Literal["low", "medium", "high"]
@@ -882,6 +890,11 @@ class AgentExecuteResponse(BaseModel):
     artifact_refs: list[ArtifactRef] = Field(default_factory=list)
     workflow_steps: list[WorkflowStepState] = Field(default_factory=list)
     steps: list[AgentPlanStep]
+    queued_at: str = ""
+    started_at: str = ""
+    completed_at: str | None = None
+    current_tool: str = ""
+    last_heartbeat: str = ""
     updated_at: str = ""
 
 
@@ -898,6 +911,10 @@ class AgentRunStatusResponse(BaseModel):
     papers: list[dict[str, object]] = Field(default_factory=list)
     paper_count: int = 0
     artifact: Artifact | None = None
+    queued_at: str = ""
+    started_at: str = ""
+    completed_at: str | None = None
+    last_heartbeat: str = ""
     updated_at: str
 
 

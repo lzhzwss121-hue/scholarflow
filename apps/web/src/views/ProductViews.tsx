@@ -2445,38 +2445,85 @@ export function ProductPaperReaderView({
 
           <section className="paper-signals-card">
             <div className="aside-heading compact">
-              <h2>PaperSignals（自动抽取）</h2>
-              <span>{signals ? "available" : "empty"}</span>
+              <h2>科研字段（自动抽取）</h2>
+              <span>{signals ? "已生成" : "暂无"}</span>
             </div>
             {signals ? (
               <div className="signal-chip-grid">
                 {[
-                  ["Task", signals.task],
-                  ["Method", signals.method],
-                  ["Dataset", signals.dataset],
-                  ["Metric", signals.metric],
-                  ["Baseline", signals.baseline],
-                  ["Claim", signals.claim],
-                  ["Limitation", signals.limitation],
-                ].map(([label, value], index) => (
-                  <span className={`signal-chip tone-${index}`} key={label}>
-                    <strong>{label}</strong>
-                    {value || "暂无"}
-                  </span>
-                ))}
+                  ["task", "研究任务", signals.task],
+                  ["method", "核心方法", signals.method],
+                  ["dataset", "数据集", signals.dataset],
+                  ["metric", "评估指标", signals.metric],
+                  ["baseline", "对比基线", signals.baseline],
+                  ["claim", "主要主张", signals.claim],
+                  ["limitation", "论文局限", signals.limitation],
+                ].map(([field, label, value], index) => {
+                  const source = classifySignalEvidence(signals.signal_evidence?.[field]);
+                  return (
+                    <article className={`signal-chip tone-${index}`} key={field}>
+                      <div>
+                        <strong>{label}</strong>
+                        <small data-source={source.status}>{source.label}</small>
+                      </div>
+                      <span>{formatResearchSignal(value, "未定位")}</span>
+                    </article>
+                  );
+                })}
               </div>
             ) : (
               <div className="reader-empty-state compact">
                 <FileText size={19} />
                 <div>
-                  <h3>暂无 PaperSignals</h3>
-                  <p>生成 Paper Card 后才会显示 task、method、dataset、metric 和 claim。</p>
+                  <h3>暂无科研字段</h3>
+                  <p>生成 Paper Card 后才会显示研究任务、方法、数据集、指标、基线和主要主张。</p>
                 </div>
               </div>
             )}
           </section>
         </aside>
       </section>
+    </div>
+  );
+}
+
+function classifySignalEvidence(
+  evidence: ApiSignalEvidence | undefined,
+): { label: string; status: "full_text" | "abstract_only" | "missing" | "invalid" } {
+  if (!evidence || evidence.availability === "missing") {
+    return { label: "缺失", status: "missing" };
+  }
+  if (evidence.availability === "invalid" || evidence.validation_errors.length > 0) {
+    return { label: "异常", status: "invalid" };
+  }
+  const refs = evidence.evidence_refs?.length ? evidence.evidence_refs : [evidence];
+  const allFullText = refs.every(
+    (ref) => ref.source === "pdf.full_text" && ref.validation_errors.length === 0,
+  );
+  if (allFullText && evidence.availability !== "partial") {
+    return { label: "全文", status: "full_text" };
+  }
+  return { label: "摘要", status: "abstract_only" };
+}
+
+function PaperSignalDetail({
+  evidence,
+  label,
+  value,
+}: {
+  evidence: ApiSignalEvidence | undefined;
+  label: string;
+  value: string | undefined;
+}) {
+  const source = classifySignalEvidence(evidence);
+  return (
+    <div className="paper-signal-detail">
+      <div className="paper-signal-field-head">
+        <strong>{label}</strong>
+        <small data-source={source.status}>{source.label}</small>
+      </div>
+      <span>{formatResearchSignal(value, "未定位")}</span>
+      <small className="critique-evidence-note">{formatSignalEvidenceLocation(evidence)}</small>
     </div>
   );
 }
@@ -2497,24 +2544,6 @@ function buildPaperDecisionBrief(card: ApiPaperCard | null): {
   const useful = (value: string | undefined, fallback: string) => {
     return formatResearchSignal(value, fallback);
   };
-  const classifyEvidence = (
-    evidence: ApiSignalEvidence | undefined,
-  ): { label: string; status: "full_text" | "abstract_only" | "missing" | "invalid" } => {
-    if (!evidence) {
-      return { label: "未定位", status: "missing" };
-    }
-    if (evidence.availability === "invalid" || evidence.validation_errors.length > 0) {
-      return { label: "证据异常", status: "invalid" };
-    }
-    const refs = evidence.evidence_refs?.length ? evidence.evidence_refs : [evidence];
-    const allFullText = refs.every(
-      (ref) => ref.source === "pdf.full_text" && ref.validation_errors.length === 0,
-    );
-    if (allFullText && evidence.availability !== "partial") {
-      return { label: "全文", status: "full_text" };
-    }
-    return { label: "摘要/元数据", status: "abstract_only" };
-  };
   const coreEvidence = [
     signals?.signal_evidence?.task,
     signals?.signal_evidence?.method,
@@ -2523,7 +2552,7 @@ function buildPaperDecisionBrief(card: ApiPaperCard | null): {
   const coreSignalsPresent = Boolean(
     signals && useful(signals.task, "") && useful(signals.method, "") && useful(signals.claim, ""),
   );
-  const coreEvidenceStatuses = coreEvidence.map((evidence) => classifyEvidence(evidence).status);
+  const coreEvidenceStatuses = coreEvidence.map((evidence) => classifySignalEvidence(evidence).status);
   const coreSignalsVerified = coreEvidenceStatuses.every((status) => status === "full_text");
   const readiness =
     card?.evidence_level === "full_text" && coreSignalsPresent && coreSignalsVerified
@@ -2558,20 +2587,20 @@ function buildPaperDecisionBrief(card: ApiPaperCard | null): {
       {
         label: "研究任务",
         value: useful(signals?.task, "尚未定位到明确、可检验的研究任务。"),
-        sourceLabel: classifyEvidence(signals?.signal_evidence?.task).label,
-        sourceStatus: classifyEvidence(signals?.signal_evidence?.task).status,
+        sourceLabel: classifySignalEvidence(signals?.signal_evidence?.task).label,
+        sourceStatus: classifySignalEvidence(signals?.signal_evidence?.task).status,
       },
       {
         label: "核心方法",
         value: useful(signals?.method, "尚未定位到具体方法机制。"),
-        sourceLabel: classifyEvidence(signals?.signal_evidence?.method).label,
-        sourceStatus: classifyEvidence(signals?.signal_evidence?.method).status,
+        sourceLabel: classifySignalEvidence(signals?.signal_evidence?.method).label,
+        sourceStatus: classifySignalEvidence(signals?.signal_evidence?.method).status,
       },
       {
         label: "主要主张",
         value: useful(signals?.claim, "尚未定位到论文的主要经验主张。"),
-        sourceLabel: classifyEvidence(signals?.signal_evidence?.claim).label,
-        sourceStatus: classifyEvidence(signals?.signal_evidence?.claim).status,
+        sourceLabel: classifySignalEvidence(signals?.signal_evidence?.claim).label,
+        sourceStatus: classifySignalEvidence(signals?.signal_evidence?.claim).status,
       },
     ],
     nextAction,
@@ -3347,6 +3376,14 @@ function AgentRunPanel({
                   ? `Timeline、artifacts 和 workflow steps 正在刷新${agentRunStatus.current_tool ? `；当前工具：${agentRunStatus.current_tool}` : ""}`
                   : `最终状态：${agentRunStatus.status}`}
               </span>
+              <div className="agent-run-time-grid" aria-label="agent run timestamps">
+                <span>排队：{formatArtifactDate(agentRunStatus.queued_at ?? "")}</span>
+                <span>启动：{formatArtifactDate(agentRunStatus.started_at ?? "")}</span>
+                <span>心跳：{formatArtifactDate(agentRunStatus.last_heartbeat ?? agentRunStatus.updated_at)}</span>
+                {agentRunStatus.completed_at ? (
+                  <span>完成：{formatArtifactDate(agentRunStatus.completed_at)}</span>
+                ) : null}
+              </div>
               {agentRunStatus.warnings.length ? (
                 <ul>
                   {agentRunStatus.warnings.slice(0, 3).map((warning) => (
@@ -3382,11 +3419,29 @@ function formatAgentStepMetrics(step: ApiAgentPlanStep): string {
   if (typeof metrics.experiment_status === "string") {
     fragments.push(`实验 ${metrics.experiment_status}`);
   }
-  if (typeof metrics.warning_count === "number" && metrics.warning_count > 0) {
+  if (typeof metrics.warning_count_unique === "number" && metrics.warning_count_unique > 0) {
+    const rawCount =
+      typeof metrics.warning_count_raw === "number"
+        ? metrics.warning_count_raw
+        : metrics.warning_count_unique;
+    fragments.push(
+      rawCount === metrics.warning_count_unique
+        ? `${metrics.warning_count_unique} 条警告`
+        : `${metrics.warning_count_unique} 类警告（原始 ${rawCount} 条）`,
+    );
+  } else if (typeof metrics.warning_count === "number" && metrics.warning_count > 0) {
     fragments.push(`${metrics.warning_count} 条警告`);
   }
-  if (typeof metrics.paper_count === "number") {
+  if (typeof metrics.round_read_count === "number") {
+    fragments.push(`本轮可靠阅读 ${metrics.round_read_count} 篇`);
+  } else if (typeof metrics.paper_count === "number") {
     fragments.push(`本步骤返回 ${metrics.paper_count} 篇`);
+  }
+  if (typeof metrics.total_read_count === "number") {
+    fragments.push(`累计可靠阅读 ${metrics.total_read_count} 篇`);
+  }
+  if (typeof metrics.off_topic_count === "number" && metrics.off_topic_count > 0) {
+    fragments.push(`过滤离题 ${metrics.off_topic_count} 篇`);
   }
   if (typeof metrics.gap_evidence_paper_count === "number") {
     fragments.push(`gap 证据 ${metrics.gap_evidence_paper_count} 篇`);
@@ -3702,6 +3757,11 @@ export function DirectionReviewView({
             <progress max={100} value={run.progress} />
             <div className="direction-run-progress-meta">
               <span>{run.progress}%</span>
+              <span>
+                {run.current_tool
+                  ? `当前阶段：${formatDirectionRunStage(run.current_tool as ApiDirectionReviewRunStatusResponse["stage"])}`
+                  : "当前无执行中的阶段"}
+              </span>
               <span>{run.message}</span>
               <time dateTime={run.updated_at}>{formatArtifactDate(run.updated_at)}</time>
             </div>
@@ -3742,7 +3802,7 @@ export function DirectionReviewView({
 
             <div className="direction-metric-strip" aria-label="direction review metrics">
               <div title="read：本轮已完成结构化阅读的强/中相关论文数；分母是本轮目标。">
-                <span>已结构化阅读</span>
+                <span>本轮可靠阅读</span>
                 <strong>{actualRoundCount}/{expectedRoundCount}</strong>
               </div>
               <div title="已上传或获取并成功解析全文的论文数；它不代表本轮所有论文均为全文级阅读。">
@@ -4257,43 +4317,21 @@ function DirectionPaperDetail({
           </summary>
           <div className="paper-signals-grid">
             <div>
-              <strong>任务</strong>
-              <span>{formatResearchSignal(signals.task)}</span>
-            </div>
-            <div>
               <strong>类型</strong>
-              <span>{signals.contribution_type || "unknown"}</span>
+              <span>{formatContributionType(signals.contribution_type || "")}</span>
             </div>
-            <div>
-              <strong>方法</strong>
-              <span>{formatResearchSignal(signals.method)}</span>
-              <small className="critique-evidence-note">{formatSignalEvidenceLocation(signals.signal_evidence?.method)}</small>
-            </div>
-            <div>
-              <strong>数据集</strong>
-              <span>{formatResearchSignal(signals.dataset)}</span>
-              <small className="critique-evidence-note">{formatSignalEvidenceLocation(signals.signal_evidence?.dataset)}</small>
-            </div>
-            <div>
-              <strong>指标</strong>
-              <span>{formatResearchSignal(signals.metric)}</span>
-              <small className="critique-evidence-note">{formatSignalEvidenceLocation(signals.signal_evidence?.metric)}</small>
-            </div>
-            <div>
-              <strong>Claim</strong>
-              <span>{formatResearchSignal(signals.claim)}</span>
-              <small className="critique-evidence-note">{formatSignalEvidenceLocation(signals.signal_evidence?.claim)}</small>
-            </div>
-            <div>
-              <strong>本论文自身 Limitation</strong>
-              <span>{formatResearchSignal(signals.limitation)}</span>
-              <small className="critique-evidence-note">{formatSignalEvidenceLocation(signals.signal_evidence?.limitation)}</small>
-            </div>
-            <div>
-              <strong>已有研究不足</strong>
-              <span>{formatResearchSignal(signals.prior_work_limitation)}</span>
-              <small className="critique-evidence-note">{formatSignalEvidenceLocation(signals.signal_evidence?.prior_work_limitation)}</small>
-            </div>
+            <PaperSignalDetail evidence={signals.signal_evidence?.task} label="研究任务" value={signals.task} />
+            <PaperSignalDetail evidence={signals.signal_evidence?.method} label="核心方法" value={signals.method} />
+            <PaperSignalDetail evidence={signals.signal_evidence?.dataset} label="数据集" value={signals.dataset} />
+            <PaperSignalDetail evidence={signals.signal_evidence?.metric} label="评估指标" value={signals.metric} />
+            <PaperSignalDetail evidence={signals.signal_evidence?.baseline} label="对比基线" value={signals.baseline} />
+            <PaperSignalDetail evidence={signals.signal_evidence?.claim} label="主要主张" value={signals.claim} />
+            <PaperSignalDetail evidence={signals.signal_evidence?.limitation} label="论文局限" value={signals.limitation} />
+            <PaperSignalDetail
+              evidence={signals.signal_evidence?.prior_work_limitation}
+              label="已有研究不足"
+              value={signals.prior_work_limitation}
+            />
             <div>
               <strong>未定位字段</strong>
               <span>{missingSignals.length ? missingSignals.join(", ") : "无"}</span>
@@ -4563,6 +4601,9 @@ export function ResearchMemoryView({
   const queryCoverageValue = Number(queryCoverage?.coverage ?? 0);
   const matchedQueryTerms = queryCoverage?.matched_terms ?? [];
   const missingQueryTerms = queryCoverage?.missing_terms ?? [];
+  const requestedFacets = queryCoverage?.requested_facets ?? [];
+  const coveredFacets = queryCoverage?.covered_facets ?? [];
+  const missingFacets = queryCoverage?.missing_facets ?? [];
 
   return (
     <div className="memory-stack">
@@ -4702,8 +4743,18 @@ export function ResearchMemoryView({
             {queryCoverage ? (
               <div className="memory-query-coverage" aria-label="memory query coverage">
                 <strong>本次回答覆盖范围</strong>
+                {queryCoverage.scientific_query ? (
+                  <p>实际科研检索式：{queryCoverage.scientific_query}</p>
+                ) : null}
                 <p>已覆盖：{matchedQueryTerms.join(" / ") || "无"}</p>
                 <p>未覆盖：{missingQueryTerms.join(" / ") || "无，当前问题锚点已全部覆盖"}</p>
+                {requestedFacets.length ? (
+                  <>
+                    <p>指定维度：{requestedFacets.map(formatResearchFacet).join(" / ")}</p>
+                    <p>有证据：{coveredFacets.map(formatResearchFacet).join(" / ") || "无"}</p>
+                    <p>待补证：{missingFacets.map(formatResearchFacet).join(" / ") || "无"}</p>
+                  </>
+                ) : null}
               </div>
             ) : null}
             {result.claims?.length ? (
@@ -4711,6 +4762,9 @@ export function ResearchMemoryView({
                 {result.claims.map((claim) => (
                   <article key={claim.id}>
                     <div>
+                      {claim.facet ? (
+                        <span className="memory-facet">{formatResearchFacet(claim.facet)}</span>
+                      ) : null}
                       <strong>{claim.support_status === "corroborated" ? "多篇支持" : "单篇证据"}</strong>
                       <span className={`confidence ${claim.confidence}`}>{claim.confidence}</span>
                     </div>
@@ -5010,7 +5064,7 @@ export function GapBoardView({
         <div className="decision-header">
           <div>
             <p className="section-kicker">Research Decision</p>
-            <h2>Gap / Novelty / Experiment Plan</h2>
+            <h2>研究空白与新颖性判断</h2>
           </div>
           <button
             className="secondary-command"
@@ -5029,7 +5083,7 @@ export function GapBoardView({
         {decision?.decision_intent ? (
           <div className="decision-intent-summary" aria-label="parsed decision intent">
             <strong>系统识别的目标约束</strong>
-            <span>研究类型：{decision.decision_intent.contribution_type}</span>
+            <span>研究类型：{formatContributionType(decision.decision_intent.contribution_type)}</span>
             <span>
               候选匹配术语：{decision.decision_intent.required_terms.join(" / ") || "未指定"}
             </span>
@@ -5051,10 +5105,12 @@ export function GapBoardView({
         {isGenerating ? <OperationStatusNote apiStatus={apiStatus} message={apiMessage} /> : null}
         {decision ? (
           <div className="validation-summary">
-            <strong>Idea Validation · {decisionStatus}</strong>
+            <strong>研究判断 · {formatDecisionStatus(decisionStatus)}</strong>
             <p>{decision.validation.idea}</p>
-            <span className={`risk ${decision.validation.novelty_risk}`}>{decision.validation.novelty_risk}</span>
-            <span>{decision.validation.feasibility}</span>
+            <span className={`risk ${decision.validation.novelty_risk}`}>
+              新颖性风险：{formatRiskLevel(decision.validation.novelty_risk)}
+            </span>
+            <span>实施周期：{formatFeasibility(decision.validation.feasibility)}</span>
             <span>可定位限制 {groundedGapCount}</span>
             <span>满足具体性要求 {specificGapCount}</span>
             <span>全文跨论文一致 {corroboratedGapCount} 组</span>
@@ -5067,7 +5123,7 @@ export function GapBoardView({
         <section className="partial-review-banner">
           <AlertTriangle size={18} />
           <div>
-            <strong>{decisionEvidenceBoundary?.title ?? `Gap Board · ${decisionStatus}`}</strong>
+            <strong>{decisionEvidenceBoundary?.title ?? `Gap Board · ${formatDecisionStatus(decisionStatus)}`}</strong>
             <p>
               {decisionEvidenceBoundary?.message ??
                 "上游证据不足，Idea Validation 已降级为保守版本；当前不可把 gap 当作确定性科研结论。"}
@@ -5076,7 +5132,7 @@ export function GapBoardView({
         </section>
       ) : null}
 
-      {decision?.warnings?.length ? (
+      {!decisionEvidenceBoundary && decision?.warnings?.length ? (
         <ResearchWarningPanel title="Gap Board 证据状态" warnings={decision.warnings} />
       ) : null}
 
@@ -5100,35 +5156,34 @@ export function GapBoardView({
             <article className="gap-card" key={gap.id}>
               <div className="gap-card-header">
                 <h2>{gap.title}</h2>
-                <span className={`risk ${gap.novelty_risk}`}>{gap.novelty_risk}</span>
+                <span className={`risk ${gap.novelty_risk}`}>
+                  {formatRiskLevel(gap.novelty_risk)}风险
+                </span>
               </div>
               <div className="gap-classification-row">
-                <div className={`gap-kind ${gap.kind}`}>{gap.kind}</div>
+                <div className={`gap-kind ${gap.kind}`}>{formatGapKind(gap.kind)}</div>
                 <span className={`confidence ${gap.confidence ?? "low"}`}>
-                  {gap.support_status ?? "insufficient"} · {gap.confidence ?? "low"}
+                  {formatGapSupportStatus(gap.support_status)} · {formatConfidence(gap.confidence)}
                 </span>
                 <span className="gap-consistency-score">
                   一致性 {Math.round((gap.consistency_score ?? 0) * 100)}%
                 </span>
               </div>
-              {isConservative ? (
-                <p className="gap-conservative-note">保守候选：先补齐原文证据并复核相邻工作，再决定是否投入实验。</p>
-              ) : null}
               <dl>
                 <div>
-                  <dt>Evidence</dt>
-                  <dd>{isConservative ? `保守提示：当前不是确定科研结论。${gap.evidence}` : gap.evidence}</dd>
+                  <dt>证据结论</dt>
+                  <dd>{gap.evidence}</dd>
                 </div>
                 <div>
-                  <dt>Weakness</dt>
+                  <dt>现有不足</dt>
                   <dd>{gap.weakness}</dd>
                 </div>
                 <div>
-                  <dt>Opportunity</dt>
+                  <dt>研究机会</dt>
                   <dd>{gap.opportunity}</dd>
                 </div>
                 <div>
-                  <dt>Feasibility</dt>
+                  <dt>可行性</dt>
                   <dd>{gap.feasibility}</dd>
                 </div>
               </dl>
@@ -5194,6 +5249,33 @@ export function ExperimentPlannerView({
   const isBlocked = plan?.status === "blocked";
   const isPartial = plan?.status === "partial";
   const decisionEvidenceBoundary = buildDecisionEvidenceBoundary(decision);
+  const goalConstraints = buildGoalConstraintDisplay(plan?.goal_alignment);
+  const readinessItems = buildReadinessDisplay(plan?.readiness_checks);
+  const experimentNotice = decisionEvidenceBoundary
+    ? {
+        message: decisionEvidenceBoundary.message,
+        title: decisionEvidenceBoundary.title,
+      }
+    : plan && isBlocked
+      ? {
+          message: `${
+            plan.anchor_paper_title
+              ? `锚点论文：${plan.anchor_paper_title}。`
+              : "当前没有满足主张、数据集、指标和基线要求的可验证锚点论文。"
+          }${
+            plan.unblock_suggestions[0]
+              ? ` 下一步：${plan.unblock_suggestions[0]}`
+              : " 下一步：上传关键论文 PDF 并重新生成 Paper Card。"
+          }`,
+          title: plan.anchor_paper_title ? "实验硬约束未满足" : "实验计划已阻塞",
+        }
+      : plan && isPartial
+        ? {
+            message:
+              "科研锚点已有全文定位，但代码或 API、模型版本、样本量、随机种子、资源预算或停止阈值仍待确认。",
+            title: "当前计划不能直接执行",
+          }
+        : null;
 
   return (
     <div className="view-stack">
@@ -5209,7 +5291,7 @@ export function ExperimentPlannerView({
                     : "缺少可复现实验 anchor"
                   : isPartial
                     ? "科研锚点已确认，执行条件待补齐"
-                    : "Executable Minimal Experiment"
+                    : "可执行的最小实验"
                 : "从 gap 生成实验计划"}
             </h2>
           </div>
@@ -5237,132 +5319,123 @@ export function ExperimentPlannerView({
         </section>
       ) : null}
 
-      {decisionEvidenceBoundary ? (
-        <section className="partial-review-banner">
+      {experimentNotice ? (
+        <section
+          className={isBlocked ? "experiment-blocked-banner" : "experiment-partial-banner"}
+          role="status"
+          aria-label="experiment plan notice"
+        >
           <AlertTriangle size={18} />
           <div>
-            <strong>{decisionEvidenceBoundary.title}</strong>
-            <p>{decisionEvidenceBoundary.message}</p>
+            <strong>{experimentNotice.title}</strong>
+            <p>{experimentNotice.message}</p>
           </div>
         </section>
       ) : null}
 
-      {decision?.warnings?.length ? (
+      {!experimentNotice && decision?.warnings?.length ? (
         <ResearchWarningPanel title="Experiment Plan 证据状态" warnings={decision.warnings} />
-      ) : null}
-
-      {plan && isBlocked ? (
-        <section className="experiment-blocked-banner" role="status" aria-label="experiment blocked reason">
-          <AlertTriangle size={18} />
-          <div>
-            <strong>{plan.anchor_paper_title ? "实验硬约束未满足，不会标记为 ready" : "实验计划已阻塞，不会生成伪计划"}</strong>
-            <p>
-              {plan.anchor_paper_title
-                ? `锚点论文：${plan.anchor_paper_title}。`
-                : "当前没有满足 claim + dataset + metric + baseline 的可验证锚点论文。"}
-              {plan.unblock_suggestions[0] ? ` 下一步：${plan.unblock_suggestions[0]}` : " 下一步：上传关键论文 PDF 并重新生成 Paper Card。"}
-            </p>
-          </div>
-        </section>
-      ) : null}
-
-      {plan && isPartial ? (
-        <section className="experiment-partial-banner" role="status" aria-label="experiment partial reason">
-          <AlertTriangle size={18} />
-          <div>
-            <strong>当前计划不能直接执行</strong>
-            <p>
-              claim、dataset、metric 和 baseline 已有全文锚点，但仍存在未确认的代码/API、模型版本、
-              样本量、seed、资源预算或停止阈值。
-            </p>
-          </div>
-        </section>
       ) : null}
 
       {plan ? (
         <section className={`experiment-detail ${plan.status}`}>
-          <h2>{plan.claim || (isBlocked ? "当前证据不足，无法形成可执行 claim" : "实验 claim 待补充")}</h2>
-          <dl>
+          <header className="experiment-detail-header">
             <div>
-              <dt>Status</dt>
-              <dd>{plan.status}</dd>
+              <p className="section-kicker">Minimal experiment</p>
+              <h2>{plan.claim || (isBlocked ? "尚未形成可执行实验主张" : "实验主张待补充")}</h2>
             </div>
-            <div>
-              <dt>Anchor</dt>
-              <dd>{plan.anchor_paper_title || "N/A"}</dd>
-            </div>
-            <div>
-              <dt>Dataset</dt>
-              <dd>{plan.dataset || "N/A"}</dd>
-            </div>
-            <div>
-              <dt>Baseline</dt>
-              <dd>{plan.baseline || "N/A"}</dd>
-            </div>
-            <div>
-              <dt>Metrics</dt>
-              <dd>{plan.metrics.join(", ")}</dd>
-            </div>
-            <div>
-              <dt>Ablations</dt>
-              <dd>{plan.ablations.join(" / ")}</dd>
-            </div>
-            <div>
-              <dt>Resources</dt>
-              <dd>{plan.resources}</dd>
-            </div>
-          </dl>
-          {plan.goal_alignment ? (
-            <div className="experiment-readiness" aria-label="experiment goal alignment">
-              <strong>目标对齐</strong>
+            <span className="experiment-status-badge" data-status={plan.status}>
+              {formatExperimentStatus(plan.status)}
+            </span>
+          </header>
+
+          <div className="experiment-information-grid">
+            <article className="experiment-information-group" aria-label="research anchors">
+              <header>
+                <span>01</span>
+                <div>
+                  <strong>科研锚点</strong>
+                  <small>只展示已经进入计划的论文、数据和评测对象</small>
+                </div>
+              </header>
               <dl>
-                {Object.entries(plan.goal_alignment).map(([key, value]) => (
-                  <div key={key}>
-                    <dt>{key}</dt>
-                    <dd>{formatDecisionValue(value)}</dd>
-                  </div>
-                ))}
+                <ExperimentField label="锚点论文" value={plan.anchor_paper_title} />
+                <ExperimentField label="数据集" value={plan.dataset} />
+                <ExperimentField label="对比基线" value={plan.baseline} />
+                <ExperimentField label="评估指标" value={plan.metrics.join("、")} />
+                <ExperimentField label="消融设计" value={plan.ablations.join("；")} />
               </dl>
-            </div>
-          ) : null}
-          {plan.readiness_checks ? (
-            <div className="experiment-readiness" aria-label="experiment readiness checks">
-              <strong>执行前就绪检查</strong>
+            </article>
+
+            <article className="experiment-information-group" aria-label="goal constraints">
+              <header>
+                <span>02</span>
+                <div>
+                  <strong>目标约束</strong>
+                  <small>用户指定的方法、数据集、基线和排除条件</small>
+                </div>
+              </header>
               <dl>
-                {Object.entries(plan.readiness_checks).map(([key, value]) => (
-                  <div key={key}>
-                    <dt>{key}</dt>
-                    <dd
-                      className={
-                        value.startsWith("ready:")
-                          ? "ready"
-                          : value.startsWith("not_required:")
-                            ? "not-required"
-                            : value.startsWith("blocked:")
-                              ? "blocked"
-                              : "unknown"
-                      }
-                    >
-                      {value}
-                    </dd>
-                  </div>
-                ))}
+                <div>
+                  <dt>对齐状态</dt>
+                  <dd className="constraint-status" data-status={goalConstraints.statusTone}>
+                    {goalConstraints.statusLabel}
+                  </dd>
+                </div>
+                <div>
+                  <dt>匹配得分</dt>
+                  <dd>{goalConstraints.scoreLabel}</dd>
+                </div>
+                <ExperimentField label="已满足术语" value={goalConstraints.matchedTerms.join("、")} />
+                <ExperimentField label="缺失术语" value={goalConstraints.missingTerms.join("、")} tone={goalConstraints.missingTerms.length ? "blocked" : undefined} />
+                <ExperimentField label="已满足硬约束" value={goalConstraints.matchedHardConstraints.join("、")} />
+                <ExperimentField label="未满足硬约束" value={goalConstraints.missingHardConstraints.join("、")} tone={goalConstraints.missingHardConstraints.length ? "blocked" : undefined} />
+                <ExperimentField label="对照对象" value={goalConstraints.contrastTerms.join("、")} />
+                <ExperimentField label="排除冲突" value={goalConstraints.excludedMatches.join("、")} tone={goalConstraints.excludedMatches.length ? "blocked" : undefined} />
               </dl>
-              {plan.assumptions?.length ? (
-                <>
-                  <strong>尚未验证的假设</strong>
-                  <ul>
-                    {plan.assumptions.map((assumption) => (
-                      <li key={assumption}>{assumption}</li>
-                    ))}
-                  </ul>
-                </>
+              {goalConstraints.groups.length ? (
+                <ul className="constraint-group-list">
+                  {goalConstraints.groups.map((group, index) => (
+                    <li key={`${group.label}-${index}`} data-status={group.statusTone}>
+                      <strong>{group.label}</strong>
+                      <span>{group.terms.join("、") || "未提供具体对象"}</span>
+                      <small>{group.detail}</small>
+                    </li>
+                  ))}
+                </ul>
               ) : null}
-            </div>
-          ) : null}
+            </article>
+
+            <article className="experiment-information-group" aria-label="execution conditions">
+              <header>
+                <span>03</span>
+                <div>
+                  <strong>执行条件</strong>
+                  <small>只有全部关键条件明确后才允许标记为可执行</small>
+                </div>
+              </header>
+              <p className="experiment-resource-note">{plan.resources || "尚未提供资源说明。"}</p>
+              {readinessItems.length ? (
+                <ul className="experiment-check-list">
+                  {readinessItems.map((item) => (
+                    <li key={item.key} data-status={item.status}>
+                      <div>
+                        <strong>{item.label}</strong>
+                        <span>{item.statusLabel}</span>
+                      </div>
+                      <p>{item.detail}</p>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="experiment-empty-checks">尚未生成执行条件检查。</p>
+              )}
+            </article>
+          </div>
+
           {(isBlocked || isPartial) && plan.unblock_suggestions.length ? (
             <div className="experiment-unblock">
-              <strong>Unblock Suggestions</strong>
+              <strong>下一步补齐</strong>
               <ul>
                 {plan.unblock_suggestions.map((suggestion) => (
                   <li key={suggestion}>{suggestion}</li>
@@ -5379,10 +5452,10 @@ export function ExperimentPlannerView({
           {plan.timeline.map((step, index) => {
             const isFinalStep = index === plan.timeline.length - 1;
             const item = {
-              week: `Step ${index + 1}`,
+              week: `步骤 ${index + 1}`,
               goal: step,
               deliverable: isFinalStep ? plan.success_criterion : experimentStepDeliverable(index),
-              cost: index === 0 ? "setup" : isFinalStep ? "report" : "tracked",
+              cost: index === 0 ? "环境准备" : isFinalStep ? "结果汇总" : "过程记录",
             };
             return (
               <section className="experiment-row" key={item.week}>
@@ -5401,20 +5474,260 @@ export function ExperimentPlannerView({
   );
 }
 
-function formatDecisionValue(value: unknown): string {
-  if (Array.isArray(value)) {
-    return value.length ? value.map(formatDecisionValue).join(" / ") : "无";
+function ExperimentField({
+  label,
+  tone,
+  value,
+}: {
+  label: string;
+  tone?: "blocked" | "ready" | "unknown";
+  value: string;
+}) {
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd data-status={tone}>{value || "未指定"}</dd>
+    </div>
+  );
+}
+
+type ExperimentStatusTone = "ready" | "blocked" | "unknown" | "not-required";
+
+type GoalConstraintGroupDisplay = {
+  detail: string;
+  label: string;
+  statusTone: ExperimentStatusTone;
+  terms: string[];
+};
+
+type GoalConstraintDisplay = {
+  contrastTerms: string[];
+  excludedMatches: string[];
+  groups: GoalConstraintGroupDisplay[];
+  matchedHardConstraints: string[];
+  matchedTerms: string[];
+  missingHardConstraints: string[];
+  missingTerms: string[];
+  scoreLabel: string;
+  statusLabel: string;
+  statusTone: ExperimentStatusTone;
+};
+
+type ReadinessDisplayItem = {
+  detail: string;
+  key: string;
+  label: string;
+  status: ExperimentStatusTone;
+  statusLabel: string;
+};
+
+const readinessFieldLabels: Record<string, string> = {
+  anchor: "论文锚点",
+  annotation: "人工标注",
+  baseline: "对比基线",
+  code_or_api: "代码或 API",
+  compute: "设备与算力",
+  dataset: "数据集",
+  metric: "评估指标",
+  model_version: "模型版本",
+  resource_budget: "资源预算",
+  run_protocol: "运行协议",
+  sample_size: "样本量",
+  seed: "随机种子",
+  stopping_threshold: "停止阈值",
+  success_threshold: "成功阈值",
+};
+
+function buildGoalConstraintDisplay(alignment: Record<string, unknown> | undefined): GoalConstraintDisplay {
+  const status = String(alignment?.status ?? "not_specified");
+  const score = typeof alignment?.score === "number" ? alignment.score : null;
+  const hardConstraintChecks =
+    alignment?.hard_constraint_checks &&
+    typeof alignment.hard_constraint_checks === "object" &&
+    !Array.isArray(alignment.hard_constraint_checks)
+      ? (alignment.hard_constraint_checks as Record<string, unknown>)
+      : {};
+  const derivedMatchedHardConstraints = Object.entries(hardConstraintChecks)
+    .filter(([, value]) => value === "ready")
+    .map(([label]) => label);
+  const derivedMissingHardConstraints = Object.entries(hardConstraintChecks)
+    .filter(([, value]) => value !== "ready")
+    .map(([label]) => label);
+  const groups = Array.isArray(alignment?.constraint_groups)
+    ? alignment.constraint_groups.flatMap((value, index) => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          return [];
+        }
+        const group = value as Record<string, unknown>;
+        const legacyMode = String(group.mode ?? "");
+        const operator = String(group.operator ?? (["any_of", "all_of"].includes(legacyMode) ? legacyMode : ""));
+        const requirement = ["required", "preferred"].includes(legacyMode) ? legacyMode : "required";
+        const terms = readStringList(group.values ?? group.terms);
+        const matched = readStringList(group.matched_values ?? group.satisfied_by);
+        const rawStatus = String(group.status ?? "");
+        const statusTone: ExperimentStatusTone =
+          rawStatus === "ready" || (matched.length > 0 && operator === "any_of")
+            ? "ready"
+            : rawStatus === "blocked" || rawStatus === "preferred_missing"
+              ? "blocked"
+              : "unknown";
+        const operatorLabel =
+          operator === "any_of" ? "任一满足" : operator === "all_of" ? "全部满足" : "逐项核对";
+        const requirementLabel = requirement === "preferred" ? "偏好约束" : "必需约束";
+        return [
+          {
+            detail: matched.length ? `已命中：${matched.join("、")}` : "尚未命中",
+            label: `${requirementLabel} · ${operatorLabel}`,
+            statusTone,
+            terms,
+          } satisfies GoalConstraintGroupDisplay,
+        ];
+      })
+    : [];
+  return {
+    contrastTerms: readStringList(alignment?.contrast_terms),
+    excludedMatches: readStringList(alignment?.excluded_matches),
+    groups,
+    matchedHardConstraints:
+      readStringList(alignment?.matched_hard_constraints).length > 0
+        ? readStringList(alignment?.matched_hard_constraints)
+        : derivedMatchedHardConstraints,
+    matchedTerms: readStringList(alignment?.matched_required_terms),
+    missingHardConstraints:
+      readStringList(alignment?.missing_hard_constraints).length > 0
+        ? readStringList(alignment?.missing_hard_constraints)
+        : derivedMissingHardConstraints,
+    missingTerms: readStringList(alignment?.missing_required_terms),
+    scoreLabel: score === null ? "未计算" : `${Math.round(score)} / 100`,
+    statusLabel: formatGoalAlignmentStatus(status),
+    statusTone: goalAlignmentTone(status),
+  };
+}
+
+function buildReadinessDisplay(checks: Record<string, string> | undefined): ReadinessDisplayItem[] {
+  if (!checks) {
+    return [];
   }
-  if (value === null || value === undefined || value === "") {
-    return "未指定";
+  return Object.entries(checks).map(([key, rawValue]) => {
+    const separator = rawValue.indexOf(":");
+    const rawStatus = separator >= 0 ? rawValue.slice(0, separator).trim() : "unknown";
+    const detail = separator >= 0 ? rawValue.slice(separator + 1).trim() : rawValue;
+    const status: ExperimentStatusTone =
+      rawStatus === "ready"
+        ? "ready"
+        : rawStatus === "blocked"
+          ? "blocked"
+          : rawStatus === "not_required"
+            ? "not-required"
+            : "unknown";
+    return {
+      detail: detail || "未提供说明",
+      key,
+      label: readinessFieldLabels[key] ?? "其他执行条件",
+      status,
+      statusLabel:
+        status === "ready"
+          ? "已确认"
+          : status === "blocked"
+            ? "已阻塞"
+            : status === "not-required"
+              ? "无需新增"
+              : "待补充",
+    };
+  });
+}
+
+function readStringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+}
+
+function formatExperimentStatus(status: "ready" | "partial" | "blocked"): string {
+  return status === "ready" ? "可执行" : status === "partial" ? "待补执行条件" : "已阻塞";
+}
+
+function formatGoalAlignmentStatus(status: string): string {
+  if (status === "aligned") {
+    return "目标已对齐";
   }
-  if (typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>);
-    return entries.length
-      ? entries.map(([key, nestedValue]) => `${key}: ${formatDecisionValue(nestedValue)}`).join("；")
-      : "无";
+  if (status === "mismatch") {
+    return "目标未对齐";
   }
-  return String(value);
+  if (status === "excluded") {
+    return "命中排除条件";
+  }
+  if (status === "blocked") {
+    return "缺少可核验锚点";
+  }
+  return "未指定硬约束";
+}
+
+function goalAlignmentTone(status: string): ExperimentStatusTone {
+  if (status === "aligned") {
+    return "ready";
+  }
+  if (status === "mismatch" || status === "excluded" || status === "blocked") {
+    return "blocked";
+  }
+  return "unknown";
+}
+
+function formatDecisionStatus(status: string): string {
+  return status === "complete" ? "已完成" : status === "partial" ? "证据待补" : status === "blocked" ? "已阻塞" : status;
+}
+
+function formatRiskLevel(level: string): string {
+  return level === "high" ? "高" : level === "medium" ? "中" : level === "low" ? "低" : "未评估";
+}
+
+function formatGapKind(kind: string): string {
+  return kind === "true_gap"
+    ? "跨论文研究空白"
+    : kind === "engineering_gap"
+      ? "工程改进机会"
+      : kind === "pseudo_gap"
+        ? "疑似伪空白"
+        : "待分类";
+}
+
+function formatGapSupportStatus(status: string | undefined): string {
+  return status === "corroborated"
+    ? "多论文一致"
+    : status === "conflicted"
+      ? "证据冲突"
+      : status === "single_source"
+        ? "单一来源"
+        : "证据不足";
+}
+
+function formatConfidence(confidence: string | undefined): string {
+  return confidence === "high" ? "高置信" : confidence === "medium" ? "中置信" : "低置信";
+}
+
+function formatContributionType(value: string): string {
+  const labels: Record<string, string> = {
+    analysis: "分析研究",
+    benchmark: "评测基准",
+    dataset: "数据集研究",
+    evaluation: "评测研究",
+    method: "方法研究",
+    survey: "综述研究",
+    system: "系统研究",
+    theory: "理论研究",
+  };
+  return labels[value] ?? value;
+}
+
+function formatFeasibility(value: string): string {
+  const labels: Record<string, string> = {
+    "one-day": "1 天",
+    "one-month": "约 1 个月",
+    "one-week": "约 1 周",
+    blocked: "当前阻塞",
+    partial: "仍需补充条件",
+  };
+  return labels[value] ?? value;
 }
 
 function Metric({ label, value, detail }: { label: string; value: string; detail: string }) {
@@ -5453,14 +5766,12 @@ function ResearchWarningPanel({
   title: string;
   warnings: string[];
 }) {
-  const { actionable, technical } = classifyResearchWarnings(warnings);
-  const details = [...actionable.slice(1), ...technical];
+  const { actionable } = classifyResearchWarnings(warnings);
+  const details = actionable.slice(1);
   const summary = actionable.length
     ? `${actionable[0]}${actionable.length > 1 ? ` 另有 ${actionable.length - 1} 条可行动提示已归入详情。` : ""}`
-    : technical.length
-      ? "当前步骤返回了技术诊断；请查看详情，并在必要时重试或补充本地 PDF。"
-      : fallback;
-  if (!summary && technical.length === 0) {
+    : fallback;
+  if (!summary) {
     return null;
   }
   return (
@@ -5474,7 +5785,7 @@ function ResearchWarningPanel({
         {summary ? <p>{summary}</p> : null}
         {details.length ? (
           <details className="research-warning-details">
-            <summary>查看技术详情</summary>
+            <summary>查看诊断详情</summary>
             <ul>
               {details.map((warning, index) => (
                 <li key={`${warning}-${index}`}>{warning}</li>
@@ -5619,6 +5930,17 @@ function formatDirectionRunStage(stage: ApiDirectionReviewRunStatusResponse["sta
     completed: "运行结束",
     failed: "执行失败",
   }[stage];
+}
+
+function formatResearchFacet(facet: string): string {
+  return {
+    dataset: "数据集 / benchmark",
+    metric: "评测指标",
+    failure_mode: "失败模式",
+    baseline: "对照基线",
+    method: "方法",
+    claim: "主要结论",
+  }[facet] ?? facet;
 }
 
 function formatArtifactDate(value: string) {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -9,6 +10,7 @@ from unittest.mock import patch
 from fastapi import HTTPException
 
 from scholarflow_api import main as main_module
+from scholarflow_api.api_helpers import build_warning_summary_metrics
 from scholarflow_api.database import get_connection, init_db
 from scholarflow_api.schemas import DirectionReviewRequest, DirectionReviewResponse, ProjectCreate
 
@@ -40,6 +42,58 @@ def partial_review(direction: str) -> DirectionReviewResponse:
 
 
 class Phase3WorkflowTruthfulnessContractTest(unittest.TestCase):
+    def test_existing_direction_run_table_is_migrated_with_started_at(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with sqlite3.connect(db_path) as connection:
+                connection.execute(
+                    """
+                    CREATE TABLE direction_review_runs (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        direction TEXT NOT NULL,
+                        round_index INTEGER NOT NULL DEFAULT 1,
+                        status TEXT NOT NULL DEFAULT 'queued',
+                        stage TEXT NOT NULL DEFAULT 'queued',
+                        progress INTEGER NOT NULL DEFAULT 0,
+                        message TEXT NOT NULL DEFAULT '',
+                        notices_json TEXT NOT NULL DEFAULT '[]',
+                        result_json TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        completed_at TEXT
+                    )
+                    """,
+                )
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                init_db()
+                with get_connection() as connection:
+                    columns = {
+                        row["name"]
+                        for row in connection.execute(
+                            "PRAGMA table_info(direction_review_runs)",
+                        ).fetchall()
+                    }
+
+        self.assertIn("started_at", columns)
+
+    def test_warning_metrics_keep_raw_unique_and_grouped_counts_separate(self) -> None:
+        metrics = build_warning_summary_metrics(
+            [
+                "openalex: degraded status=503",
+                "openalex: degraded status=503",
+                "PDF full text unavailable",
+            ],
+        )
+
+        self.assertEqual(metrics["warning_count_raw"], 3)
+        self.assertEqual(metrics["warning_count_unique"], 2)
+        self.assertEqual(metrics["warning_count"], 2)
+        groups = {group["code"]: group for group in metrics["warning_groups"]}
+        self.assertEqual(groups["http_503"]["count"], 2)
+        self.assertEqual(groups["pdf_unavailable"]["count"], 1)
+
     def test_direction_review_run_persists_real_stages_and_structured_notices(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "scholarflow.sqlite3"
@@ -95,6 +149,13 @@ class Phase3WorkflowTruthfulnessContractTest(unittest.TestCase):
         self.assertTrue(any(notice.severity == "info" for notice in status.notices))
         self.assertTrue(any(notice.code == "direction_review_partial" for notice in status.notices))
         self.assertTrue(any(notice.severity == "warning" for notice in status.notices))
+        self.assertEqual(started.queued_at, started.created_at)
+        self.assertEqual(started.started_at, "")
+        self.assertEqual(started.current_tool, "")
+        self.assertTrue(status.started_at)
+        self.assertTrue(status.completed_at)
+        self.assertEqual(status.current_tool, "")
+        self.assertEqual(status.last_heartbeat, status.updated_at)
 
     def test_active_direction_review_run_is_reused_instead_of_duplicated(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

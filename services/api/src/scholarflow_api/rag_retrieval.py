@@ -76,10 +76,39 @@ _CJK_QUERY_ALIASES: dict[str, tuple[str, ...]] = {
     "评测": ("evaluation",),
     "数据集": ("dataset",),
     "指标": ("metric",),
+    "基线": ("baseline",),
     "实验": ("experiment",),
     "医学": ("medical",),
     "图像": ("image",),
     "分割": ("segmentation",),
+}
+_QUERY_CONTROL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("只返回证据", re.compile(r"(?:请\s*)?(?:只|仅)\s*(?:返回|给出|提供)")),
+    ("列表输出", re.compile(r"(?:请\s*)?(?:列出|罗列)")),
+    ("按维度分别说明", re.compile(r"(?:分别说明|分别列出|逐项说明|逐项列出)")),
+    ("必须可定位", re.compile(r"(?:可定位|可追溯|能够定位到原文的?)\s*(?:原文)?证据")),
+    ("不要总结", re.compile(r"(?:请\s*)?不要\s*(?:总结|概括|扩写)")),
+    ("限定当前上下文", re.compile(r"(?:基于以上|基于上述|(?:在)?当前项目中|回答以下问题)")),
+)
+_REQUESTED_FACET_PATTERNS: dict[str, tuple[str, ...]] = {
+    "dataset": ("dataset", "benchmark", "数据集", "基准"),
+    "metric": ("metric", "metrics", "score", "指标"),
+    "failure_mode": ("failure mode", "failure case", "limitation", "失败模式", "失败案例", "局限"),
+    "baseline": ("baseline", "baselines", "control group", "基线", "对照方法"),
+    "method": ("method", "approach", "intervention", "方法", "干预"),
+    "claim": ("claim", "finding", "conclusion", "主张", "结论"),
+}
+_CJK_ANCHOR_STOP_RUNS = {
+    "以上",
+    "以下",
+    "分别",
+    "说明",
+    "返回",
+    "列出",
+    "给出",
+    "证据",
+    "问题",
+    "回答",
 }
 
 
@@ -408,14 +437,16 @@ def retrieve_project_chunks(
     refresh_embeddings: bool = True,
     provider: EmbeddingProvider | None = None,
 ) -> dict[str, Any]:
-    normalized_query = normalize_retrieval_text(query)
+    query_intent = split_query_intent(query)
+    normalized_query = normalize_retrieval_text(query_intent["scientific_query"])
     if not normalized_query:
         return _empty_retrieval_result(
             query,
             top_k,
             min_score,
-            "检索问题为空。",
+            "检索问题没有保留可识别的科研主题；请补充方法、数据集、指标或失败模式。",
             query_anchor_terms=[],
+            query_intent=query_intent,
         )
     query_terms = retrieval_terms(normalized_query)
     query_anchors = retrieval_anchor_terms(normalized_query)
@@ -460,6 +491,7 @@ def retrieve_project_chunks(
             min_score,
             "当前项目或筛选范围没有可检索的论文 chunk。",
             query_anchor_terms=query_anchors,
+            query_intent=query_intent,
         )
 
     warnings: list[str] = []
@@ -608,6 +640,9 @@ def retrieve_project_chunks(
         "returned_hits": len(selected),
         "top_k": top_k,
         "min_score": min_score,
+        "scientific_query": query_intent["scientific_query"],
+        "answer_constraints": query_intent["answer_constraints"],
+        "requested_facets": query_intent["requested_facets"],
         "query_anchor_terms": query_anchors,
         "rejected_by_relevance_gate": gated_count,
         "score_explanation": score_explanation,
@@ -647,7 +682,8 @@ def retrieval_terms(text: str, *, include_bigrams: bool = False) -> list[str]:
 
 
 def retrieval_anchor_terms(text: str) -> list[str]:
-    normalized = normalize_retrieval_text(text)
+    intent = split_query_intent(text)
+    normalized = normalize_retrieval_text(intent["scientific_query"])
     anchors: list[str] = []
     for token in _LATIN_PATTERN.findall(normalized):
         parts = [part for part in re.split(r"[-_]+", token) if part]
@@ -677,15 +713,39 @@ def retrieval_anchor_terms(text: str) -> list[str]:
                     for part in alias.split()
                     if len(part) >= 3 and part not in _RETRIEVAL_STOP_TERMS
                 )
-        elif 2 <= len(run) <= 8:
-            anchors.append(run)
-        elif len(run) > 8:
-            anchors.extend(
-                run[index : index + 2]
-                for index in range(len(run) - 1)
-                if run[index : index + 2] not in {"哪些", "如何", "当前", "论文", "研究", "方法"}
-            )
+        elif 2 <= len(run) <= 16:
+            if run not in _CJK_ANCHOR_STOP_RUNS:
+                anchors.append(run)
     return list(dict.fromkeys(anchors))
+
+
+def split_query_intent(question: str) -> dict[str, Any]:
+    """Separate scientific retrieval content from answer-format instructions."""
+    original = normalize_retrieval_text(question)
+    scientific_query = original
+    answer_constraints: list[str] = []
+    for label, pattern in _QUERY_CONTROL_PATTERNS:
+        if pattern.search(scientific_query):
+            answer_constraints.append(label)
+            scientific_query = pattern.sub(" ", scientific_query)
+    scientific_query = re.sub(
+        r"^[\s,，、:：;；。.!！？?]*(?:请问|那么|因此|并且|以及|和|与)\s*",
+        "",
+        scientific_query,
+        flags=re.IGNORECASE,
+    )
+    scientific_query = re.sub(r"[\s,，、:：;；。.!！？?]+", " ", scientific_query).strip()
+    lower = original.lower()
+    requested_facets = [
+        facet
+        for facet, markers in _REQUESTED_FACET_PATTERNS.items()
+        if any(marker in lower for marker in markers)
+    ]
+    return {
+        "scientific_query": scientific_query,
+        "answer_constraints": list(dict.fromkeys(answer_constraints)),
+        "requested_facets": requested_facets,
+    }
 
 
 def matched_retrieval_anchors(anchors: list[str], document: str) -> list[str]:
@@ -1033,7 +1093,9 @@ def _empty_retrieval_result(
     warning: str,
     *,
     query_anchor_terms: list[str],
+    query_intent: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    query_intent = query_intent or split_query_intent(query)
     return {
         "query": query,
         "status": "no_reliable_hit",
@@ -1047,6 +1109,9 @@ def _empty_retrieval_result(
         "returned_hits": 0,
         "top_k": top_k,
         "min_score": min_score,
+        "scientific_query": query_intent["scientific_query"],
+        "answer_constraints": query_intent["answer_constraints"],
+        "requested_facets": query_intent["requested_facets"],
         "query_anchor_terms": query_anchor_terms,
         "rejected_by_relevance_gate": 0,
         "score_explanation": (

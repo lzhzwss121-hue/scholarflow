@@ -239,6 +239,7 @@ def init_db() -> None:
                 result_json TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
+                started_at TEXT,
                 completed_at TEXT,
                 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
@@ -294,6 +295,7 @@ def init_db() -> None:
         ensure_paper_memory_columns(connection)
         ensure_direction_memory_columns(connection)
         ensure_agent_run_columns(connection)
+        ensure_direction_review_run_columns(connection)
         recover_interrupted_direction_review_runs(connection)
         seed_demo_project(connection)
 
@@ -369,6 +371,19 @@ def ensure_agent_run_columns(connection: sqlite3.Connection) -> None:
     for name, definition in columns.items():
         if name not in existing_columns:
             connection.execute(f"ALTER TABLE agent_runs ADD COLUMN {name} {definition}")
+
+
+def ensure_direction_review_run_columns(connection: sqlite3.Connection) -> None:
+    existing_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(direction_review_runs)").fetchall()
+    }
+    columns = {
+        "started_at": "TEXT",
+    }
+    for name, definition in columns.items():
+        if name not in existing_columns:
+            connection.execute(f"ALTER TABLE direction_review_runs ADD COLUMN {name} {definition}")
 
 
 def recover_interrupted_direction_review_runs(connection: sqlite3.Connection) -> None:

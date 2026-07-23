@@ -432,6 +432,10 @@ export interface ApiDirectionReviewRunStatusResponse {
   message: string;
   notices: ApiWorkflowNoticeMessage[];
   result: ApiDirectionReviewResponse | null;
+  queued_at?: string;
+  started_at?: string;
+  current_tool?: string;
+  last_heartbeat?: string;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -568,6 +572,7 @@ export interface ApiDirectionMemory {
 
 export interface ApiResearchMemoryClaim {
   id: string;
+  facet?: string;
   statement: string;
   support_status: "corroborated" | "single_source" | "conflicted";
   confidence: "low" | "medium" | "high";
@@ -601,6 +606,12 @@ export interface ApiResearchMemoryQueryResponse {
     anchor_terms?: string[];
     matched_terms?: string[];
     missing_terms?: string[];
+    scientific_query?: string;
+    answer_constraints?: string[];
+    requested_facets?: string[];
+    covered_facets?: string[];
+    missing_facets?: string[];
+    facet_status?: "covered" | "partial" | "uncovered" | "not_requested";
     coverage?: number;
     minimum_coverage?: number;
     status?: "covered" | "partial" | "uncovered";
@@ -652,6 +663,9 @@ export interface ApiRagSearchHit {
 
 export interface ApiRagSearchResponse {
   query: string;
+  scientific_query?: string;
+  answer_constraints?: string[];
+  requested_facets?: string[];
   status: "complete" | "partial" | "no_reliable_hit" | "failed";
   retrieval_mode: "hybrid" | "lexical_only";
   provider: string;
@@ -798,6 +812,11 @@ export interface ApiAgentExecuteResponse {
   artifact_refs?: ApiArtifactRef[];
   workflow_steps?: ApiWorkflowStepState[];
   steps: ApiAgentPlanStep[];
+  queued_at?: string;
+  started_at?: string;
+  completed_at?: string | null;
+  current_tool?: string;
+  last_heartbeat?: string;
   updated_at?: string;
 }
 
@@ -814,6 +833,10 @@ export interface ApiAgentRunStatusResponse {
   papers?: Array<Record<string, unknown>>;
   paper_count: number;
   artifact?: ApiArtifact | null;
+  queued_at?: string;
+  started_at?: string;
+  completed_at?: string | null;
+  last_heartbeat?: string;
   updated_at: string;
 }
 

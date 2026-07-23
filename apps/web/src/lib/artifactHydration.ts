@@ -670,6 +670,7 @@ function normalizeMemoryClaims(value: unknown): NonNullable<ApiResearchMemoryQue
     const confidence = asString(item.confidence);
     return [{
       id: asString(item.id),
+      facet: asString(item.facet),
       statement: asString(item.statement),
       support_status:
         supportStatus === "corroborated" || supportStatus === "conflicted" ? supportStatus : "single_source",

@@ -415,6 +415,54 @@ class PhaseThreeDecisionMemoryContractTest(unittest.TestCase):
         self.assertTrue(any("摘要证据" in item for item in answer.unanswered_parts))
         self.assertNotIn("方向级共识。可追溯证据", answer.answer_summary)
 
+    def test_memory_answers_requested_facets_and_marks_missing_baseline(self) -> None:
+        dataset_record = make_memory_record("paper_dataset", "pdf.full_text", "full_text")
+        failure_record = make_memory_record("paper_failure", "pdf.full_text", "full_text")
+        dataset_sight = json.loads(str(dataset_record["research_sight_json"]))
+        dataset_sight["evidence_pack"]["snippets"][0]["text"] = (
+            "Object hallucination is evaluated on the POPE dataset with the accuracy metric."
+        )
+        dataset_record["research_sight_json"] = json.dumps(dataset_sight)
+        failure_sight = json.loads(str(failure_record["research_sight_json"]))
+        failure_sight["evidence_pack"]["snippets"][0]["text"] = (
+            "Object hallucination failure mode: the method fails when conflicting visual evidence "
+            "causes incorrect object binding."
+        )
+        failure_record["research_sight_json"] = json.dumps(failure_sight)
+
+        with patch.object(research_memory_module, "backfill_project_research_memory", return_value=0), patch.object(
+            research_memory_module,
+            "fetch_memory_records",
+            return_value=[dataset_record, failure_record],
+        ), patch.object(research_memory_module, "fetch_direction_memory_snapshot", return_value=None):
+            answer = query_research_memory(
+                connection=None,
+                project_id="project_phase3",
+                question=(
+                    "请只返回可定位证据：分别说明 object hallucination 的 "
+                    "dataset、metric、failure mode 和 baseline，不要总结。"
+                ),
+                top_k=5,
+                now="2026-07-17T00:00:00Z",
+            )
+
+        self.assertEqual(
+            answer.query_coverage["requested_facets"],
+            ["dataset", "metric", "failure_mode", "baseline"],
+        )
+        self.assertEqual(
+            answer.query_coverage["covered_facets"],
+            ["dataset", "metric", "failure_mode"],
+        )
+        self.assertEqual(answer.query_coverage["missing_facets"], ["baseline"])
+        self.assertEqual(answer.query_coverage["facet_status"], "partial")
+        self.assertEqual(
+            [claim.facet for claim in answer.claims],
+            ["dataset", "metric", "failure_mode"],
+        )
+        self.assertTrue(any("`baseline`" in item for item in answer.unanswered_parts))
+        self.assertFalse(any("请只" in anchor or "可定位" in anchor for anchor in answer.query_coverage["anchor_terms"]))
+
     def test_memory_prefers_relevant_pdf_reference_over_earlier_abstract_reference(self) -> None:
         record = make_memory_record("paper_mixed", "metadata.abstract", "full_text")
         sight = json.loads(str(record["research_sight_json"]))

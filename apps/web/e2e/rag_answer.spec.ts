@@ -78,6 +78,9 @@ const artifact = {
 function retrieval(hits = [citation]) {
   return {
     query: "对象幻觉如何被反事实 grounding 缓解？",
+    scientific_query: "对象幻觉 反事实 grounding POPE metric",
+    answer_constraints: ["只返回证据", "必须可定位"],
+    requested_facets: ["dataset", "metric"],
     status: hits.length ? "complete" : "no_reliable_hit",
     retrieval_mode: "hybrid",
     provider: "local",
@@ -205,6 +208,10 @@ test("full-text RAG renders validated claims and focuses the cited evidence", as
   const retrievalExplanation = page.locator('[aria-label="rag retrieval explanation"]');
   await expect(retrievalExplanation).toContainText("1 候选 → 0 门槛拒绝 → 1 返回");
   await expect(retrievalExplanation).toContainText("object hallucination");
+  await expect(retrievalExplanation).toContainText("实际科研检索式：对象幻觉 反事实 grounding POPE metric");
+  await expect(retrievalExplanation).toContainText("数据集 / benchmark");
+  await expect(retrievalExplanation).toContainText("输出约束");
+  await expect(retrievalExplanation).toContainText("必须可定位");
   await expect(retrievalExplanation).toContainText("该分数不是正确率");
   await expect(page.locator('[aria-label="rag automated evidence quality"]')).toBeVisible();
   await expect(page.getByText("96.0/100")).toBeVisible();

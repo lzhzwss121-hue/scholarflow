@@ -7,7 +7,11 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from scholarflow_api.literature import build_query_intent
-from scholarflow_api.rag_retrieval import matched_retrieval_anchors, retrieval_anchor_terms
+from scholarflow_api.rag_retrieval import (
+    matched_retrieval_anchors,
+    retrieval_anchor_terms,
+    split_query_intent,
+)
 from scholarflow_api.text_utils import extract_terms, normalize_space, normalize_terms, score_term_overlap
 
 RESEARCH_MEMORY_SCHEMA_VERSION = "research_memory_answer.v4"
@@ -105,6 +109,79 @@ FIELD_INTENTS: dict[str, dict[str, list[str]]] = {
         "terms": ["counterexample", "failure mode", "failure", "反例", "失败模式"],
     },
 }
+MEMORY_FACET_TERMS: dict[str, tuple[str, ...]] = {
+    "dataset": (
+        "dataset",
+        "benchmark",
+        "pope",
+        "chair",
+        "amber",
+        "mmbench",
+        "hallusionbench",
+        "数据集",
+        "基准",
+    ),
+    "metric": (
+        "metric",
+        "accuracy",
+        "rate",
+        "score",
+        "f1",
+        "auc",
+        "chairi",
+        "chairs",
+        "指标",
+        "准确率",
+        "幻觉率",
+    ),
+    "failure_mode": (
+        "failure",
+        "fails",
+        "limitation",
+        "degrades",
+        "cannot",
+        "only works",
+        "increases",
+        "失败",
+        "局限",
+        "退化",
+        "无法",
+        "仅适用",
+        "增加",
+    ),
+    "baseline": (
+        "baseline",
+        "comparison",
+        "versus",
+        "compared with",
+        "基线",
+        "对照",
+        "相比",
+    ),
+    "method": (
+        "method",
+        "approach",
+        "framework",
+        "intervention",
+        "decoding",
+        "方法",
+        "框架",
+        "干预",
+        "解码",
+    ),
+    "claim": (
+        "show",
+        "demonstrate",
+        "find",
+        "improve",
+        "reduce",
+        "claim",
+        "结果表明",
+        "提升",
+        "降低",
+        "主张",
+    ),
+}
 
 
 @dataclass
@@ -124,6 +201,7 @@ class DirectionMemorySnapshot:
 @dataclass
 class MemoryClaim:
     id: str
+    facet: str
     statement: str
     support_status: str
     confidence: str
@@ -535,6 +613,40 @@ def query_research_memory(
         reliability_status,
         missing_terms,
     )
+    requested_facets = list(query_coverage.get("requested_facets") or [])
+    covered_facets = list(
+        dict.fromkeys(claim.facet for claim in claims if claim.facet)
+    )
+    missing_facets = [
+        facet for facet in requested_facets if facet not in covered_facets
+    ]
+    query_coverage["covered_facets"] = covered_facets
+    query_coverage["missing_facets"] = missing_facets
+    query_coverage["facet_status"] = (
+        "covered"
+        if requested_facets and not missing_facets
+        else "partial"
+        if covered_facets
+        else "uncovered"
+        if requested_facets
+        else "not_requested"
+    )
+    if missing_facets:
+        warnings.append(
+            f"请求维度尚未全部覆盖：{', '.join(missing_facets)}。"
+        )
+    if requested_facets and not covered_facets and reliable_hits:
+        reliability_reason = "候选论文可靠命中研究主题，但没有覆盖用户明确要求的回答维度。"
+        answer_summary = "当前命中只覆盖研究主题，没有找到用户指定维度的可定位原文证据。"
+        unanswered_parts = list(
+            dict.fromkeys(
+                [
+                    *unanswered_parts,
+                    *[f"请求维度 `{facet}` 没有可定位原文证据。" for facet in requested_facets],
+                ],
+            ),
+        )
+        warnings.append("未把只命中主题、但没有 facet 证据的论文包装成维度结论。")
     answer_text = (
         render_memory_synthesis_text(answer_summary, claims, unanswered_parts)
         if reliable_hits
@@ -709,6 +821,7 @@ def build_memory_query_coverage(
     question: str,
     hits: list[PaperMemoryHit],
 ) -> dict[str, Any]:
+    query_intent = split_query_intent(question)
     anchors = memory_query_anchor_terms(question)
     matched: list[str] = []
     for hit in hits:
@@ -722,6 +835,9 @@ def build_memory_query_coverage(
         "anchor_terms": anchors,
         "matched_terms": matched,
         "missing_terms": missing,
+        "scientific_query": query_intent["scientific_query"],
+        "answer_constraints": query_intent["answer_constraints"],
+        "requested_facets": query_intent["requested_facets"],
         "coverage": round(coverage, 4),
         "minimum_coverage": minimum_memory_query_coverage(len(anchors)),
         "status": (
@@ -820,6 +936,36 @@ def build_memory_snippets(record: dict[str, Any], terms: set[str]) -> list[str]:
     return snippets
 
 
+def best_memory_facet_evidence_ref(
+    hit: PaperMemoryHit,
+    facet: str,
+    question: str,
+) -> dict[str, str] | None:
+    anchors = memory_query_anchor_terms(question)
+    candidates: list[tuple[float, dict[str, str]]] = []
+    for reference in memory_evidence_refs(hit.memory):
+        text = normalize_space(reference.get("text", ""))
+        lower = text.lower()
+        facet_terms = MEMORY_FACET_TERMS.get(facet, ())
+        matched_facet_terms = [term for term in facet_terms if term in lower]
+        if not matched_facet_terms:
+            continue
+        matched_anchors = matched_retrieval_anchors(anchors, text)
+        source_bonus = 0.4 if reference.get("source") == "pdf.full_text" else 0.0
+        section_bonus = (
+            0.2
+            if facet in {"dataset", "metric", "baseline"}
+            and reference.get("section") in {"experiment", "experiments", "evaluation", "results"}
+            else 0.0
+        )
+        score = len(matched_facet_terms) + 0.25 * len(matched_anchors) + source_bonus + section_bonus
+        candidates.append((score, reference))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
 def build_memory_synthesis(
     question: str,
     hits: list[PaperMemoryHit],
@@ -837,14 +983,28 @@ def build_memory_synthesis(
         )
 
     terms = memory_query_terms(question)
-    selected: list[tuple[PaperMemoryHit, dict[str, str]]] = []
+    requested_facets = list(split_query_intent(question)["requested_facets"])
+    selected: list[tuple[str, PaperMemoryHit, dict[str, str]]] = []
+    if requested_facets:
+        per_facet_limit = 2 if len(requested_facets) == 1 else 1
+        for facet in requested_facets:
+            facet_count = 0
+            for hit in hits[:5]:
+                reference = best_memory_facet_evidence_ref(hit, facet, question)
+                if reference is not None:
+                    selected.append((facet, hit, reference))
+                    facet_count += 1
+                    if facet_count >= per_facet_limit:
+                        break
+    else:
+        for hit in hits[:5]:
+            reference = best_memory_evidence_ref(hit.memory, question)
+            if reference is not None:
+                selected.append(("", hit, reference))
+
     coverage: dict[str, set[str]] = {}
-    for hit in hits[:5]:
-        reference = best_memory_evidence_ref(hit.memory, question)
-        if reference is None:
-            continue
+    for _, hit, reference in selected:
         paper_id = normalize_space(hit.memory.get("paper_id", "")) or normalize_space(hit.memory.get("id", ""))
-        selected.append((hit, reference))
         matched = score_term_overlap(reference.get("text", ""), terms, weight=0.1, max_score=1.0).matched_terms
         for term in matched:
             coverage.setdefault(term, set()).add(paper_id)
@@ -854,24 +1014,43 @@ def build_memory_synthesis(
         for term, paper_ids in sorted(coverage.items(), key=lambda item: (-len(item[1]), item[0]))
         if len(paper_ids) >= 2
     ]
-    full_text_card_count = sum(1 for hit, _ in selected if memory_evidence_quality(hit.memory) == "full_text")
-    selected_pdf_count = sum(1 for _, reference in selected if reference.get("source") == "pdf.full_text")
+    selected_papers = {
+        normalize_space(hit.memory.get("paper_id", ""))
+        or normalize_space(hit.memory.get("id", ""))
+        for _, hit, _ in selected
+    }
+    full_text_papers = {
+        normalize_space(hit.memory.get("paper_id", ""))
+        or normalize_space(hit.memory.get("id", ""))
+        for _, hit, _ in selected
+        if memory_evidence_quality(hit.memory) == "full_text"
+    }
+    full_text_card_count = len(full_text_papers)
+    selected_pdf_count = sum(
+        1 for _, _, reference in selected if reference.get("source") == "pdf.full_text"
+    )
+    covered_facets = list(dict.fromkeys(facet for facet, _, _ in selected if facet))
+    facet_prefix = (
+        f"请求维度已覆盖 {len(covered_facets)}/{len(requested_facets)}（{', '.join(covered_facets) or '无'}）；"
+        if requested_facets
+        else ""
+    )
     if shared_terms:
         answer_summary = (
-            f"现有可靠证据中，{len(selected)} 篇论文的原文共同覆盖 "
+            f"{facet_prefix}现有可靠证据中，{len(selected)} 条原文证据共同覆盖 "
             f"`{', '.join(shared_terms[:3])}`；{selected_pdf_count} 条回答证据直接来自 PDF 全文，"
-            f"{full_text_card_count} 篇 Paper Card 整体达到全文级。"
+            f"{full_text_card_count}/{len(selected_papers)} 篇命中论文的 Paper Card 整体达到全文级。"
             "这支持“这些主题在多篇文献中被直接讨论”，但不自动证明论文结论一致或已经形成方向级共识。"
         )
     else:
         answer_summary = (
-            f"当前找到 {len(selected)} 篇可靠命中；{selected_pdf_count} 条回答证据直接来自 PDF 全文，"
-            f"{full_text_card_count} 篇 Paper Card 整体达到全文级；"
+            f"{facet_prefix}当前找到 {len(selected)} 条可定位证据；{selected_pdf_count} 条回答证据直接来自 PDF 全文，"
+            f"{full_text_card_count}/{len(selected_papers)} 篇命中论文的 Paper Card 整体达到全文级；"
             "证据可以定位与问题直接相关的单篇陈述，但尚未形成可跨论文复核的一致结论。"
         )
 
     claims: list[MemoryClaim] = []
-    for index, (hit, reference) in enumerate(selected[:3], start=1):
+    for index, (facet, hit, reference) in enumerate(selected[:6], start=1):
         paper_id = normalize_space(hit.memory.get("paper_id", "")) or normalize_space(hit.memory.get("id", ""))
         quality = "full_text" if reference.get("source") == "pdf.full_text" else "abstract_only"
         confidence = normalize_memory_claim_confidence(quality, reference.get("confidence", "low"))
@@ -888,6 +1067,7 @@ def build_memory_synthesis(
         claims.append(
             MemoryClaim(
                 id=f"memory-claim-{index}",
+                facet=facet,
                 statement=f"{evidence_ref['paper_title']}：{reference.get('text', '')}",
                 support_status="single_source",
                 confidence=confidence,
@@ -897,6 +1077,9 @@ def build_memory_synthesis(
         )
 
     unanswered_parts: list[str] = []
+    for facet in requested_facets:
+        if facet not in covered_facets:
+            unanswered_parts.append(f"请求维度 `{facet}` 没有可定位原文证据。")
     if missing_terms:
         unanswered_parts.append(f"原文证据尚未覆盖：{', '.join(missing_terms[:5])}。")
     if len(selected) < 2:
@@ -984,8 +1167,13 @@ def build_memory_answer(
 
 
 def memory_query_terms(question: str) -> set[str]:
-    intent = build_query_intent(question)
-    return set(extract_terms(question, limit=16)) | set(intent.core_terms) | set(intent.direction_specific_terms)
+    scientific_query = str(split_query_intent(question)["scientific_query"])
+    intent = build_query_intent(scientific_query)
+    return (
+        set(extract_terms(scientific_query, limit=16))
+        | set(intent.core_terms)
+        | set(intent.direction_specific_terms)
+    )
 
 
 def memory_evidence_refs(record: dict[str, Any]) -> list[dict[str, str]]:

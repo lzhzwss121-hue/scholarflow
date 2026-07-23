@@ -658,9 +658,11 @@ def infer_tool_summary_metrics(data: dict | None) -> dict[str, object]:
         metrics["artifact_count"] = len(data["artifacts"])
     elif data.get("artifact") or data.get("artifact_id"):
         metrics["artifact_count"] = 1
-    warning_count = len(data.get("warnings", [])) + len(data.get("errors", []))
-    if warning_count:
-        metrics["warning_count"] = warning_count
+    warning_messages = [
+        *[str(item) for item in data.get("warnings", []) or []],
+        *[str(item) for item in data.get("errors", []) or []],
+    ]
+    metrics.update(build_warning_summary_metrics(warning_messages))
     if "hit_count" in data:
         metrics["memory_hit_count"] = int(data.get("hit_count") or 0)
     if "experiment_status" in data:
@@ -672,6 +674,48 @@ def infer_tool_summary_metrics(data: dict | None) -> dict[str, object]:
     if "artifact_id" in data:
         metrics["artifact_id"] = str(data.get("artifact_id") or "")
     return metrics
+
+
+def build_warning_summary_metrics(messages: list[str]) -> dict[str, object]:
+    raw = [re.sub(r"\s+", " ", str(message or "")).strip() for message in messages]
+    raw = [message for message in raw if message]
+    unique = list(dict.fromkeys(raw))
+    groups: dict[str, dict[str, object]] = {}
+    for message in raw:
+        code = warning_group_code(message)
+        group = groups.setdefault(code, {"code": code, "count": 0, "examples": []})
+        group["count"] = int(group["count"]) + 1
+        examples = group["examples"]
+        if isinstance(examples, list) and message not in examples and len(examples) < 3:
+            examples.append(message)
+    return {
+        # Keep the legacy field as the unique user-visible count.
+        "warning_count": len(unique),
+        "warning_count_raw": len(raw),
+        "warning_count_unique": len(unique),
+        "warning_groups": list(groups.values()),
+    }
+
+
+def warning_group_code(message: str) -> str:
+    lower = message.lower()
+    http_status = re.search(r"\b(?:http\s*)?([45]\d{2})\b", lower)
+    if http_status:
+        return f"http_{http_status.group(1)}"
+    known_groups = [
+        ("timeout", ("timeout", "timed out", "超时")),
+        ("off_topic_filtered", ("off-topic", "off topic", "离题")),
+        ("weak_relevance_filtered", ("weak relevance", "weak_match", "弱相关")),
+        ("pdf_unavailable", ("pdf", "full text", "全文")),
+        ("rate_limited", ("rate limit", "限流")),
+    ]
+    for code, markers in known_groups:
+        if any(marker in lower for marker in markers):
+            return code
+    prefix = re.match(r"([a-z][a-z0-9_.-]{2,40})(?:\s*[:：]|_)", lower)
+    if prefix:
+        return prefix.group(1).replace(".", "_").replace("-", "_")
+    return "other"
 
 
 def infer_agent_paper_count(plan: dict, papers: list[dict]) -> int:

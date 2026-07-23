@@ -24,6 +24,7 @@ from scholarflow_api.agent_core import (
 from scholarflow_api.api_helpers import (
     artifact_ref,
     build_paper_card_source,
+    build_warning_summary_metrics,
     collect_agent_summary_metrics,
     completed_plan_snapshot,
     ensure_active_session,
@@ -477,8 +478,9 @@ def persist_agent_run_progress(
     updated_at = utc_now()
     run_summary = agent_run_summary(plan, outputs, len(papers), artifacts)
     workflow_steps = agent_workflow_steps(outputs, artifacts, updated_at)
-    merged_warnings = unique_strings([*(warnings or []), *[str(item) for item in run_summary["warnings"]]])
-    current_tool = current_agent_tool(plan)
+    raw_warnings = [*(warnings or []), *[str(item) for item in run_summary["warnings"]]]
+    merged_warnings = unique_strings(raw_warnings)
+    current_tool = "" if status in TERMINAL_AGENT_RUN_STATUSES else current_agent_tool(plan)
     if run_status_summary is not None:
         summary_text = run_status_summary
     elif status == "running":
@@ -490,7 +492,7 @@ def persist_agent_run_progress(
     else:
         summary_text = str(run_summary["summary"])
     summary_metrics = collect_agent_summary_metrics(plan, len(papers))
-    summary_metrics["warning_count"] = len(merged_warnings)
+    summary_metrics.update(build_warning_summary_metrics(raw_warnings))
     plan["summary_metrics"] = summary_metrics
     plan["warnings"] = merged_warnings
     plan["artifact_refs"] = serialize_artifact_refs(artifacts)
@@ -498,6 +500,12 @@ def persist_agent_run_progress(
     plan["run_status_summary"] = summary_text
     plan["paper_count"] = len(papers)
     plan["current_tool"] = current_tool
+    plan["queued_at"] = str(plan.get("queued_at") or plan.get("created_at") or updated_at)
+    if status == "running" and not plan.get("started_at"):
+        plan["started_at"] = updated_at
+    if status in TERMINAL_AGENT_RUN_STATUSES:
+        plan["completed_at"] = str(plan.get("completed_at") or updated_at)
+    plan["last_heartbeat"] = updated_at
     plan["updated_at"] = updated_at
     if outputs:
         plan["tool_outputs"] = output_summary(outputs)
@@ -568,6 +576,10 @@ def agent_status_response_from_run(connection, run_dict: dict) -> AgentRunStatus
         papers=[paper for paper in papers_payload if isinstance(paper, dict)],
         paper_count=int(plan.get("paper_count") or infer_agent_paper_count(plan, plan.get("papers", []) if isinstance(plan.get("papers"), list) else [])),
         artifact=artifact,
+        queued_at=str(plan.get("queued_at") or run_dict.get("created_at") or ""),
+        started_at=str(plan.get("started_at") or ""),
+        completed_at=str(plan.get("completed_at") or "") or None,
+        last_heartbeat=str(plan.get("last_heartbeat") or run_dict.get("updated_at") or ""),
         updated_at=str(run_dict.get("updated_at") or ""),
     )
 
@@ -585,6 +597,11 @@ def execute_response_from_status(status: AgentRunStatusResponse) -> AgentExecute
         artifact_refs=status.artifact_refs,
         workflow_steps=status.workflow_steps,
         steps=status.steps,
+        queued_at=status.queued_at,
+        started_at=status.started_at,
+        completed_at=status.completed_at,
+        current_tool=status.current_tool,
+        last_heartbeat=status.last_heartbeat,
         updated_at=status.updated_at,
     )
 
@@ -1829,19 +1846,27 @@ def direction_review_run_response(run: dict) -> DirectionReviewRunStatusResponse
             result = DirectionReviewResponse.model_validate(json.loads(str(run["result_json"])))
         except (json.JSONDecodeError, ValueError):
             result = None
+    status = str(run["status"])
+    stage = str(run["stage"])
+    created_at = str(run["created_at"])
+    updated_at = str(run["updated_at"])
     return DirectionReviewRunStatusResponse(
         run_id=str(run["id"]),
         project_id=str(run["project_id"]),
         direction=str(run["direction"]),
         round=int(run["round_index"]),
-        status=str(run["status"]),  # type: ignore[arg-type]
-        stage=str(run["stage"]),  # type: ignore[arg-type]
+        status=status,  # type: ignore[arg-type]
+        stage=stage,  # type: ignore[arg-type]
         progress=max(0, min(100, int(run["progress"] or 0))),
         message=str(run.get("message") or ""),
         notices=parse_json_list(str(run.get("notices_json") or "[]")),
         result=result,
-        created_at=str(run["created_at"]),
-        updated_at=str(run["updated_at"]),
+        queued_at=created_at,
+        started_at=str(run.get("started_at") or ""),
+        current_tool=stage if status == "running" else "",
+        last_heartbeat=updated_at,
+        created_at=created_at,
+        updated_at=updated_at,
         completed_at=str(run["completed_at"]) if run.get("completed_at") else None,
     )
 
@@ -1889,6 +1914,10 @@ def persist_direction_review_run(
             UPDATE direction_review_runs
             SET status = ?, stage = ?, progress = ?, message = ?, notices_json = ?,
                 result_json = COALESCE(?, result_json), updated_at = ?,
+                started_at = CASE
+                    WHEN started_at IS NULL AND ? = 'running' THEN ?
+                    ELSE started_at
+                END,
                 completed_at = CASE WHEN ? THEN ? ELSE completed_at END
             WHERE id = ?
             """,
@@ -1899,6 +1928,8 @@ def persist_direction_review_run(
                 message,
                 json.dumps(merged_notices, ensure_ascii=False, indent=2),
                 result.model_dump_json() if result is not None else None,
+                updated_at,
+                status,
                 updated_at,
                 1 if completed else 0,
                 updated_at,
@@ -2466,6 +2497,11 @@ def create_agent_plan(payload: AgentPlanRequest) -> AgentPlanResponse:
         provider = get_model_provider(payload.provider)
         draft = provider.create_plan(payload.task, project)
         plan = draft.to_dict()
+        plan["queued_at"] = now
+        plan["started_at"] = ""
+        plan["completed_at"] = None
+        plan["current_tool"] = ""
+        plan["last_heartbeat"] = now
         plan_artifact = insert_artifact_row(
             connection=connection,
             project_id=payload.project_id,
@@ -2708,7 +2744,7 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
             summary_metrics={
                 "paper_count": len(papers),
                 "artifact_count": 1,
-                "warning_count": len(result.errors),
+                **build_warning_summary_metrics(result.errors),
                 "relevance_coverage": result.relevance_coverage,
             },
             data={
@@ -2865,7 +2901,8 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
                 "off_topic_count": bundle.off_topic_count,
                 "total_read_count": bundle.total_read_count,
                 "artifact_count": len(artifacts),
-                "warning_count": len(bundle.errors),
+                "relevance_coverage": bundle.relevance_coverage,
+                **build_warning_summary_metrics(bundle.errors),
             },
             data={
                 "papers": paper_dicts,
@@ -2874,7 +2911,12 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
                 "round": round_index,
                 "paper_count": len(readings),
                 "review_status": bundle.review_status,
+                "round_read_count": len(readings),
+                "relevant_read_count": bundle.relevant_read_count,
+                "low_relevance_count": bundle.low_relevance_count,
+                "off_topic_count": bundle.off_topic_count,
                 "total_read_count": bundle.total_read_count,
+                "relevance_coverage": bundle.relevance_coverage,
                 "recommended_paper_ids": bundle.recommended_paper_ids,
                 "errors": bundle.errors,
             },
@@ -2909,7 +2951,7 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
             summary_metrics={
                 "memory_hit_count": len(answer.hits),
                 "artifact_count": 1,
-                "warning_count": len(answer.warnings),
+                **build_warning_summary_metrics(answer.warnings),
             },
             data={
                 "artifact_id": artifact["id"],
@@ -2972,7 +3014,7 @@ def build_agent_tool_registry(connection) -> ToolRegistry:
                 "experiment_status": bundle.experiment.status,
                 "decision_status": bundle.decision_status,
                 "gap_evidence_paper_count": bundle.evidence_quality.get("gap_evidence_paper_count", 0),
-                "warning_count": len(bundle.warnings),
+                **build_warning_summary_metrics(bundle.warnings),
             },
             data={
                 "artifacts": artifacts,

@@ -350,6 +350,9 @@ function RetrievalExplanation({
   compact?: boolean;
 }) {
   const retrieval = result.retrieval;
+  const scientificQuery = retrieval.scientific_query?.trim();
+  const requestedFacets = retrieval.requested_facets ?? [];
+  const answerConstraints = retrieval.answer_constraints ?? [];
   return (
     <section
       className={compact ? "rag-retrieval-explanation compact" : "rag-retrieval-explanation"}
@@ -362,10 +365,28 @@ function RetrievalExplanation({
           {retrieval.returned_hits} 返回
         </span>
       </header>
+      {scientificQuery && scientificQuery !== result.question.trim() ? (
+        <p>
+          <strong>实际科研检索式：</strong>
+          {scientificQuery}
+        </p>
+      ) : null}
       {retrieval.query_anchor_terms?.length ? (
         <div className="rag-query-anchor-list">
           <span>问题锚点</span>
           {retrieval.query_anchor_terms.map((term) => <code key={term}>{term}</code>)}
+        </div>
+      ) : null}
+      {requestedFacets.length ? (
+        <div className="rag-query-anchor-list">
+          <span>要求回答</span>
+          {requestedFacets.map((facet) => <code key={facet}>{formatRagFacet(facet)}</code>)}
+        </div>
+      ) : null}
+      {answerConstraints.length ? (
+        <div className="rag-query-anchor-list">
+          <span>输出约束</span>
+          {answerConstraints.map((constraint) => <code key={constraint}>{constraint}</code>)}
         </div>
       ) : null}
       <p>
@@ -374,6 +395,17 @@ function RetrievalExplanation({
       </p>
     </section>
   );
+}
+
+function formatRagFacet(facet: string) {
+  return {
+    dataset: "数据集 / benchmark",
+    metric: "评测指标",
+    failure_mode: "失败模式",
+    baseline: "对照基线",
+    method: "方法",
+    claim: "主要结论",
+  }[facet] ?? facet;
 }
 
 function BoundaryList({ title, items }: { title: string; items: string[] }) {

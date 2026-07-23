@@ -381,7 +381,7 @@ test("12-section reader uses a table of contents and one readable section instea
   await expect(decisionBrief).toBeVisible();
   await expect(decisionBrief.getByRole("heading", { name: "先判断这篇论文是否值得继续投入" })).toBeVisible();
   await expect(decisionBrief.getByText("仅作选读线索", { exact: true })).toBeVisible();
-  await expect(decisionBrief.getByText("摘要/元数据", { exact: true })).toHaveCount(3);
+  await expect(decisionBrief.getByText("摘要", { exact: true })).toHaveCount(3);
   await expect(decisionBrief).toContainText("VQA evidence faithfulness evaluation");
   await expect(decisionBrief).toContainText("上传或绑定论文 PDF");
   await expect(toc).toBeVisible();
@@ -419,10 +419,17 @@ test("full-text paper detail exposes signal source section and page", async ({ p
   await expect(signalPanel).not.toHaveAttribute("open", "");
   await signalPanel.locator("summary").click();
   await expect(signalPanel).toHaveAttribute("open", "");
-  await expect(signalPanel.getByText("本论文自身 Limitation", { exact: true })).toBeVisible();
+  await expect(signalPanel.getByText("论文局限", { exact: true })).toBeVisible();
   await expect(signalPanel.getByText("已有研究不足", { exact: true })).toBeVisible();
   await expect(signalPanel.getByText("pdf.full_text · experiments · p.7 · 抽取置信度 medium", { exact: true })).toBeVisible();
   await expect(signalPanel.getByText("pdf.full_text · limitations · p.9 · 抽取置信度 medium", { exact: true })).toBeVisible();
+
+  const signalCards = signalPanel.locator(".paper-signal-detail");
+  await expect(signalCards).toHaveCount(8);
+  await expect(signalCards.filter({ hasText: "研究任务" }).locator(".paper-signal-field-head small")).toHaveText("全文");
+  await expect(signalCards.filter({ hasText: "数据集" }).locator(".paper-signal-field-head small")).toHaveText("全文");
+  await expect(signalCards.filter({ hasText: "评估指标" }).locator(".paper-signal-field-head small")).toHaveText("缺失");
+  await expect(signalCards.filter({ hasText: "对比基线" }).locator(".paper-signal-field-head small")).toHaveText("缺失");
 });
 
 test("legacy repeated evidence boilerplate is centralized and the mobile reader does not overflow", async ({ page }) => {
@@ -439,6 +446,7 @@ test("legacy repeated evidence boilerplate is centralized and the mobile reader 
   await expect(sectionBody).not.toContainText("证据边界（abstract_only）");
   await expect(sectionBody).not.toContainText("当前没有 PDF/完整正文");
   await expect(tocItems).toHaveCount(12);
+  await expect(evidenceScope).not.toHaveAttribute("open", "");
 
   const firstBox = await tocItems.nth(0).boundingBox();
   const secondBox = await tocItems.nth(1).boundingBox();
@@ -446,6 +454,28 @@ test("legacy repeated evidence boilerplate is centralized and the mobile reader 
   expect(secondBox).not.toBeNull();
   expect(Math.abs((firstBox?.x ?? 0) - (secondBox?.x ?? 0))).toBeLessThanOrEqual(2);
   expect(secondBox?.y ?? 0).toBeGreaterThan((firstBox?.y ?? 0) + (firstBox?.height ?? 0) - 1);
+
+  const mainPanel = await page.locator(".reader-main-panel").boundingBox();
+  expect(mainPanel).not.toBeNull();
+  expect(mainPanel?.y ?? Number.POSITIVE_INFINITY).toBeLessThan(844);
+
+  const majorSections = page.locator(
+    ".reader-content > .summary-card, .reader-content > .reader-evidence-summary, .reader-content > .paper-decision-brief, .reader-content > .reader-supplemental-input, .reader-content > .question-board",
+  );
+  await expect(majorSections).toHaveCount(5);
+  const majorBoxes = await majorSections.evaluateAll((elements) =>
+    elements.map((element) => {
+      const box = element.getBoundingClientRect();
+      return { bottom: box.bottom, top: box.top };
+    }),
+  );
+  for (let index = 1; index < majorBoxes.length; index += 1) {
+    expect(majorBoxes[index].top - majorBoxes[index - 1].bottom).toBeLessThanOrEqual(32);
+  }
+
+  const activeSection = await page.locator(".paper-reader-section").boundingBox();
+  expect(activeSection).not.toBeNull();
+  expect(activeSection?.width ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(700);
 
   const overflow = await page.evaluate(() => ({
     clientWidth: document.documentElement.clientWidth,
@@ -707,6 +737,7 @@ test("paper memory prioritizes synthesis and collapses per-paper research notes"
     claims: [
       {
         id: "memory-claim-1",
+        facet: "failure_mode",
         statement: `${paper.title}：Object hallucination increases under conflicting visual evidence.`,
         support_status: "single_source",
         confidence: "medium",
@@ -730,6 +761,12 @@ test("paper memory prioritizes synthesis and collapses per-paper research notes"
       anchor_terms: ["对象幻觉", "视觉证据冲突", "跨模型复现"],
       matched_terms: ["对象幻觉", "视觉证据冲突"],
       missing_terms: ["跨模型复现"],
+      scientific_query: "对象幻觉 视觉证据冲突 failure mode baseline",
+      answer_constraints: ["只返回证据"],
+      requested_facets: ["failure_mode", "baseline"],
+      covered_facets: ["failure_mode"],
+      missing_facets: ["baseline"],
+      facet_status: "partial",
       coverage: 0.6667,
       minimum_coverage: 0.34,
       status: "partial",
@@ -781,7 +818,10 @@ test("paper memory prioritizes synthesis and collapses per-paper research notes"
 
   await expect(page.getByText(memoryPayload.answer_summary, { exact: true })).toBeVisible();
   await expect(page.locator('[aria-label="memory query coverage"]')).toContainText("未覆盖：跨模型复现");
+  await expect(page.locator('[aria-label="memory query coverage"]')).toContainText("有证据：失败模式");
+  await expect(page.locator('[aria-label="memory query coverage"]')).toContainText("待补证：对照基线");
   await expect(page.getByTitle("可靠命中的原文证据对用户问题锚点的联合覆盖率。")).toHaveText("问题覆盖 67%");
+  await expect(page.locator('[aria-label="memory synthesized claims"]')).toContainText("失败模式");
   await expect(page.locator('[aria-label="memory synthesized claims"]')).toContainText("results · p.7");
   await expect(page.locator('[aria-label="memory unanswered parts"]')).toContainText("仍缺少跨模型复现实验");
   const details = page.locator(".memory-hit-details").first();
