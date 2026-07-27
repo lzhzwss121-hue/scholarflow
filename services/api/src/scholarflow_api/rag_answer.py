@@ -8,6 +8,7 @@ import ssl
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import certifi
@@ -19,7 +20,11 @@ DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_RAG_ANSWER_MODEL = "minimax/minimax-m2.5"
 DEFAULT_MAX_CONTEXT_CHARS = 12000
 _SENTENCE_SPLIT = re.compile(r"(?<=[。！？.!?])\s+|\n+")
-_NUMBER_PATTERN = re.compile(r"(?<![\w.])\d+(?:\.\d+)?%?")
+_NUMBER_WITH_UNIT_PATTERN = re.compile(
+    r"(?<![\w.])(?P<value>\d+(?:\.\d+)?)\s*"
+    r"(?P<unit>percentage\s+points?|percent|points?|pp|%|个百分点|百分比|倍)?",
+    re.IGNORECASE,
+)
 _CJK_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 _LATIN_PATTERN = re.compile(r"[a-z]")
 _GENERIC_TERMS = {
@@ -74,13 +79,53 @@ _LATIN_NEGATION_PREFIX_PATTERN = re.compile(
     r"(?:"
     r"\b(?:not|never|no|cannot|can't|doesn't|don't|didn't)\b|"
     r"\b(?:does|do|did|can|could|will|would|is|are|was|were|has|have|had)\s+not\b|"
-    r"\b(?:fails?|failed)\s+to\b|"
+    r"\b(?:fail|fails|failed)\b|"
     r"\bwithout\b"
     r")(?:[\s\w-]{0,32})$",
     re.IGNORECASE,
 )
 _CJK_NEGATION_PREFIX_PATTERN = re.compile(
-    r"(?:不|未|没有|并未|不能|无法|无)(?:[\u3400-\u4dbf\u4e00-\u9fff]{0,8})$",
+    r"(?:不|未|没有|并未|并非|不能|无法|无)(?:[\u3400-\u4dbf\u4e00-\u9fff]{0,8})$",
+)
+_DIRECTION_PATTERNS = {
+    "up": re.compile(
+        r"\b(?:increase|increases|increased|increasing|higher|improve|improves|"
+        r"improved|improving|outperform|outperforms|outperformed|better)\b|"
+        r"增加|提高|提升|高于|改善|优于",
+        re.IGNORECASE,
+    ),
+    "down": re.compile(
+        r"\b(?:decrease|decreases|decreased|decreasing|reduce|reduces|reduced|"
+        r"reducing|lower|degrade|degrades|degraded|worse|underperform|underperforms)\b|"
+        r"减少|降低|下降|低于|退化|恶化|劣于",
+        re.IGNORECASE,
+    ),
+}
+_CAUSAL_PATTERN = re.compile(
+    r"\b(?:cause|causes|caused|causing)\b|\b(?:lead|leads|led)\s+to\b|导致|引起|造成",
+    re.IGNORECASE,
+)
+_CORRELATION_PATTERN = re.compile(
+    r"\b(?:correlate|correlates|correlated|associated|association)\s+(?:with|to)\b|"
+    r"相关(?:于|关系)?|关联",
+    re.IGNORECASE,
+)
+_CONDITIONAL_PATTERN = re.compile(
+    r"\b(?:may|might|can|could|possibly|potentially|suggests?|appears?\s+to)\b|"
+    r"可能|或许|也许|有望|潜在|提示|可以|可望",
+    re.IGNORECASE,
+)
+_LABELED_ENTITY_PATTERN = re.compile(
+    r"\b(?P<kind>dataset|benchmark|model|method|metric|baseline)\s+"
+    r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)\b",
+    re.IGNORECASE,
+)
+_ACRONYM_PATTERN = re.compile(r"\b[A-Z][A-Z0-9._-]{1,}\b")
+_RELATION_PATTERN = re.compile(
+    r"\b(?:outperform|outperforms|outperformed|underperform|underperforms|"
+    r"higher\s+than|lower\s+than|causes?|caused|correlates?\s+with|correlated\s+with)\b|"
+    r"优于|劣于|高于|低于|导致|相关于|与.+?相关",
+    re.IGNORECASE,
 )
 
 
@@ -281,23 +326,29 @@ def answer_project_rag(
     validation = validate_generated_claims(
         generation.payload or {},
         citations=citations,
+        project_id=project_id,
     )
-    claims = validation["claims"]
+    generated_claims = validation["claims"]
+    supported_generated_claims = supported_claims(generated_claims)
+    semantic_generated_claims = [
+        claim
+        for claim in supported_generated_claims
+        if claim["verification"]["method"] in {"model_checked", "human"}
+    ]
     rejected_count = int(validation["rejected_claim_count"])
-    if generation.payload is not None and not claims:
+    if generation.payload is not None and not supported_generated_claims:
         warnings.append(
-            "生成模型没有产生可通过引用校验的主张，已降级为逐字证据摘录。"
-        )
-        generation = GenerationAttempt(
-            provider="local",
-            model="extractive-evidence-v1",
-            external_data_transfer=generation.external_data_transfer,
-            payload=None,
+            "生成模型没有产生可由逐字引用或可靠语义验证直接支持的主张，"
+            "已降级为逐字证据摘录。"
         )
 
-    answer_kind = "grounded_synthesis" if claims else "extractive_evidence"
-    if not claims:
-        claims = build_extractive_claims(question, citations)
+    if semantic_generated_claims:
+        answer_kind = "grounded_synthesis"
+        claims = generated_claims
+    else:
+        answer_kind = "extractive_evidence"
+        extractive_claims = build_extractive_claims(question, citations)
+        claims = deduplicate_claims([*generated_claims, *extractive_claims])
         validation = citation_validation_for_claims(
             claims,
             citations,
@@ -311,7 +362,7 @@ def answer_project_rag(
     limitations = build_answer_limitations(citations, answer_kind)
     if not unanswered_parts and all(item.get("evidence_level") != "full_text" for item in citations):
         unanswered_parts.append("缺少 PDF 全文，无法核验方法细节、实验设置、消融和失败案例。")
-    answer = render_answer_text(claims, language=language)
+    answer = render_answer_text(supported_claims(claims), language=language)
     all_full_text = all(item.get("evidence_level") == "full_text" for item in citations)
     status = (
         "complete"
@@ -406,6 +457,7 @@ def validate_generated_claims(
     payload: dict[str, Any],
     *,
     citations: list[dict[str, Any]],
+    project_id: str | None = None,
 ) -> dict[str, Any]:
     citation_map = {
         str(item["citation_id"]): item
@@ -432,16 +484,29 @@ def validate_generated_claims(
         rejected_ids.extend(invalid_ids)
         valid_ids = [item for item in citation_ids if item in citation_map]
         evidence = [citation_map[item] for item in valid_ids]
-        if not statement or not evidence or not claim_is_supported(statement, evidence):
+        verification = verify_claim_support(
+            statement,
+            evidence,
+            citation_ids=citation_ids,
+            invalid_citation_ids=invalid_ids,
+            project_id=project_id,
+        )
+        if citation_binding_errors(evidence, project_id=project_id):
+            rejected_ids.extend(valid_ids)
+        if verification["status"] != "supported":
             rejected_count += 1
-            continue
         claims.append(
             {
                 "id": f"rag-claim-{len(claims) + 1}",
                 "statement": statement,
-                "citation_ids": valid_ids,
-                "confidence": claim_confidence(evidence),
+                "citation_ids": citation_ids,
+                "confidence": (
+                    claim_confidence(evidence)
+                    if verification["status"] == "supported"
+                    else "low"
+                ),
                 "evidence_level": weakest_evidence_level(evidence),
+                "verification": verification,
             }
         )
     return {
@@ -451,7 +516,9 @@ def validate_generated_claims(
             dict.fromkeys(
                 citation_id
                 for claim in claims
+                if claim["verification"]["status"] == "supported"
                 for citation_id in claim["citation_ids"]
+                if citation_id in citation_map
             )
         ),
         "rejected_citation_ids": list(dict.fromkeys(rejected_ids)),
@@ -459,17 +526,276 @@ def validate_generated_claims(
     }
 
 
-def claim_is_supported(
+def verify_claim_support(
     statement: str,
     evidence: list[dict[str, Any]],
-) -> bool:
+    *,
+    citation_ids: list[str],
+    invalid_citation_ids: list[str] | None = None,
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    invalid_ids = list(dict.fromkeys(invalid_citation_ids or []))
+    if invalid_ids:
+        reasons.append(
+            "citation ID 不存在于当前检索上下文：" + ", ".join(invalid_ids)
+        )
+    if not statement:
+        reasons.append("主张文本为空，无法进行语义支持检查。")
+    if not citation_ids:
+        reasons.append("主张没有提供 citation ID。")
+    if not evidence:
+        reasons.append("没有可用于核对的当前项目引用。")
+
+    binding_errors = citation_binding_errors(evidence, project_id=project_id)
+    reasons.extend(binding_errors)
+    if reasons:
+        return claim_verification(
+            status="insufficient",
+            method="rule_based",
+            reasons=reasons,
+            citation_ids=citation_ids,
+        )
+
     evidence_text = " ".join(str(item.get("text") or "") for item in evidence)
-    if claim_has_polarity_conflict(statement, evidence):
+    normalized_statement = _normalize_text(statement).casefold()
+    if any(
+        normalized_statement
+        and is_meaningful_claim_text(normalized_statement)
+        and normalized_statement in _normalize_text(item.get("text")).casefold()
+        for item in evidence
+    ):
+        return claim_verification(
+            status="supported",
+            method="exact_quote",
+            reasons=[
+                "citation ID、项目和论文绑定检查通过。",
+                "主张是引用原文中的连续逐字片段。",
+            ],
+            citation_ids=citation_ids,
+        )
+
+    conflict_reasons = semantic_conflict_reasons(statement, evidence_text)
+    if conflict_reasons:
+        return claim_verification(
+            status="contradicted",
+            method="rule_based",
+            reasons=[
+                "citation ID、项目和论文绑定检查通过。",
+                *conflict_reasons,
+            ],
+            citation_ids=citation_ids,
+        )
+
+    lexical_overlap = claim_lexical_overlap(statement, evidence_text)
+    if lexical_overlap:
+        return claim_verification(
+            status="not_checked",
+            method="numeric_lexical",
+            reasons=[
+                "citation ID、项目和论文绑定检查通过。",
+                "数字、单位和词项未发现显式冲突，引用词面一致。",
+                "词面一致不等于语义蕴含；当前未运行可靠语义验证或人工确认。",
+            ],
+            citation_ids=citation_ids,
+        )
+    return claim_verification(
+        status="insufficient",
+        method="rule_based",
+        reasons=[
+            "citation ID、项目和论文绑定检查通过。",
+            "引用中缺少足够的关键实体或关系来支持该主张。",
+        ],
+        citation_ids=citation_ids,
+    )
+
+
+def is_meaningful_claim_text(text: str) -> bool:
+    if len(text) < 12:
         return False
-    statement_numbers = set(_NUMBER_PATTERN.findall(statement))
-    evidence_numbers = set(_NUMBER_PATTERN.findall(evidence_text))
+    terms = [
+        term
+        for term in retrieval_terms(text)
+        if len(term) > 1 and term not in _GENERIC_TERMS
+    ]
+    return len(terms) >= 2 or len(_CJK_PATTERN.findall(text)) >= 6
+
+
+def claim_verification(
+    *,
+    status: str,
+    method: str,
+    reasons: list[str],
+    citation_ids: list[str],
+    provider: str = "",
+    model: str = "",
+    prompt_version: str = "",
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "method": method,
+        "reasons": list(dict.fromkeys(reason for reason in reasons if reason)),
+        "citation_ids": list(dict.fromkeys(citation_ids)),
+        "provider": provider,
+        "model": model,
+        "prompt_version": prompt_version,
+    }
+
+
+def citation_binding_errors(
+    evidence: list[dict[str, Any]],
+    *,
+    project_id: str | None,
+) -> list[str]:
+    errors: list[str] = []
+    for item in evidence:
+        citation_id = str(item.get("citation_id") or "")
+        paper_id = str(item.get("paper_id") or "")
+        citation_project_id = str(item.get("project_id") or "")
+        if project_id and citation_project_id != project_id:
+            errors.append(
+                f"引用 {citation_id or '(missing)'} 不属于当前项目 {project_id}。"
+            )
+        if not paper_id or not citation_id.startswith(f"{paper_id}:"):
+            errors.append(
+                f"引用 {citation_id or '(missing)'} 与论文 ID {paper_id or '(missing)'} 不一致。"
+            )
+    return errors
+
+
+def semantic_conflict_reasons(statement: str, evidence_text: str) -> list[str]:
+    reasons: list[str] = []
+    if claim_has_polarity_conflict(statement, [{"text": evidence_text}]):
+        reasons.append("否定关系不一致：主张与引用对同一结果使用了相反极性。")
+
+    statement_directions = comparison_directions(statement)
+    evidence_directions = comparison_directions(evidence_text)
+    if statement_directions and evidence_directions and statement_directions.isdisjoint(
+        evidence_directions
+    ):
+        reasons.append("比较方向不一致：提升/下降、高于/低于或改善/退化方向相反。")
+
+    statement_numbers = numeric_facts(statement)
+    evidence_numbers = numeric_facts(evidence_text)
     if statement_numbers and not statement_numbers.issubset(evidence_numbers):
-        return False
+        reasons.append(
+            "数字或单位不一致：数值与 %、percentage points/points 等单位必须同时匹配。"
+        )
+
+    entity_mismatches = mismatched_labeled_entities(statement, evidence_text)
+    if entity_mismatches:
+        reasons.append(
+            "数据集、指标、模型或比较对象不一致：" + "；".join(entity_mismatches)
+        )
+
+    if _CAUSAL_PATTERN.search(statement) and _CORRELATION_PATTERN.search(evidence_text):
+        reasons.append("因果与相关性被混淆：引用只表达相关关系，主张扩大为因果关系。")
+
+    if (
+        not _CONDITIONAL_PATTERN.search(statement)
+        and _CONDITIONAL_PATTERN.search(evidence_text)
+    ):
+        reasons.append("条件性表述被扩大：引用使用 may/could/可能等限定，主张改成确定结论。")
+
+    if subject_object_reversed(statement, evidence_text):
+        reasons.append("关键实体的主语和比较对象发生对调。")
+    return list(dict.fromkeys(reasons))
+
+
+def numeric_facts(text: str) -> set[tuple[str, str]]:
+    facts: set[tuple[str, str]] = set()
+    for match in _NUMBER_WITH_UNIT_PATTERN.finditer(text):
+        raw_value = match.group("value")
+        try:
+            value = format(Decimal(raw_value).normalize(), "f")
+        except InvalidOperation:
+            value = raw_value
+        raw_unit = (match.group("unit") or "").casefold().strip()
+        if raw_unit in {"%", "percent", "百分比"}:
+            unit = "percent"
+        elif raw_unit in {
+            "percentage point",
+            "percentage points",
+            "point",
+            "points",
+            "pp",
+            "个百分点",
+        }:
+            unit = "percentage_points"
+        elif raw_unit == "倍":
+            unit = "multiple"
+        else:
+            unit = "scalar"
+        facts.add((value, unit))
+    return facts
+
+
+def comparison_directions(text: str) -> set[str]:
+    return {
+        direction
+        for direction, pattern in _DIRECTION_PATTERNS.items()
+        if pattern.search(text)
+    }
+
+
+def labeled_entities(text: str) -> dict[str, set[str]]:
+    entities: dict[str, set[str]] = {}
+    for match in _LABELED_ENTITY_PATTERN.finditer(text):
+        kind = match.group("kind").casefold()
+        value = f"{kind} {match.group('name').casefold()}"
+        entities.setdefault(kind, set()).add(value)
+    acronyms = {item.casefold() for item in _ACRONYM_PATTERN.findall(text)}
+    if acronyms:
+        entities["acronym"] = acronyms
+    return entities
+
+
+def mismatched_labeled_entities(statement: str, evidence_text: str) -> list[str]:
+    statement_entities = labeled_entities(statement)
+    evidence_entities = labeled_entities(evidence_text)
+    mismatches: list[str] = []
+    for kind, values in statement_entities.items():
+        evidence_values = evidence_entities.get(kind, set())
+        if evidence_values and values.isdisjoint(evidence_values):
+            mismatches.append(
+                f"{kind} {', '.join(sorted(values))} 与引用中的 "
+                f"{', '.join(sorted(evidence_values))} 不同"
+            )
+        elif not evidence_values:
+            mismatches.append(f"引用未出现主张中的 {kind}：{', '.join(sorted(values))}")
+    return mismatches
+
+
+def subject_object_reversed(statement: str, evidence_text: str) -> bool:
+    statement_pairs = relation_entity_pairs(statement)
+    evidence_pairs = relation_entity_pairs(evidence_text)
+    return any(
+        claim_subject == evidence_object and claim_object == evidence_subject
+        for claim_subject, claim_object in statement_pairs
+        for evidence_subject, evidence_object in evidence_pairs
+        if claim_subject != claim_object
+    )
+
+
+def relation_entity_pairs(text: str) -> list[tuple[str, str]]:
+    entity_matches = list(_LABELED_ENTITY_PATTERN.finditer(text))
+    pairs: list[tuple[str, str]] = []
+    for relation in _RELATION_PATTERN.finditer(text):
+        before = [item for item in entity_matches if item.end() <= relation.start()]
+        after = [item for item in entity_matches if item.start() >= relation.end()]
+        if not before or not after:
+            continue
+        subject = (
+            f"{before[-1].group('kind')} {before[-1].group('name')}"
+        ).casefold()
+        object_ = (
+            f"{after[0].group('kind')} {after[0].group('name')}"
+        ).casefold()
+        pairs.append((subject, object_))
+    return pairs
+
+
+def claim_lexical_overlap(statement: str, evidence_text: str) -> bool:
     statement_has_cjk = bool(_CJK_PATTERN.search(statement))
     evidence_has_cjk = bool(_CJK_PATTERN.search(evidence_text))
     statement_has_latin = bool(_LATIN_PATTERN.search(statement.lower()))
@@ -557,6 +883,15 @@ def build_extractive_claims(
                 "citation_ids": [str(citation["citation_id"])],
                 "confidence": claim_confidence([citation]),
                 "evidence_level": str(citation.get("evidence_level") or "metadata_only"),
+                "verification": claim_verification(
+                    status="supported",
+                    method="exact_quote",
+                    reasons=[
+                        "citation ID、项目和论文绑定检查通过。",
+                        "该回答直接摘录引用原文，没有进行释义扩写。",
+                    ],
+                    citation_ids=[str(citation["citation_id"])],
+                ),
             }
         )
     return claims
@@ -596,12 +931,46 @@ def citation_validation_for_claims(
             dict.fromkeys(
                 citation_id
                 for claim in claims
+                if (
+                    isinstance(claim.get("verification"), dict)
+                    and claim["verification"].get("status") == "supported"
+                )
                 for citation_id in claim["citation_ids"]
+                if citation_id in {
+                    str(item["citation_id"])
+                    for item in citations
+                }
             )
         ),
         "rejected_citation_ids": list(dict.fromkeys(rejected_citation_ids or [])),
         "rejected_claim_count": rejected_claim_count,
     }
+
+
+def supported_claims(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        claim
+        for claim in claims
+        if isinstance(claim.get("verification"), dict)
+        and claim["verification"].get("status") == "supported"
+    ]
+
+
+def deduplicate_claims(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[str, tuple[str, ...]]] = set()
+    for claim in claims:
+        key = (
+            _normalize_text(claim.get("statement")).casefold(),
+            tuple(str(item) for item in claim.get("citation_ids") or []),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        item = dict(claim)
+        item["id"] = f"rag-claim-{len(unique) + 1}"
+        unique.append(item)
+    return unique
 
 
 def build_answer_limitations(
@@ -634,9 +1003,9 @@ def render_answer_text(
     if not claims:
         return ""
     heading = (
-        "Evidence supported findings:"
+        "Directly traceable evidence:"
         if language == "en"
-        else "基于当前索引证据，可确认以下内容："
+        else "可直接定位到引用原文的内容："
     )
     lines = [heading]
     for index, claim in enumerate(claims, start=1):
@@ -682,8 +1051,36 @@ def render_rag_answer_markdown(answer: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-        "## Evidence",
-        "",
+            "## Claim Verification",
+            "",
+        ]
+    )
+    for claim in answer.get("claims") or []:
+        verification = (
+            claim.get("verification")
+            if isinstance(claim, dict) and isinstance(claim.get("verification"), dict)
+            else {}
+        )
+        lines.extend(
+            [
+                f"### {claim.get('statement', '')}",
+                "",
+                (
+                    f"Status: {verification.get('status', 'not_checked')} · "
+                    f"Method: {verification.get('method', 'rule_based')}"
+                ),
+                "",
+            ]
+        )
+        lines.extend(
+            f"- {reason}"
+            for reason in verification.get("reasons") or []
+        )
+        lines.append("")
+    lines.extend(
+        [
+            "## Evidence",
+            "",
         ]
     )
     for citation in answer.get("citations") or []:
@@ -743,7 +1140,12 @@ def _select_context_citations(
 
 
 def weakest_evidence_level(evidence: list[dict[str, Any]]) -> str:
-    ranks = {"metadata_only": 0, "abstract_only": 1, "full_text": 2}
+    ranks = {
+        "metadata_only": 0,
+        "abstract_only": 1,
+        "supplemental_text": 2,
+        "full_text": 3,
+    }
     return min(
         (str(item.get("evidence_level") or "metadata_only") for item in evidence),
         key=lambda value: ranks.get(value, 0),

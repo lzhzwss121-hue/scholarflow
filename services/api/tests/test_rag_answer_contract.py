@@ -7,17 +7,22 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from pydantic import ValidationError
+
 from scholarflow_api.rag_answer import (
     OpenRouterRagAnswerGenerator,
     RagGenerationError,
     validate_generated_claims,
+    verify_claim_support,
 )
+from scholarflow_api.schemas import RagClaimVerification
 
 
 def citation_fixture() -> dict[str, object]:
     return {
         "rank": 1,
         "citation_id": "paper_grounding:experiments:p.9:chunk-2",
+        "project_id": "project_grounding",
         "paper_id": "paper_grounding",
         "paper_title": "Counterfactual Grounding for Object Hallucination",
         "paper_authors": "A. Researcher",
@@ -143,12 +148,20 @@ class RagAnswerContractTest(unittest.TestCase):
                 )
                 self.assertTrue(response.quality_assessment.human_review_required)
                 self.assertGreaterEqual(len(response.claims), 1)
+                self.assertTrue(
+                    all(
+                        claim.verification.status == "supported"
+                        and claim.verification.method == "exact_quote"
+                        for claim in response.claims
+                    )
+                )
                 self.assertGreaterEqual(len(response.citations), 1)
                 self.assertEqual(
                     response.citation_validation.used_citation_ids,
                     [item for claim in response.claims for item in claim.citation_ids],
                 )
                 first_citation = response.citations[0]
+                self.assertEqual(first_citation.project_id, project.id)
                 self.assertEqual(first_citation.paper_id, paper_id)
                 self.assertEqual(first_citation.evidence_level, "full_text")
                 self.assertIn(first_citation.citation_id, response.answer)
@@ -162,7 +175,11 @@ class RagAnswerContractTest(unittest.TestCase):
                 self.assertIsNotNone(response.artifact)
                 self.assertTrue(response.artifact.title.startswith("rag_answer_"))
                 artifact_payload = json.loads(response.artifact.content_json)
-                self.assertEqual(artifact_payload["schema_version"], "rag_answer.v2")
+                self.assertEqual(artifact_payload["schema_version"], "rag_answer.v3")
+                self.assertEqual(
+                    artifact_payload["claims"][0]["verification"]["status"],
+                    "supported",
+                )
                 self.assertEqual(
                     artifact_payload["citation_validation"]["used_citation_ids"],
                     response.citation_validation.used_citation_ids,
@@ -240,9 +257,7 @@ class RagAnswerContractTest(unittest.TestCase):
             {
                 "claims": [
                     {
-                        "statement": (
-                            "Counterfactual grounding reduces object hallucination rate by 12% on POPE."
-                        ),
+                        "statement": str(citation["text"]),
                         "citation_ids": [valid_id],
                     },
                     {
@@ -260,8 +275,12 @@ class RagAnswerContractTest(unittest.TestCase):
             citations=[citation],
         )
 
-        self.assertEqual(len(result["claims"]), 1)
+        self.assertEqual(len(result["claims"]), 3)
         self.assertEqual(result["claims"][0]["citation_ids"], [valid_id])
+        self.assertEqual(result["claims"][0]["verification"]["status"], "supported")
+        self.assertEqual(result["claims"][0]["verification"]["method"], "exact_quote")
+        self.assertEqual(result["claims"][1]["verification"]["status"], "contradicted")
+        self.assertEqual(result["claims"][2]["verification"]["status"], "insufficient")
         self.assertEqual(result["rejected_claim_count"], 2)
         self.assertEqual(result["rejected_citation_ids"], ["invented:citation"])
         self.assertEqual(result["used_citation_ids"], [valid_id])
@@ -288,9 +307,270 @@ class RagAnswerContractTest(unittest.TestCase):
             citations=[citation],
         )
 
-        self.assertEqual(result["claims"], [])
+        self.assertEqual(len(result["claims"]), 1)
+        self.assertEqual(
+            result["claims"][0]["verification"]["status"],
+            "contradicted",
+        )
+        self.assertTrue(
+            any(
+                "否定关系不一致" in reason
+                for reason in result["claims"][0]["verification"]["reasons"]
+            )
+        )
         self.assertEqual(result["rejected_claim_count"], 1)
         self.assertEqual(result["used_citation_ids"], [])
+
+    def test_adversarial_semantic_conflicts_never_return_supported(self) -> None:
+        cases = [
+            (
+                "Method X does not reduce hallucination rate.",
+                "Method X reduces hallucination rate.",
+                "否定关系",
+            ),
+            (
+                "Method X produces higher accuracy than Method Y.",
+                "Method X produces lower accuracy than Method Y.",
+                "比较方向",
+            ),
+            (
+                "Method X decreases error.",
+                "Method X increases error.",
+                "比较方向",
+            ),
+            (
+                "Method X improves accuracy.",
+                "Method X degrades accuracy.",
+                "比较方向",
+            ),
+            (
+                "Method X is correlated with hallucination.",
+                "Method X causes hallucination.",
+                "因果与相关性",
+            ),
+            (
+                "Method X may improve accuracy.",
+                "Method X improves accuracy.",
+                "条件性表述",
+            ),
+            (
+                "Method X improves accuracy on Dataset A.",
+                "Method X improves accuracy on Dataset B.",
+                "数据集",
+            ),
+            (
+                "Method X improves accuracy by 10%.",
+                "Method X improves accuracy by 10 percentage points.",
+                "数字或单位",
+            ),
+            (
+                "Method X reports a score of 10%.",
+                "Method X reports a score of 0.1.",
+                "数字或单位",
+            ),
+            (
+                "Model A outperforms Model B.",
+                "Model B outperforms Model A.",
+                "主语和比较对象",
+            ),
+            (
+                "方法甲并非提升准确率。",
+                "方法甲提升准确率。",
+                "否定关系",
+            ),
+            (
+                "方法甲的准确率高于方法乙。",
+                "方法甲的准确率低于方法乙。",
+                "比较方向",
+            ),
+            (
+                "方法甲使错误率下降。",
+                "方法甲使错误率提升。",
+                "比较方向",
+            ),
+        ]
+        for evidence_text, claim, expected_reason in cases:
+            with self.subTest(claim=claim):
+                citation = citation_fixture()
+                citation["text"] = evidence_text
+                verification = verify_claim_support(
+                    claim,
+                    [citation],
+                    citation_ids=[str(citation["citation_id"])],
+                    project_id=str(citation["project_id"]),
+                )
+                self.assertEqual(verification["status"], "contradicted")
+                self.assertNotEqual(verification["status"], "supported")
+                self.assertTrue(
+                    any(expected_reason in reason for reason in verification["reasons"]),
+                    verification["reasons"],
+                )
+
+    def test_common_english_and_chinese_negations_are_detected(self) -> None:
+        negated_evidence = [
+            "Method X does not reduce hallucination.",
+            "Method X reports no reduction in hallucination.",
+            "Method X works without reducing hallucination.",
+            "Method X fails to reduce hallucination.",
+            "Method X fails at reducing hallucination.",
+            "Method X cannot reduce hallucination.",
+            "方法甲不降低幻觉率。",
+            "方法甲未降低幻觉率。",
+            "方法甲没有降低幻觉率。",
+            "方法甲无法降低幻觉率。",
+            "方法甲并非降低幻觉率。",
+        ]
+        for evidence_text in negated_evidence:
+            claim = (
+                "方法甲降低幻觉率。"
+                if "方法甲" in evidence_text
+                else "Method X reduces hallucination."
+            )
+            with self.subTest(evidence=evidence_text):
+                citation = citation_fixture()
+                citation["text"] = evidence_text
+                verification = verify_claim_support(
+                    claim,
+                    [citation],
+                    citation_ids=[str(citation["citation_id"])],
+                    project_id=str(citation["project_id"]),
+                )
+                self.assertEqual(verification["status"], "contradicted")
+                self.assertTrue(
+                    any("否定关系" in reason for reason in verification["reasons"])
+                )
+
+    def test_capability_word_is_not_expanded_to_unconditional_result(self) -> None:
+        citation = citation_fixture()
+        citation["text"] = "Method X can improve accuracy under calibrated decoding."
+        verification = verify_claim_support(
+            "Method X improves accuracy under calibrated decoding.",
+            [citation],
+            citation_ids=[str(citation["citation_id"])],
+            project_id=str(citation["project_id"]),
+        )
+
+        self.assertEqual(verification["status"], "contradicted")
+        self.assertTrue(any("条件性表述" in item for item in verification["reasons"]))
+
+    def test_lexical_overlap_is_not_semantic_support(self) -> None:
+        citation = citation_fixture()
+        verification = verify_claim_support(
+            "Counterfactual grounding reduces hallucination on POPE.",
+            [citation],
+            citation_ids=[str(citation["citation_id"])],
+            project_id=str(citation["project_id"]),
+        )
+
+        self.assertEqual(verification["status"], "not_checked")
+        self.assertEqual(verification["method"], "numeric_lexical")
+        self.assertTrue(any("词面一致" in item for item in verification["reasons"]))
+
+    def test_exact_quote_is_directly_supported(self) -> None:
+        citation = citation_fixture()
+        verification = verify_claim_support(
+            str(citation["text"]),
+            [citation],
+            citation_ids=[str(citation["citation_id"])],
+            project_id=str(citation["project_id"]),
+        )
+
+        self.assertEqual(verification["status"], "supported")
+        self.assertEqual(verification["method"], "exact_quote")
+
+    def test_invalid_and_cross_project_citations_are_insufficient(self) -> None:
+        citation = citation_fixture()
+        valid_id = str(citation["citation_id"])
+        cross_project = validate_generated_claims(
+            {
+                "claims": [
+                    {
+                        "statement": str(citation["text"]),
+                        "citation_ids": [valid_id],
+                    }
+                ]
+            },
+            citations=[citation],
+            project_id="another_project",
+        )
+        invalid = validate_generated_claims(
+            {
+                "claims": [
+                    {
+                        "statement": "Method X improves accuracy.",
+                        "citation_ids": ["invented:citation"],
+                    }
+                ]
+            },
+            citations=[citation],
+            project_id=str(citation["project_id"]),
+        )
+        paper_mismatch_citation = {
+            **citation,
+            "citation_id": "other_paper:experiments:p.9:chunk-2",
+        }
+        paper_mismatch = validate_generated_claims(
+            {
+                "claims": [
+                    {
+                        "statement": str(citation["text"]),
+                        "citation_ids": [paper_mismatch_citation["citation_id"]],
+                    }
+                ]
+            },
+            citations=[paper_mismatch_citation],
+            project_id=str(citation["project_id"]),
+        )
+
+        self.assertEqual(
+            cross_project["claims"][0]["verification"]["status"],
+            "insufficient",
+        )
+        self.assertEqual(cross_project["rejected_citation_ids"], [valid_id])
+        self.assertEqual(invalid["claims"][0]["verification"]["status"], "insufficient")
+        self.assertEqual(invalid["rejected_citation_ids"], ["invented:citation"])
+        self.assertEqual(
+            paper_mismatch["claims"][0]["verification"]["status"],
+            "insufficient",
+        )
+        self.assertEqual(
+            paper_mismatch["rejected_citation_ids"],
+            ["other_paper:experiments:p.9:chunk-2"],
+        )
+
+    def test_model_checked_verification_requires_complete_provenance(self) -> None:
+        with self.assertRaises(ValidationError):
+            RagClaimVerification(
+                status="supported",
+                method="model_checked",
+                reasons=["Model judged the claim entailed."],
+                citation_ids=["paper:method:p.1:chunk-1"],
+                provider="openrouter",
+                model="",
+                prompt_version="claim-entailment-v1",
+            )
+
+        verification = RagClaimVerification(
+            status="supported",
+            method="model_checked",
+            reasons=["Model judged the claim entailed; this is not factual proof."],
+            citation_ids=["paper:method:p.1:chunk-1"],
+            provider="openrouter",
+            model="provider/model",
+            prompt_version="claim-entailment-v1",
+        )
+        self.assertEqual(verification.provider, "openrouter")
+        self.assertEqual(verification.model, "provider/model")
+        self.assertEqual(verification.prompt_version, "claim-entailment-v1")
+
+    def test_supported_status_cannot_use_lexical_method(self) -> None:
+        with self.assertRaises(ValidationError):
+            RagClaimVerification(
+                status="supported",
+                method="numeric_lexical",
+                reasons=["Keywords overlap."],
+                citation_ids=["paper:method:p.1:chunk-1"],
+            )
 
     def test_openrouter_generation_uses_strict_evidence_payload_and_verified_tls(self) -> None:
         citation = citation_fixture()

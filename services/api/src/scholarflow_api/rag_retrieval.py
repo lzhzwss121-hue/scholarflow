@@ -902,6 +902,7 @@ def _retrieval_hit(row: dict[str, Any], *, rank: int) -> dict[str, Any]:
     return {
         "rank": rank,
         "citation_id": citation_id,
+        "project_id": str(row.get("project_id") or ""),
         "paper_id": str(row["paper_id"]),
         "paper_title": str(row.get("paper_title") or ""),
         "paper_authors": str(row.get("paper_authors") or ""),

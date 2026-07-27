@@ -23,6 +23,15 @@ def answer_fixture(
                 "citation_ids": [citation_id],
                 "confidence": "medium",
                 "evidence_level": evidence_level,
+                "verification": {
+                    "status": "supported",
+                    "method": "exact_quote",
+                    "reasons": ["The statement is a direct quote."],
+                    "citation_ids": [citation_id],
+                    "provider": "",
+                    "model": "",
+                    "prompt_version": "",
+                },
             }
         ],
         "citations": [
@@ -62,9 +71,8 @@ class RagEvaluationContractTest(unittest.TestCase):
         self.assertEqual(assessment["metrics"]["full_text_coverage"], 1.0)
         self.assertTrue(assessment["human_review_required"])
         self.assertIn("不能替代", assessment["disclaimer"])
-        self.assertTrue(
-            any("自动检查不能验证" in item for item in assessment["risk_flags"])
-        )
+        self.assertTrue(any("不代表结论真实" in item for item in assessment["risk_flags"]))
+        self.assertIn("不判断论文结论是否真实", assessment["disclaimer"])
 
     def test_abstract_evidence_cannot_receive_strong_evidence_status(self) -> None:
         assessment = assess_rag_answer(

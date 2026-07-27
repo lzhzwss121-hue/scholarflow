@@ -4828,6 +4828,22 @@ td a {
   background: #fbfcfd;
 }
 
+.rag-claim-grid article[data-verification-status="supported"] {
+  border-color: #b9d8c8;
+  background: #f6fbf8;
+}
+
+.rag-claim-grid article[data-verification-status="contradicted"] {
+  border-color: #efb9b2;
+  background: #fff8f7;
+}
+
+.rag-claim-grid article[data-verification-status="insufficient"],
+.rag-claim-grid article[data-verification-status="not_checked"] {
+  border-color: #ead4a4;
+  background: #fffaf0;
+}
+
 .rag-claim-header {
   display: flex;
   align-items: center;
@@ -4860,6 +4876,21 @@ td a {
   color: #344256;
   font-size: 13px;
   line-height: 1.7;
+}
+
+.rag-claim-reasons {
+  margin: 9px 0 0;
+  padding-left: 18px;
+  color: #5a6675;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.rag-model-verification {
+  padding: 8px;
+  border-radius: 6px;
+  background: #f1f4f7;
+  font-size: 11px !important;
 }
 
 .rag-citation-buttons {

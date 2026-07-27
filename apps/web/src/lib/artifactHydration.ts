@@ -743,17 +743,103 @@ function hydrateRagAnswer(items: ApiArtifact[]): ApiRagAnswerResponse | null {
         ? answerKind
         : "no_answer",
     answer: asString(payload.answer),
-    claims: Array.isArray(payload.claims)
-      ? (payload.claims as ApiRagAnswerResponse["claims"])
-      : [],
+    claims: normalizeRagAnswerClaims(payload.claims, asString(payload.schema_version)),
     unanswered_parts: asStringArray(payload.unanswered_parts),
     limitations: asStringArray(payload.limitations),
-    citations: Array.isArray(payload.citations)
-      ? (payload.citations as ApiRagAnswerResponse["citations"])
-      : [],
+    citations: normalizeRagCitations(payload.citations, artifact.artifact.project_id),
     artifact: artifact.artifact,
     warnings: asStringArray(payload.warnings),
   };
+}
+
+function normalizeRagAnswerClaims(
+  value: unknown,
+  schemaVersion: string,
+): ApiRagAnswerResponse["claims"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item) => {
+    if (!isRecord(item)) {
+      return [];
+    }
+    const citationIds = asStringArray(item.citation_ids);
+    const rawVerification = isRecord(item.verification) ? item.verification : null;
+    const rawStatus = asString(rawVerification?.status);
+    const rawMethod = asString(rawVerification?.method);
+    const validMethod =
+      rawMethod === "exact_quote" ||
+      rawMethod === "numeric_lexical" ||
+      rawMethod === "rule_based" ||
+      rawMethod === "model_checked" ||
+      rawMethod === "human"
+        ? rawMethod
+        : "rule_based";
+    const modelMetadataComplete =
+      validMethod !== "model_checked" ||
+      Boolean(
+        asString(rawVerification?.provider) &&
+        asString(rawVerification?.model) &&
+        asString(rawVerification?.prompt_version),
+      );
+    const supportMethodReliable =
+      validMethod === "exact_quote" || validMethod === "model_checked" || validMethod === "human";
+    const currentVerificationSchema = schemaVersion === "rag_answer.v3";
+    const status =
+      rawStatus === "contradicted" || rawStatus === "insufficient" || rawStatus === "not_checked"
+        ? rawStatus
+        : rawStatus === "supported" &&
+            supportMethodReliable &&
+            modelMetadataComplete &&
+            currentVerificationSchema
+          ? "supported"
+          : "not_checked";
+    const reasons = asStringArray(rawVerification?.reasons);
+    if (!rawVerification) {
+      reasons.push("旧 Artifact 缺少结构化验证结果；已保守降级为仅通过引用格式检查。");
+    } else if (rawStatus === "supported" && status !== "supported") {
+      reasons.push("旧验证缺少当前 Schema 或可靠方法/模型溯源，不能恢复为原文支持。");
+    }
+    return [{
+      id: asString(item.id),
+      statement: asString(item.statement),
+      citation_ids: citationIds,
+      confidence:
+        item.confidence === "high" || item.confidence === "medium" ? item.confidence : "low",
+      evidence_level: normalizeEvidenceLevel(
+        asString(item.evidence_level),
+      ) as ApiRagAnswerResponse["claims"][number]["evidence_level"],
+      verification: {
+        status,
+        method: validMethod,
+        reasons: [...new Set(reasons)],
+        citation_ids: asStringArray(rawVerification?.citation_ids).length
+          ? asStringArray(rawVerification?.citation_ids)
+          : citationIds,
+        provider: asString(rawVerification?.provider),
+        model: asString(rawVerification?.model),
+        prompt_version: asString(rawVerification?.prompt_version),
+      },
+    }];
+  });
+}
+
+function normalizeRagCitations(
+  value: unknown,
+  projectId: string,
+): ApiRagAnswerResponse["citations"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item) => {
+    if (!isRecord(item)) {
+      return [];
+    }
+    return [{
+      ...(item as unknown as ApiRagAnswerResponse["citations"][number]),
+      project_id: asString(item.project_id) || projectId,
+    }];
+  });
 }
 
 function normalizeMemoryClaims(value: unknown): NonNullable<ApiResearchMemoryQueryResponse["claims"]> {

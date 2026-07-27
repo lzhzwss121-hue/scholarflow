@@ -22,8 +22,8 @@ export function RagAnswerPanel({ result }: { result: ApiRagAnswerResponse | null
           <p className="section-kicker">Full-text RAG</p>
           <h2>直接查询论文摘要与 PDF 原文索引</h2>
           <p>
-            系统先检索 chunk，再校验每条主张的 citation ID。没有过阈值证据时会拒答；
-            摘要命中不会显示成全文结论。
+            系统分别记录引用完整性、词面检查与语义支持状态。没有过阈值证据时会拒答；
+            词项重合不会显示成“论断已验证”。
           </p>
         </div>
       </section>
@@ -60,7 +60,7 @@ export function RagAnswerPanel({ result }: { result: ApiRagAnswerResponse | null
           <h2>{result.question}</h2>
           <p>
             {result.answer_kind === "grounded_synthesis"
-              ? "已生成通过 citation 校验的综合回答。"
+              ? "回答正文只包含逐字原文、可靠语义检查或人工确认直接支持的内容。"
               : "当前显示逐字证据摘录，没有把摘录扩写成未经支持的结论。"}
           </p>
         </div>
@@ -92,15 +92,28 @@ export function RagAnswerPanel({ result }: { result: ApiRagAnswerResponse | null
         <p>{result.answer}</p>
       </div>
 
-      <div className="rag-claim-grid" aria-label="rag validated claims">
+      <div className="rag-claim-grid" aria-label="rag claim verification results">
         {result.claims.map((claim, index) => (
-          <article key={claim.id}>
+          <article data-verification-status={claim.verification.status} key={claim.id}>
             <div className="rag-claim-header">
               <span>{String(index + 1).padStart(2, "0")}</span>
-              <strong>{formatEvidenceLevel(claim.evidence_level)}</strong>
-              <small>{claim.confidence} confidence</small>
+              <strong>{formatClaimVerificationStatus(claim.verification)}</strong>
+              <small>{formatClaimVerificationMethod(claim.verification.method)}</small>
+              <small>{formatEvidenceLevel(claim.evidence_level)}</small>
             </div>
             <p>{claim.statement}</p>
+            {claim.verification.reasons.length ? (
+              <ul className="rag-claim-reasons">
+                {claim.verification.reasons.map((reason) => <li key={reason}>{reason}</li>)}
+              </ul>
+            ) : null}
+            {claim.verification.method === "model_checked" ? (
+              <p className="rag-model-verification">
+                模型语义检查（不是事实证明）：{claim.verification.provider || "provider unknown"} /{" "}
+                {claim.verification.model || "model unknown"} /{" "}
+                {claim.verification.prompt_version || "prompt version unknown"}
+              </p>
+            ) : null}
             <div className="rag-citation-buttons">
               {claim.citation_ids.map((citationId) => (
                 <button
@@ -262,6 +275,7 @@ function RagQualityPanel({
         </details>
       ) : null}
       <p className="rag-quality-disclaimer">{assessment.disclaimer}</p>
+      <p className="rag-quality-disclaimer"><strong>该分数不代表结论真实。</strong></p>
     </section>
   );
 }
@@ -479,6 +493,45 @@ function formatQualityStatus(status: ApiRagQualityAssessment["quality_status"]) 
     return "证据不足";
   }
   return "需要复核";
+}
+
+function formatClaimVerificationStatus(
+  verification: ApiRagAnswerResponse["claims"][number]["verification"],
+) {
+  if (verification.status === "supported" && verification.method === "exact_quote") {
+    return "原文直接支持";
+  }
+  if (verification.status === "supported" && verification.method === "model_checked") {
+    return "模型判断支持（非事实证明）";
+  }
+  if (verification.status === "supported" && verification.method === "human") {
+    return "人工确认支持";
+  }
+  if (verification.status === "contradicted") {
+    return "存在矛盾";
+  }
+  if (verification.status === "insufficient") {
+    return "证据不足";
+  }
+  return "仅通过引用格式检查";
+}
+
+function formatClaimVerificationMethod(
+  method: ApiRagAnswerResponse["claims"][number]["verification"]["method"],
+) {
+  if (method === "exact_quote") {
+    return "逐字引用";
+  }
+  if (method === "numeric_lexical") {
+    return "数字与词面检查";
+  }
+  if (method === "model_checked") {
+    return "模型语义检查";
+  }
+  if (method === "human") {
+    return "人工确认";
+  }
+  return "规则检查";
 }
 
 function inferMatchStrength(

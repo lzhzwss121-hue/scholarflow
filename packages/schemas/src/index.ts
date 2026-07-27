@@ -655,6 +655,7 @@ export interface ApiRagAnswerRequest {
 export interface ApiRagSearchHit {
   rank: number;
   citation_id: string;
+  project_id: string;
   paper_id: string;
   paper_title: string;
   paper_authors: string;
@@ -709,6 +710,17 @@ export interface ApiRagAnswerClaim {
   citation_ids: string[];
   confidence: "low" | "medium" | "high";
   evidence_level: ApiEvidenceLevel;
+  verification: ApiRagClaimVerification;
+}
+
+export interface ApiRagClaimVerification {
+  status: "supported" | "contradicted" | "insufficient" | "not_checked";
+  method: "exact_quote" | "numeric_lexical" | "rule_based" | "model_checked" | "human";
+  reasons: string[];
+  citation_ids: string[];
+  provider: string;
+  model: string;
+  prompt_version: string;
 }
 
 export interface ApiRagCitationValidation {

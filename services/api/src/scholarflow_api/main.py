@@ -1363,7 +1363,7 @@ def create_project_rag_answer(
         )
         answer["quality_assessment"] = evaluation
         artifact_payload = {
-            "schema_version": "rag_answer.v2",
+            "schema_version": "rag_answer.v3",
             **answer,
         }
         artifact = insert_artifact_row(
@@ -1375,8 +1375,8 @@ def create_project_rag_answer(
             content_json=json.dumps(artifact_payload, ensure_ascii=False, indent=2),
             diff=(
                 "+ Retrieved traceable paper chunks\n"
-                "+ Validated claim citation IDs\n"
-                "+ Saved evidence-grounded RAG answer"
+                "+ Recorded claim verification status and method\n"
+                "+ Saved citation-grounded RAG answer"
             ),
             now=now,
         )
@@ -1406,7 +1406,7 @@ def create_project_rag_answer(
             "rag.answer",
             "done" if answer["claims"] else "partial",
             (
-                f"生成 {len(answer['claims'])} 条通过引用校验的主张；"
+                f"记录 {len(answer['claims'])} 条带结构化验证状态的主张；"
                 f"模式 {answer['answer_kind']}。"
             ),
             now,

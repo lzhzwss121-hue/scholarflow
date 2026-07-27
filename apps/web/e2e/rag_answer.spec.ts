@@ -38,6 +38,7 @@ const paper = {
 const citation = {
   rank: 1,
   citation_id: `${paper.id}:experiments:p.9:chunk-2`,
+  project_id: project.id,
   paper_id: paper.id,
   paper_title: paper.title,
   paper_authors: paper.authors,
@@ -137,7 +138,10 @@ function qualityAssessment(safeRefusal = false) {
   };
 }
 
-async function mockWorkspace(page: Page) {
+async function mockWorkspace(
+  page: Page,
+  persistedArtifacts: Array<typeof artifact> = [],
+) {
   await page.route("**/health", async (route) => {
     await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
   });
@@ -154,11 +158,29 @@ async function mockWorkspace(page: Page) {
     await route.fulfill({ json: [] });
   });
   await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
-    await route.fulfill({ json: [] });
+    await route.fulfill({
+      json: persistedArtifacts.map((item) => ({
+        id: item.id,
+        project_id: item.project_id,
+        title: item.title,
+        kind: item.kind,
+        created_at: item.created_at,
+        updated_at: item.updated_at,
+        markdown_bytes: item.content_markdown.length,
+        json_bytes: item.content_json.length,
+        markdown_preview: item.content_markdown.slice(0, 120),
+        json_schema_version: "rag_answer.v2",
+      })),
+    });
   });
+  for (const item of persistedArtifacts) {
+    await page.route(`**/artifacts/${item.id}`, async (route) => {
+      await route.fulfill({ json: item });
+    });
+  }
 }
 
-test("full-text RAG renders validated claims and focuses the cited evidence", async ({ page }) => {
+test("full-text RAG renders directly supported claims and focuses the cited evidence", async ({ page }) => {
   await mockWorkspace(page);
   let requestBody: Record<string, unknown> = {};
   await page.route(`**/projects/${project.id}/rag-answer`, async (route) => {
@@ -176,6 +198,15 @@ test("full-text RAG renders validated claims and focuses the cited evidence", as
             citation_ids: [citation.citation_id],
             confidence: "high",
             evidence_level: "full_text",
+            verification: {
+              status: "supported",
+              method: "exact_quote",
+              reasons: ["该回答直接摘录引用原文，没有进行释义扩写。"],
+              citation_ids: [citation.citation_id],
+              provider: "",
+              model: "",
+              prompt_version: "",
+            },
           },
         ],
         unanswered_parts: ["尚未覆盖跨模型复现。"],
@@ -204,6 +235,8 @@ test("full-text RAG renders validated claims and focuses the cited evidence", as
 
   await expect(page.locator('[aria-label="evidence grounded rag answer"]')).toBeVisible();
   await expect(page.getByText("POPE 上 object hallucination rate 降低 12%")).toBeVisible();
+  await expect(page.getByText("原文直接支持")).toBeVisible();
+  await expect(page.getByText("逐字引用")).toBeVisible();
   await expect(page.getByText("本次全部在本机处理")).toBeVisible();
   const retrievalExplanation = page.locator('[aria-label="rag retrieval explanation"]');
   await expect(retrievalExplanation).toContainText("1 候选 → 0 门槛拒绝 → 1 返回");
@@ -219,6 +252,7 @@ test("full-text RAG renders validated claims and focuses the cited evidence", as
   await expect(page.getByText("证据链较强")).toBeVisible();
   await expect(page.getByText("全文覆盖").locator("..").getByText("100%")).toBeVisible();
   await expect(page.getByText("自动检查不能验证论文结论、因果关系或实验可复现性。")).toBeVisible();
+  await expect(page.getByText("该分数不代表结论真实。")).toBeVisible();
   await expect(page.getByText("PDF 全文").first()).toBeVisible();
   await expect(page.getByText("p.9", { exact: true })).toBeVisible();
   await expect(page.getByText(citation.text)).toBeVisible();
@@ -277,6 +311,162 @@ test("full-text RAG shows a refusal boundary when no chunk is reliable", async (
   await expect(page.getByText("安全拒答")).toBeVisible();
   await expect(page.getByText("没有可靠证据时未生成答案。")).toBeVisible();
   await expect(page.locator('[aria-label="rag no reliable hit"]')).toBeVisible();
-  await expect(page.locator('[aria-label="rag validated claims"]')).toHaveCount(0);
+  await expect(page.locator('[aria-label="rag claim verification results"]')).toHaveCount(0);
   await expect(page.locator('[aria-label="rag citation evidence"]')).toHaveCount(0);
+});
+
+test("RAG separates contradiction, insufficiency, and lexical-only checks", async ({ page }) => {
+  await mockWorkspace(page);
+  await page.route(`**/projects/${project.id}/rag-answer`, async (route) => {
+    await route.fulfill({
+      json: {
+        question: "Does Method X reduce hallucination?",
+        status: "partial",
+        answer_kind: "extractive_evidence",
+        answer: `可直接定位到引用原文的内容：\n1. ${citation.text} [${citation.citation_id}]`,
+        claims: [
+          {
+            id: "rag-claim-supported",
+            statement: citation.text,
+            citation_ids: [citation.citation_id],
+            confidence: "high",
+            evidence_level: "full_text",
+            verification: {
+              status: "supported",
+              method: "exact_quote",
+              reasons: ["主张是引用原文中的连续逐字片段。"],
+              citation_ids: [citation.citation_id],
+              provider: "",
+              model: "",
+              prompt_version: "",
+            },
+          },
+          {
+            id: "rag-claim-contradicted",
+            statement: "Method X increases hallucination.",
+            citation_ids: [citation.citation_id],
+            confidence: "low",
+            evidence_level: "full_text",
+            verification: {
+              status: "contradicted",
+              method: "rule_based",
+              reasons: ["比较方向不一致。"],
+              citation_ids: [citation.citation_id],
+              provider: "",
+              model: "",
+              prompt_version: "",
+            },
+          },
+          {
+            id: "rag-claim-insufficient",
+            statement: "Method X generalizes to every dataset.",
+            citation_ids: [citation.citation_id],
+            confidence: "low",
+            evidence_level: "full_text",
+            verification: {
+              status: "insufficient",
+              method: "rule_based",
+              reasons: ["引用中缺少足够的关键实体或关系。"],
+              citation_ids: [citation.citation_id],
+              provider: "",
+              model: "",
+              prompt_version: "",
+            },
+          },
+          {
+            id: "rag-claim-not-checked",
+            statement: "Method X reduces hallucination on POPE.",
+            citation_ids: [citation.citation_id],
+            confidence: "low",
+            evidence_level: "full_text",
+            verification: {
+              status: "not_checked",
+              method: "numeric_lexical",
+              reasons: ["引用词面一致，但词面一致不等于语义蕴含。"],
+              citation_ids: [citation.citation_id],
+              provider: "",
+              model: "",
+              prompt_version: "",
+            },
+          },
+        ],
+        unanswered_parts: [],
+        limitations: ["回答只覆盖本次检索返回的索引片段。"],
+        retrieval: retrieval(),
+        citations: [citation],
+        citation_validation: {
+          available_citation_ids: [citation.citation_id],
+          used_citation_ids: [citation.citation_id],
+          rejected_citation_ids: [],
+          rejected_claim_count: 3,
+        },
+        generation_provider: "local",
+        generation_model: "extractive-evidence-v1",
+        external_data_transfer: false,
+        quality_assessment: qualityAssessment(),
+        artifact,
+        warnings: [],
+      },
+    });
+  });
+
+  await page.goto("/#paper-memory");
+  await page.getByLabel("原文 RAG 问题").fill("Does Method X reduce hallucination?");
+  await page.getByRole("button", { name: "检索原文并回答" }).click();
+
+  const verification = page.locator('[aria-label="rag claim verification results"]');
+  await expect(verification.getByText("原文直接支持")).toBeVisible();
+  await expect(verification.getByText("存在矛盾")).toBeVisible();
+  await expect(verification.getByText("证据不足")).toBeVisible();
+  await expect(verification.getByText("仅通过引用格式检查", { exact: true })).toBeVisible();
+  await expect(verification.getByText("引用词面一致，但词面一致不等于语义蕴含。")).toBeVisible();
+});
+
+test("legacy RAG artifact without verification is conservatively downgraded", async ({ page }) => {
+  const legacyArtifact = {
+    ...artifact,
+    id: "artifact_e2e_rag_answer_legacy",
+    title: "rag_answer_legacy.md",
+    content_json: JSON.stringify({
+      schema_version: "rag_answer.v2",
+      question: "Does Method X reduce hallucination?",
+      status: "partial",
+      answer_kind: "extractive_evidence",
+      answer: "Legacy answer",
+      claims: [
+        {
+          id: "legacy-claim",
+          statement: "Method X reduces hallucination.",
+          citation_ids: [citation.citation_id],
+          confidence: "high",
+          evidence_level: "full_text",
+        },
+      ],
+      unanswered_parts: [],
+      limitations: [],
+      retrieval: retrieval(),
+      citations: [{ ...citation, project_id: undefined }],
+      citation_validation: {
+        available_citation_ids: [citation.citation_id],
+        used_citation_ids: [citation.citation_id],
+        rejected_citation_ids: [],
+        rejected_claim_count: 0,
+      },
+      generation_provider: "local",
+      generation_model: "extractive-evidence-v1",
+      external_data_transfer: false,
+      quality_assessment: qualityAssessment(),
+      warnings: [],
+    }),
+  };
+  await mockWorkspace(page, [legacyArtifact]);
+
+  await page.goto("/#paper-memory");
+
+  const verification = page.locator('[aria-label="rag claim verification results"]');
+  await expect(verification.getByText("仅通过引用格式检查", { exact: true })).toBeVisible();
+  await expect(verification.getByText("原文直接支持")).toHaveCount(0);
+  await expect(
+    verification.getByText("旧 Artifact 缺少结构化验证结果；已保守降级为仅通过引用格式检查。"),
+  ).toBeVisible();
 });
