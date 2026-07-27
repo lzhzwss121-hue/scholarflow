@@ -4671,7 +4671,7 @@ export function ResearchMemoryView({
               <ShieldCheck size={18} />
               <div>
                 <strong>原文 RAG</strong>
-                <span>检索 PDF/摘要 chunk，输出 citation 与主张校验</span>
+                <span>检索 PDF/摘要 chunk，分开输出引用、词面与语义支持状态</span>
               </div>
             </header>
             <label>

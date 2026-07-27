@@ -481,6 +481,7 @@ class RagSearchRequest(BaseModel):
 class RagSearchHit(BaseModel):
     rank: int
     citation_id: str
+    project_id: str = ""
     paper_id: str
     paper_title: str
     paper_authors: str = ""
@@ -533,12 +534,47 @@ class RagAnswerRequest(RagSearchRequest):
     language: Literal["zh-CN", "en"] = "zh-CN"
 
 
+class RagClaimVerification(BaseModel):
+    status: Literal["supported", "contradicted", "insufficient", "not_checked"]
+    method: Literal[
+        "exact_quote",
+        "numeric_lexical",
+        "rule_based",
+        "model_checked",
+        "human",
+    ]
+    reasons: list[str] = Field(default_factory=list)
+    citation_ids: list[str] = Field(default_factory=list)
+    provider: str = ""
+    model: str = ""
+    prompt_version: str = ""
+
+    @model_validator(mode="after")
+    def supported_status_requires_reliable_method(self) -> "RagClaimVerification":
+        if self.status == "supported" and self.method not in {
+            "exact_quote",
+            "model_checked",
+            "human",
+        }:
+            raise ValueError(
+                "supported claims require exact_quote, model_checked, or human verification"
+            )
+        if self.method == "model_checked" and not all(
+            (self.provider.strip(), self.model.strip(), self.prompt_version.strip())
+        ):
+            raise ValueError(
+                "model_checked verification requires provider, model, and prompt_version"
+            )
+        return self
+
+
 class RagAnswerClaim(BaseModel):
     id: str
     statement: str
     citation_ids: list[str] = Field(default_factory=list)
     confidence: Literal["low", "medium", "high"] = "low"
     evidence_level: EvidenceLevel = "metadata_only"
+    verification: RagClaimVerification
 
 
 class RagCitationValidation(BaseModel):
