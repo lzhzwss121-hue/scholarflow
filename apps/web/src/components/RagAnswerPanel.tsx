@@ -459,6 +459,9 @@ function formatEvidenceLevel(level: string) {
   if (level === "full_text") {
     return "PDF 全文";
   }
+  if (level === "supplemental_text") {
+    return "用户补充文本（未验证 PDF）";
+  }
   if (level === "abstract_only") {
     return "摘要";
   }

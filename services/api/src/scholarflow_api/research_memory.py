@@ -1052,7 +1052,13 @@ def build_memory_synthesis(
     claims: list[MemoryClaim] = []
     for index, (facet, hit, reference) in enumerate(selected[:6], start=1):
         paper_id = normalize_space(hit.memory.get("paper_id", "")) or normalize_space(hit.memory.get("id", ""))
-        quality = "full_text" if reference.get("source") == "pdf.full_text" else "abstract_only"
+        quality = (
+            "full_text"
+            if reference.get("source") == "pdf.full_text"
+            else "supplemental_text"
+            if reference.get("source") == "user.supplemental_text"
+            else "abstract_only"
+        )
         confidence = normalize_memory_claim_confidence(quality, reference.get("confidence", "low"))
         evidence_ref = {
             "paper_id": paper_id,
@@ -1085,7 +1091,7 @@ def build_memory_synthesis(
     if len(selected) < 2:
         unanswered_parts.append("缺少第二篇独立论文，不能判断该观察是否可复现或具有方向代表性。")
     if selected_pdf_count < len(selected):
-        unanswered_parts.append("部分命中仅有摘要证据，方法、实验设置和失败边界仍需回到 PDF 核验。")
+        unanswered_parts.append("部分命中仅有摘要证据或未验证补充文本，方法、实验设置和失败边界仍需回到 PDF 核验。")
     if not shared_terms and len(selected) >= 2:
         unanswered_parts.append("多篇命中的原文没有形成共同问题词项，不能把它们合并为统一结论。")
     return answer_summary, claims, list(dict.fromkeys(unanswered_parts))
@@ -1217,11 +1223,13 @@ def memory_evidence_quality(record: dict[str, Any]) -> str:
     sight = safe_json_dict(record.get("research_sight_json", "{}"))
     pack = sight.get("evidence_pack") if isinstance(sight.get("evidence_pack"), dict) else {}
     level = normalize_space(pack.get("evidence_level", "")).lower().replace("-", "_")
-    if level in {"metadata_only", "abstract_only", "full_text"}:
+    if level in {"metadata_only", "abstract_only", "supplemental_text", "full_text"}:
         return level
     sources = {reference.get("source") for reference in memory_evidence_refs(record)}
     if "pdf.full_text" in sources:
         return "full_text"
+    if "user.supplemental_text" in sources:
+        return "supplemental_text"
     if "metadata.abstract" in sources:
         return "abstract_only"
     return "metadata_only"

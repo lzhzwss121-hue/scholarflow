@@ -276,8 +276,10 @@ class RagRetrievalContractTest(unittest.TestCase):
                     grounding_paper.id,
                     PaperChunkIndexRequest(paper_text=full_text),
                 )
-                self.assertEqual(rebuilt.evidence_level, "full_text")
-                self.assertEqual(rebuilt.embedding_status, "not_started")
+                self.assertEqual(rebuilt.evidence_level, "abstract_only")
+                self.assertEqual(rebuilt.source, "metadata.abstract")
+                self.assertEqual(rebuilt.embedding_status, "ready")
+                self.assertIn("未经过 PDF", rebuilt.message)
                 full_text_hit = main_module.search_project_rag(
                     project.id,
                     RagSearchRequest(
@@ -287,12 +289,8 @@ class RagRetrievalContractTest(unittest.TestCase):
                         sections=["method"],
                     ),
                 )
-                self.assertEqual(full_text_hit.status, "complete")
-                self.assertEqual(full_text_hit.hits[0].section, "method")
-                self.assertEqual(full_text_hit.hits[0].page_start, 4)
-                self.assertEqual(full_text_hit.hits[0].page_end, 4)
-                self.assertEqual(full_text_hit.hits[0].source, "user_provided.full_text")
-                self.assertIn(":method:p.4:", full_text_hit.hits[0].citation_id)
+                self.assertEqual(full_text_hit.status, "no_reliable_hit")
+                self.assertEqual(full_text_hit.hits, [])
 
                 no_hit = main_module.search_project_rag(
                     project.id,

@@ -8,11 +8,14 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from typing import Any
 
 import certifi
+
+from scholarflow_api.schemas import EvidenceQualification
 
 
 # Direction Review fetches at most 10 papers. A 6-second per-file timeout with
@@ -30,6 +33,14 @@ PDF_AUTO_FETCH_ENABLED = os.getenv("SCHOLARFLOW_AUTO_FETCH_PDF", "1").strip().lo
     "no",
     "off",
 }
+VERIFIED_PDF_SOURCE_ORIGINS = frozenset(
+    {
+        "arxiv_pdf",
+        "openalex_open_access_pdf",
+        "open_access_pdf",
+        "user_uploaded_pdf",
+    },
+)
 
 
 RESEARCH_PAGE_MARKERS = {
@@ -71,7 +82,7 @@ SECTION_HEADING_PATTERNS = [
 
 @dataclass
 class FullTextResult:
-    status: str
+    status: str = ""
     pdf_url: str = ""
     source: str = ""
     page_count: int = 0
@@ -83,14 +94,274 @@ class FullTextResult:
 
     @property
     def is_extracted(self) -> bool:
-        return self.status == "extracted" and self.character_count >= PDF_MIN_TEXT_CHARS and bool(self.text)
+        qualification = self.evidence_qualification()
+        return qualification.level == "full_text" and qualification.verified
 
-    def to_provenance(self) -> dict[str, Any]:
+    def evidence_qualification(
+        self,
+        *,
+        has_abstract: bool = False,
+    ) -> EvidenceQualification:
+        return qualify_full_text_result(self, has_abstract=has_abstract)
+
+    def to_provenance(
+        self,
+        qualification: EvidenceQualification | None = None,
+        *,
+        has_abstract: bool = False,
+    ) -> dict[str, Any]:
+        qualification = qualification or self.evidence_qualification(
+            has_abstract=has_abstract,
+        )
         data = asdict(self)
         data.pop("text", None)
         data["page_numbers"] = extract_page_numbers(self.text)
         data["section_names"] = extract_section_names(self.text)
+        data["evidence_qualification"] = qualification.model_dump()
         return data
+
+
+def qualify_full_text_result(
+    result: FullTextResult,
+    *,
+    has_abstract: bool = False,
+) -> EvidenceQualification:
+    normalized_text = normalize_extracted_text(result.text)
+    actual_character_count = len(normalized_text)
+    section_names = extract_section_names(normalized_text)
+    source_origin = normalize_space(result.source)
+    verified_pdf = (
+        result.status == "extracted"
+        and source_origin in VERIFIED_PDF_SOURCE_ORIGINS
+        and result.page_count > 0
+        and result.character_count >= PDF_MIN_TEXT_CHARS
+        and actual_character_count >= PDF_MIN_TEXT_CHARS
+    )
+    if verified_pdf:
+        return EvidenceQualification(
+            level="full_text",
+            verified=True,
+            source_origin=source_origin,
+            character_count=actual_character_count,
+            page_count=result.page_count,
+            section_names=section_names,
+            reason="PDF 来源、解析状态、页数和有效文本量均通过统一检查。",
+        )
+    if source_origin == "user_provided" and normalized_text:
+        return EvidenceQualification(
+            level="supplemental_text",
+            verified=False,
+            source_origin=source_origin,
+            character_count=actual_character_count,
+            page_count=0,
+            section_names=[],
+            reason="用户补充文本未经过 PDF 解析、页码和来源验证。",
+        )
+    if has_abstract:
+        return EvidenceQualification(
+            level="abstract_only",
+            verified=False,
+            source_origin=source_origin or "metadata.abstract",
+            character_count=0,
+            page_count=0,
+            section_names=[],
+            reason="当前只有摘要可作为论文内容证据。",
+        )
+    return EvidenceQualification(
+        level="metadata_only",
+        verified=False,
+        source_origin=source_origin or "metadata",
+        character_count=0,
+        page_count=0,
+        section_names=[],
+        reason="当前没有通过验证的摘要或 PDF 正文证据。",
+    )
+
+
+def qualify_supplemental_text(
+    text: str,
+    *,
+    has_abstract: bool = False,
+    source_origin: str = "user_provided",
+) -> EvidenceQualification:
+    normalized = normalize_extracted_text(text)
+    if normalized:
+        return EvidenceQualification(
+            level="supplemental_text",
+            verified=False,
+            source_origin=source_origin,
+            character_count=len(normalized),
+            page_count=0,
+            section_names=[],
+            reason="用户补充文本未经过 PDF 解析、页码和来源验证。",
+        )
+    return qualify_full_text_result(
+        FullTextResult(source=source_origin),
+        has_abstract=has_abstract,
+    )
+
+
+def qualify_card_context(
+    text: str,
+    qualification: EvidenceQualification | None,
+    *,
+    has_abstract: bool = False,
+) -> EvidenceQualification:
+    normalized = normalize_extracted_text(text)
+    if qualification and qualification.level == "full_text":
+        checked = qualify_full_text_result(
+            FullTextResult(
+                status="extracted",
+                source=qualification.source_origin,
+                page_count=qualification.page_count,
+                character_count=qualification.character_count,
+                text=normalized,
+            ),
+            has_abstract=has_abstract,
+        )
+        if checked.level == "full_text" and checked.verified:
+            return checked
+    if normalized:
+        return qualify_supplemental_text(
+            normalized,
+            has_abstract=has_abstract,
+            source_origin=(
+                qualification.source_origin
+                if qualification and qualification.level == "supplemental_text"
+                else "user_provided"
+            ),
+        )
+    return qualify_full_text_result(
+        FullTextResult(
+            source=qualification.source_origin if qualification else "",
+        ),
+        has_abstract=has_abstract,
+    )
+
+
+def normalize_persisted_evidence_qualification(
+    payload: object,
+    provenance: object,
+    *,
+    has_abstract: bool = False,
+) -> EvidenceQualification:
+    raw = _as_mapping(payload)
+    raw_provenance = _as_mapping(provenance)
+    if not raw:
+        return _legacy_qualification(has_abstract=has_abstract)
+
+    level = normalize_space(str(raw.get("level") or "")).lower().replace("-", "_")
+    verified = raw.get("verified") is True
+    source_origin = normalize_space(str(raw.get("source_origin") or ""))
+    character_count = _safe_nonnegative_int(raw.get("character_count"))
+    page_count = _safe_nonnegative_int(raw.get("page_count"))
+    section_names = [
+        normalize_space(str(item))
+        for item in raw.get("section_names", [])
+        if normalize_space(str(item))
+    ] if isinstance(raw.get("section_names"), list) else []
+    reason = normalize_space(str(raw.get("reason") or ""))
+
+    if level == "full_text":
+        provenance_status = normalize_space(
+            str(raw_provenance.get("status") or ""),
+        )
+        provenance_source = normalize_space(
+            str(raw_provenance.get("source") or ""),
+        )
+        provenance_chars = _safe_nonnegative_int(
+            raw_provenance.get("character_count"),
+        )
+        provenance_pages = _safe_nonnegative_int(raw_provenance.get("page_count"))
+        valid = (
+            verified
+            and source_origin in VERIFIED_PDF_SOURCE_ORIGINS
+            and provenance_status == "extracted"
+            and provenance_source == source_origin
+            and character_count >= PDF_MIN_TEXT_CHARS
+            and provenance_chars >= PDF_MIN_TEXT_CHARS
+            and character_count == provenance_chars
+            and page_count > 0
+            and provenance_pages > 0
+            and page_count == provenance_pages
+        )
+        if valid:
+            return EvidenceQualification(
+                level="full_text",
+                verified=True,
+                source_origin=source_origin,
+                character_count=character_count,
+                page_count=page_count,
+                section_names=section_names,
+                reason=reason or "已持久化的 PDF 证据资格通过一致性检查。",
+            )
+        return _legacy_qualification(
+            has_abstract=has_abstract,
+            reason="全文资格字段不完整或与 provenance 冲突，已保守降级。",
+        )
+
+    if level == "supplemental_text":
+        return EvidenceQualification(
+            level="supplemental_text",
+            verified=False,
+            source_origin=source_origin or "user_provided",
+            character_count=character_count,
+            page_count=0,
+            section_names=[],
+            reason=reason or "用户补充文本未经过 PDF 验证。",
+        )
+    if level == "abstract_only":
+        return EvidenceQualification(
+            level="abstract_only",
+            verified=False,
+            source_origin=source_origin or "metadata.abstract",
+            character_count=0,
+            page_count=0,
+            section_names=[],
+            reason=reason or "当前只有摘要证据。",
+        )
+    return EvidenceQualification(
+        level="metadata_only",
+        verified=False,
+        source_origin=source_origin or "metadata",
+        character_count=0,
+        page_count=0,
+        section_names=[],
+        reason=reason or "当前只有元数据证据。",
+    )
+
+
+def _legacy_qualification(
+    *,
+    has_abstract: bool,
+    reason: str = "",
+) -> EvidenceQualification:
+    if has_abstract:
+        return EvidenceQualification(
+            level="abstract_only",
+            verified=False,
+            source_origin="metadata.abstract",
+            reason=reason or "旧 Artifact 缺少 evidence_qualification，已保守降级为摘要级。",
+        )
+    return EvidenceQualification(
+        level="metadata_only",
+        verified=False,
+        source_origin="metadata",
+        reason=reason or "旧 Artifact 缺少 evidence_qualification，已保守降级为元数据级。",
+    )
+
+
+def _as_mapping(value: object) -> Mapping[str, Any]:
+    if isinstance(value, EvidenceQualification):
+        return value.model_dump()
+    return value if isinstance(value, Mapping) else {}
+
+
+def _safe_nonnegative_int(value: object) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 class FullTextFetchError(RuntimeError):
@@ -111,9 +382,10 @@ class FullTextFetchError(RuntimeError):
 def provided_full_text(text: str) -> FullTextResult:
     normalized = normalize_extracted_text(text)
     return FullTextResult(
-        status="extracted",
+        status="supplemental_text",
         source="user_provided",
         character_count=len(normalized),
+        recovery_hint="如需全文级证据，请上传带可提取文本层的 PDF。",
         text=normalized,
     )
 

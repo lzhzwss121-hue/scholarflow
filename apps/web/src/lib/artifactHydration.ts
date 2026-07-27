@@ -5,6 +5,7 @@ import type {
   ApiArtifactSummary,
   ApiDirectionPaperReading,
   ApiDirectionReviewResponse,
+  ApiEvidenceQualification,
   ApiEvidencePack,
   ApiFullTextProvenance,
   ApiPaper,
@@ -207,6 +208,12 @@ export function normalizeDirectionReading(
       ? card.sections
       : [];
   const paper = normalizeApiPaper(rawPaper, artifactProjectId, artifactCreatedAt);
+  const rawFullText = reading.full_text ?? card.full_text;
+  const evidenceQualification = normalizeEvidenceQualification(
+    reading.evidence_qualification ?? card.evidence_qualification,
+    rawFullText,
+    Boolean(paper.abstract.trim()),
+  );
 
   return {
     paper,
@@ -216,8 +223,9 @@ export function normalizeDirectionReading(
     artifact_title: artifactTitle,
     updated_at: firstString(reading.updated_at, card.updated_at, artifactCreatedAt),
     abstract_translation: asString(reading.abstract_translation),
-    evidence_level: (normalizeEvidenceLevel(firstString(reading.evidence_level, card.evidence_level)) || "metadata_only") as ApiDirectionPaperReading["evidence_level"],
-    full_text: normalizeFullTextProvenance(reading.full_text ?? card.full_text),
+    evidence_level: evidenceQualification.level,
+    evidence_qualification: evidenceQualification,
+    full_text: normalizeFullTextProvenance(rawFullText, evidenceQualification),
     signals: normalizePaperSignals(reading.signals ?? card.signals),
     sections: sectionPayloads.map(normalizePaperCardSection),
     research_sight: normalizeResearchSight(reading.research_sight),
@@ -472,13 +480,17 @@ export function normalizeEvidencePack(payload: unknown): ApiEvidencePack {
   };
 }
 
-function normalizeFullTextProvenance(payload: unknown): ApiFullTextProvenance | undefined {
+function normalizeFullTextProvenance(
+  payload: unknown,
+  evidenceQualification?: ApiEvidenceQualification,
+): ApiFullTextProvenance | undefined {
   if (!isRecord(payload)) {
     return undefined;
   }
   const rawStatus = asString(payload.status);
   const status: ApiFullTextProvenance["status"] = [
     "extracted",
+    "supplemental_text",
     "not_available",
     "download_failed",
     "parse_failed",
@@ -499,12 +511,13 @@ function normalizeFullTextProvenance(payload: unknown): ApiFullTextProvenance | 
       ? payload.page_numbers.filter((value): value is number => typeof value === "number")
       : [],
     section_names: asStringArray(payload.section_names),
+    evidence_qualification: evidenceQualification,
   };
 }
 
 function normalizeEvidenceLevel(value: string): string {
   const normalized = value.trim().toLowerCase().replace(/[-+]/g, "_");
-  if (["metadata_only", "abstract_only", "full_text"].includes(normalized)) {
+  if (["metadata_only", "abstract_only", "supplemental_text", "full_text"].includes(normalized)) {
     return normalized;
   }
   if (normalized === "metadata_abstract" || normalized === "metadata_abstract_paper_card") {
@@ -514,6 +527,91 @@ function normalizeEvidenceLevel(value: string): string {
     return "metadata_only";
   }
   return "";
+}
+
+function normalizeEvidenceQualification(
+  payload: unknown,
+  provenancePayload: unknown,
+  hasAbstract: boolean,
+): ApiEvidenceQualification {
+  const minimumVerifiedPdfCharacters = 1200;
+  const qualification = isRecord(payload) ? payload : null;
+  const provenance = isRecord(provenancePayload) ? provenancePayload : {};
+  const fallback = (reason: string): ApiEvidenceQualification => ({
+    level: hasAbstract ? "abstract_only" : "metadata_only",
+    verified: false,
+    source_origin: hasAbstract ? "metadata.abstract" : "metadata",
+    character_count: 0,
+    page_count: 0,
+    section_names: [],
+    reason,
+  });
+  if (!qualification) {
+    return fallback(
+      hasAbstract
+        ? "旧 Artifact 缺少 evidence_qualification，已保守降级为摘要级。"
+        : "旧 Artifact 缺少 evidence_qualification，已保守降级为元数据级。",
+    );
+  }
+  const level = normalizeEvidenceLevel(asString(qualification.level));
+  const verified = qualification.verified === true;
+  const sourceOrigin = asString(qualification.source_origin);
+  const characterCount = asNumber(qualification.character_count);
+  const pageCount = asNumber(qualification.page_count);
+  const sectionNames = asStringArray(qualification.section_names);
+  const reason = asString(qualification.reason);
+  if (level === "full_text") {
+    const validPdfSources = new Set([
+      "arxiv_pdf",
+      "openalex_open_access_pdf",
+      "open_access_pdf",
+      "user_uploaded_pdf",
+    ]);
+    const valid =
+      verified &&
+      validPdfSources.has(sourceOrigin) &&
+      asString(provenance.status) === "extracted" &&
+      asString(provenance.source) === sourceOrigin &&
+      characterCount >= minimumVerifiedPdfCharacters &&
+      asNumber(provenance.character_count) === characterCount &&
+      pageCount > 0 &&
+      asNumber(provenance.page_count) === pageCount;
+    if (!valid) {
+      return fallback("全文资格字段不完整或与 provenance 冲突，已保守降级。");
+    }
+    return {
+      level: "full_text",
+      verified: true,
+      source_origin: sourceOrigin,
+      character_count: characterCount,
+      page_count: pageCount,
+      section_names: sectionNames,
+      reason: reason || "已验证 PDF 全文。",
+    };
+  }
+  if (level === "supplemental_text") {
+    return {
+      level: "supplemental_text",
+      verified: false,
+      source_origin: sourceOrigin || "user_provided",
+      character_count: characterCount,
+      page_count: 0,
+      section_names: [],
+      reason: reason || "用户补充文本未通过 PDF 验证。",
+    };
+  }
+  if (level === "abstract_only") {
+    return {
+      level: "abstract_only",
+      verified: false,
+      source_origin: sourceOrigin || "metadata.abstract",
+      character_count: 0,
+      page_count: 0,
+      section_names: [],
+      reason: reason || "当前只有摘要证据。",
+    };
+  }
+  return fallback(reason || "当前只有元数据证据。");
 }
 
 function hydrateDirectionReview(items: ApiArtifact[]): ApiDirectionReviewResponse | null {
@@ -741,6 +839,12 @@ function hydratePaperCardArtifact(artifactDetail: ApiArtifact, payload: Record<s
   const sections = Array.isArray(card.sections) ? card.sections.map(normalizePaperCardSection) : [];
   const paperId = firstString(paper.id, card.paper_id);
   const paperTitle = firstString(paper.title, card.paper_title);
+  const rawFullText = artifact.payload.full_text ?? card.full_text;
+  const evidenceQualification = normalizeEvidenceQualification(
+    artifact.payload.evidence_qualification ?? card.evidence_qualification,
+    rawFullText,
+    Boolean(asString(paper.abstract).trim()),
+  );
   return {
     id: artifact.artifact.id,
     project_id: artifact.artifact.project_id,
@@ -753,8 +857,9 @@ function hydratePaperCardArtifact(artifactDetail: ApiArtifact, payload: Record<s
       : paperId
         ? "paper_table"
         : "manual_unbound",
-    evidence_level: (normalizeEvidenceLevel(firstString(card.evidence_level, artifact.payload.evidence_level)) || "metadata_only") as ApiPaperCard["evidence_level"],
-    full_text: normalizeFullTextProvenance(artifact.payload.full_text ?? card.full_text),
+    evidence_level: evidenceQualification.level,
+    evidence_qualification: evidenceQualification,
+    full_text: normalizeFullTextProvenance(rawFullText, evidenceQualification),
     signals: normalizePaperSignals(card.signals),
     sections,
     weakest_assumption: typeof card.weakest_assumption === "string" ? card.weakest_assumption : "",
@@ -782,13 +887,13 @@ export function preferPaperCard(current: ApiPaperCard | null, incoming: ApiPaper
 }
 
 function paperCardEvidenceRank(card: ApiPaperCard): number {
-  if (card.evidence_level === "full_text" && card.full_text?.status === "extracted") {
-    return 3;
+  if (card.evidence_qualification?.level === "full_text" && card.evidence_qualification.verified) {
+    return 4;
   }
-  if (card.evidence_level === "full_text") {
+  if (card.evidence_qualification?.level === "supplemental_text") {
     return 2;
   }
-  if (card.evidence_level === "abstract_only") {
+  if (card.evidence_qualification?.level === "abstract_only") {
     return 1;
   }
   return 0;
@@ -972,10 +1077,10 @@ function preferRicherDirectionReading(
 }
 
 function directionReadingEvidenceRank(reading: ApiDirectionPaperReading): number {
-  if (reading.evidence_level === "full_text" && reading.full_text?.status === "extracted") {
-    return 3;
+  if (reading.evidence_qualification?.level === "full_text" && reading.evidence_qualification.verified) {
+    return 4;
   }
-  if (reading.evidence_level === "full_text") {
+  if (reading.evidence_qualification?.level === "supplemental_text") {
     return 2;
   }
   if (reading.evidence_level === "abstract_only") {
@@ -1090,6 +1195,7 @@ function directionReadingToPaperCard(reading: ApiDirectionPaperReading): ApiPape
     source_artifact_title: reading.artifact_title,
     card_source: "direction_review_artifact",
     evidence_level: reading.evidence_level,
+    evidence_qualification: reading.evidence_qualification,
     full_text: reading.full_text,
     signals: reading.signals,
     sections: reading.sections,

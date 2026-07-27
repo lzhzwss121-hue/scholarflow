@@ -7,7 +7,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from scholarflow_api.baseline_map import BaselineMap, render_baseline_map_markdown
-from scholarflow_api.full_text import FullTextResult, resolve_open_full_texts
+from scholarflow_api.full_text import (
+    FullTextResult,
+    normalize_persisted_evidence_qualification,
+    resolve_open_full_texts,
+)
 from scholarflow_api.literature import (
     PaperCandidate,
     build_query_intent,
@@ -83,6 +87,7 @@ class DirectionPaperReading:
             "paper": self.paper,
             "abstract_translation": self.abstract_translation,
             "evidence_level": self.card.evidence_level,
+            "evidence_qualification": self.card.evidence_qualification.model_dump(),
             "full_text": self.full_text,
             "signals": self.card.signals.to_dict(),
             "sections": [section.to_dict() for section in self.card.sections],
@@ -239,8 +244,15 @@ def build_direction_readings(
     readings: list[DirectionPaperReading] = []
     full_text_results = resolve_open_full_texts(papers)
     for paper, full_text in zip(papers, full_text_results, strict=True):
+        qualification = full_text.evidence_qualification(
+            has_abstract=bool(normalize_space(paper.get("abstract", ""))),
+        )
         paper_for_evidence = build_full_text_evidence_paper(paper, full_text)
-        card = generate_deep_paper_card(paper, full_text.text if full_text.is_extracted else "")
+        card = generate_deep_paper_card(
+            paper,
+            full_text.text if full_text.is_extracted else "",
+            evidence_qualification=qualification,
+        )
         sections = [section.to_dict() for section in card.sections]
         research_sight = build_research_sight(paper_for_evidence, sections, baseline_map, direction, card.signals)
         readings.append(
@@ -248,7 +260,7 @@ def build_direction_readings(
                 paper=paper,
                 abstract_translation=translate_abstract_to_chinese(paper),
                 card=card,
-                full_text=full_text.to_provenance(),
+                full_text=full_text.to_provenance(qualification),
                 research_sight=research_sight,
                 why_selected=build_selection_reason(paper_for_evidence, direction, card),
                 venue_signal=detect_venue_signal(paper.get("venue", "")),
@@ -274,6 +286,7 @@ def build_baseline_papers_from_readings(
         paper = dict(reading.paper)
         paper["paper_signals"] = reading.card.signals.to_dict()
         paper["evidence_level"] = reading.card.evidence_level
+        paper["evidence_qualification"] = reading.card.evidence_qualification.model_dump()
         paper["full_text_provenance"] = dict(reading.full_text)
         if reading.source_text:
             paper["full_text"] = reading.source_text
@@ -288,6 +301,7 @@ def refresh_direction_reading_research_sights(
 ) -> None:
     for reading in readings:
         paper_for_evidence = dict(reading.paper)
+        paper_for_evidence["evidence_qualification"] = reading.card.evidence_qualification.model_dump()
         paper_for_evidence["full_text_provenance"] = dict(reading.full_text)
         paper_for_evidence["evidence_level"] = reading.card.evidence_level
         if reading.source_text:
@@ -304,9 +318,13 @@ def refresh_direction_reading_research_sights(
 
 def build_full_text_evidence_paper(paper: dict[str, Any], result: FullTextResult) -> dict[str, Any]:
     evidence_paper = dict(paper)
-    evidence_paper["full_text_provenance"] = result.to_provenance()
-    if result.is_extracted:
-        evidence_paper["evidence_level"] = "full_text"
+    qualification = result.evidence_qualification(
+        has_abstract=bool(normalize_space(paper.get("abstract", ""))),
+    )
+    evidence_paper["full_text_provenance"] = result.to_provenance(qualification)
+    evidence_paper["evidence_qualification"] = qualification.model_dump()
+    evidence_paper["evidence_level"] = qualification.level
+    if qualification.level == "full_text" and qualification.verified:
         evidence_paper["full_text"] = result.text
     return evidence_paper
 
@@ -516,7 +534,12 @@ def render_evidence_coverage_note(readings: list[DirectionPaperReading]) -> str:
 
 
 def evidence_level_counts(readings: list[DirectionPaperReading]) -> dict[str, int]:
-    counts = {"metadata_only": 0, "abstract_only": 0, "full_text": 0}
+    counts = {
+        "metadata_only": 0,
+        "abstract_only": 0,
+        "supplemental_text": 0,
+        "full_text": 0,
+    }
     for reading in readings:
         level = normalize_space(reading.card.evidence_level) or "metadata_only"
         if level not in counts:
@@ -678,7 +701,12 @@ def build_selection_reason(
 
 
 def score_direction_reading(reading: DirectionPaperReading, direction: str) -> float:
-    evidence_weight = {"metadata_only": 0.0, "abstract_only": 0.45, "full_text": 1.1}.get(
+    evidence_weight = {
+        "metadata_only": 0.0,
+        "abstract_only": 0.45,
+        "supplemental_text": 0.65,
+        "full_text": 1.1,
+    }.get(
         normalize_space(reading.card.evidence_level),
         0.0,
     )
@@ -690,13 +718,30 @@ def score_direction_reading(reading: DirectionPaperReading, direction: str) -> f
 
 
 def selection_evidence_snippet(paper: dict[str, Any], matched_terms: list[str]) -> str:
+    provenance = (
+        paper.get("full_text_provenance")
+        if isinstance(paper.get("full_text_provenance"), dict)
+        else {}
+    )
+    qualification = normalize_persisted_evidence_qualification(
+        paper.get("evidence_qualification"),
+        provenance,
+        has_abstract=bool(normalize_space(paper.get("abstract", ""))),
+    )
     source_values = [
-        ("pdf.full_text", normalize_space(paper.get("full_text", ""))),
+        (
+            "pdf.full_text"
+            if qualification.level == "full_text" and qualification.verified
+            else "user.supplemental_text"
+            if qualification.level == "supplemental_text"
+            else "",
+            normalize_space(paper.get("full_text", "")),
+        ),
         ("metadata.abstract", normalize_space(paper.get("abstract", ""))),
         ("metadata.title", normalize_space(paper.get("title", ""))),
     ]
     for source, value in source_values:
-        if not value:
+        if not source or not value:
             continue
         sentences = [normalize_space(item) for item in re.split(r"(?<=[.!?。！？])\s+", value) if normalize_space(item)]
         sentence = next(

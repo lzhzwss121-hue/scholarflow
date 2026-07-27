@@ -5,6 +5,9 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from scholarflow_api.full_text import qualify_card_context
+from scholarflow_api.schemas import EvidenceQualification
+
 
 @dataclass
 class PaperCardSection:
@@ -72,6 +75,7 @@ class PaperSignals:
 class DeepPaperCard:
     paper_title: str
     evidence_level: str
+    evidence_qualification: EvidenceQualification
     signals: PaperSignals
     sections: list[PaperCardSection]
     weakest_assumption: str
@@ -83,6 +87,7 @@ class DeepPaperCard:
         return {
             "paper_title": self.paper_title,
             "evidence_level": self.evidence_level,
+            "evidence_qualification": self.evidence_qualification.model_dump(),
             "signals": self.signals.to_dict(),
             "sections": [section.to_dict() for section in self.sections],
             "weakest_assumption": self.weakest_assumption,
@@ -108,14 +113,34 @@ SECTION_TITLES = [
 ]
 
 
-def generate_deep_paper_card(paper: dict[str, Any], extra_context: str = "") -> DeepPaperCard:
+def generate_deep_paper_card(
+    paper: dict[str, Any],
+    extra_context: str = "",
+    *,
+    evidence_qualification: EvidenceQualification | None = None,
+) -> DeepPaperCard:
     title = normalize_space(paper.get("title") or "Untitled Paper")
     abstract = normalize_space(paper.get("abstract") or "")
     venue = normalize_space(paper.get("venue") or paper.get("source") or "unknown venue")
     year = normalize_space(str(paper.get("year") or "unknown year"))
     context = normalize_space(f"{abstract} {extra_context}")
-    evidence_level = infer_card_evidence_level(abstract, extra_context)
-    signals = extract_paper_signals(title=title, abstract=abstract, paper_text=extra_context, venue=venue)
+    qualification = qualify_card_context(
+        extra_context,
+        evidence_qualification,
+        has_abstract=bool(abstract),
+    )
+    evidence_level = qualification.level
+    signals = extract_paper_signals(
+        title=title,
+        abstract=abstract,
+        paper_text=extra_context,
+        paper_text_source=(
+            "pdf.full_text"
+            if qualification.level == "full_text" and qualification.verified
+            else "user.supplemental_text"
+        ),
+        venue=venue,
+    )
     focus = infer_focus(title, context)
     weakest_assumption = build_weakest_assumption(focus, signals)
     minimal_reproduction = build_minimal_reproduction(signals, title)
@@ -197,6 +222,7 @@ def generate_deep_paper_card(paper: dict[str, Any], extra_context: str = "") -> 
     return DeepPaperCard(
         paper_title=title,
         evidence_level=evidence_level,
+        evidence_qualification=qualification,
         signals=signals,
         sections=sections,
         weakest_assumption=weakest_assumption,
@@ -411,29 +437,6 @@ class EvidenceSegment:
     text: str
 
 
-def infer_card_evidence_level(abstract: str, paper_text: str) -> str:
-    supplemental = normalize_space(paper_text)
-    lower = supplemental.lower()
-    full_text_markers = [
-        "method",
-        "experiment",
-        "results",
-        "dataset",
-        "baseline",
-        "ablation",
-        "evaluation",
-        "we propose",
-        "we compare",
-        "we evaluate",
-    ]
-    marker_count = sum(1 for marker in full_text_markers if marker in lower)
-    if len(supplemental) >= 800 or (len(supplemental) >= 220 and marker_count >= 3):
-        return "full_text"
-    if normalize_space(abstract) or supplemental:
-        return "abstract_only"
-    return "metadata_only"
-
-
 def apply_evidence_boundary_to_sections(
     sections: list[PaperCardSection],
     evidence_level: str,
@@ -462,8 +465,13 @@ def evidence_boundary_sentence(evidence_level: str) -> str:
             "证据边界（metadata_only）：当前没有 abstract/PDF/正文，下面是基于标题和元数据的阅读提纲，"
             "不是完整正文阅读结论。"
         )
+    if evidence_level == "supplemental_text":
+        return (
+            "证据边界（supplemental_text）：当前包含用户补充文本，但未通过 PDF 来源、页码和解析验证，"
+            "可辅助阅读，不能作为全文级结论。"
+        )
     return (
-        "证据边界（abstract_only）：当前没有 PDF/完整正文，下面是基于标题、摘要和可选片段的阅读提纲，"
+        "证据边界（abstract_only）：当前没有 PDF/完整正文，下面是基于标题和摘要的阅读提纲，"
         "不能当作已讲清整篇论文。"
     )
 
@@ -474,10 +482,22 @@ def evidence_gap_sentence(evidence_level: str) -> str:
     return "缺少 PDF/完整正文中的 method、experiment、baseline、ablation、failure case 和表格证据。"
 
 
-def extract_paper_signals(title: str, abstract: str, paper_text: str = "", venue: str = "") -> PaperSignals:
+def extract_paper_signals(
+    title: str,
+    abstract: str,
+    paper_text: str = "",
+    venue: str = "",
+    *,
+    paper_text_source: str = "pdf.full_text",
+) -> PaperSignals:
     title_text = normalize_space(title)
     abstract_text = normalize_space(abstract)
-    segments = build_evidence_segments(title_text, abstract_text, paper_text)
+    segments = build_evidence_segments(
+        title_text,
+        abstract_text,
+        paper_text,
+        paper_text_source=paper_text_source,
+    )
     contribution_body = normalize_space(
         " ".join(
             segment.text
@@ -555,7 +575,13 @@ def extract_paper_signals(title: str, abstract: str, paper_text: str = "", venue
     return signals
 
 
-def build_evidence_segments(title: str, abstract: str, paper_text: str) -> list[EvidenceSegment]:
+def build_evidence_segments(
+    title: str,
+    abstract: str,
+    paper_text: str,
+    *,
+    paper_text_source: str = "pdf.full_text",
+) -> list[EvidenceSegment]:
     segments: list[EvidenceSegment] = []
     if title:
         segments.append(EvidenceSegment(source="metadata.title", section="title", page=None, text=title))
@@ -575,7 +601,7 @@ def build_evidence_segments(title: str, abstract: str, paper_text: str) -> list[
                 if buffer:
                     segments.append(
                         EvidenceSegment(
-                            source="pdf.full_text",
+                            source=paper_text_source,
                             section=current_section,
                             page=None,
                             text=normalize_space(" ".join(buffer)),
@@ -591,7 +617,7 @@ def build_evidence_segments(title: str, abstract: str, paper_text: str) -> list[
         if buffer:
             segments.append(
                 EvidenceSegment(
-                    source="pdf.full_text",
+                    source=paper_text_source,
                     section=current_section if found_heading else "unknown",
                     page=None,
                     text=normalize_space(" ".join(buffer)),
@@ -606,7 +632,14 @@ def build_evidence_segments(title: str, abstract: str, paper_text: str) -> list[
     def flush() -> None:
         text = normalize_space(" ".join(buffer))
         if text:
-            segments.append(EvidenceSegment(source="pdf.full_text", section=section, page=page, text=text))
+            segments.append(
+                EvidenceSegment(
+                    source=paper_text_source,
+                    section=section,
+                    page=page,
+                    text=text,
+                ),
+            )
         buffer.clear()
 
     for line in raw.splitlines():
@@ -2084,6 +2117,9 @@ def render_card_markdown(
         f"Authors: {paper.get('authors') or 'unknown'}",
         f"Venue/Year: {paper.get('venue') or paper.get('source') or 'unknown'} / {paper.get('year') or 'unknown'}",
         f"Evidence level: {card.evidence_level}",
+        f"Evidence verified: {str(card.evidence_qualification.verified).lower()}",
+        f"Evidence source origin: {card.evidence_qualification.source_origin or 'none'}",
+        f"Evidence qualification reason: {card.evidence_qualification.reason}",
         f"Full-text status: {provenance.get('status') or 'not_available'}",
         f"Full-text source: {provenance.get('source') or 'none'}",
         f"PDF URL: {provenance.get('pdf_url') or paper.get('pdf_url') or 'none'}",
@@ -2112,6 +2148,8 @@ def card_markdown_title(evidence_level: str) -> str:
         return "Full-text Paper Card"
     if evidence_level == "abstract_only":
         return "Abstract-level Paper Card"
+    if evidence_level == "supplemental_text":
+        return "Supplemental-text Paper Card"
     return "Metadata Reading Outline"
 
 
@@ -2144,6 +2182,7 @@ def render_card_json(
             "card": card.to_dict(),
             "evidence_level": card.evidence_level,
             "evidence_quality": card.evidence_level,
+            "evidence_qualification": card.evidence_qualification.model_dump(),
             "full_text": full_text or {
                 "status": "not_available",
                 "pdf_url": paper.get("pdf_url") or "",

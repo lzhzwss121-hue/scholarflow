@@ -172,8 +172,11 @@ class RagIndexContractTest(unittest.TestCase):
                     main_module.PaperChunkIndexRequest(paper_text=source_text),
                 )
                 self.assertEqual(manual_rebuild.status, "indexed")
-                self.assertEqual(manual_rebuild.source, "user_provided.full_text")
-                self.assertEqual(manual_rebuild.source_origin, "user_provided")
+                self.assertEqual(manual_rebuild.evidence_level, "full_text")
+                self.assertEqual(manual_rebuild.source, "pdf.full_text")
+                self.assertEqual(manual_rebuild.source_origin, "arxiv_pdf")
+                self.assertIn("未经过 PDF", manual_rebuild.message)
+                self.assertIn("已有高等级索引未被删除", manual_rebuild.message)
 
                 failed_rebuild = main_module.rebuild_project_paper_rag_index(
                     project.id,
@@ -182,7 +185,7 @@ class RagIndexContractTest(unittest.TestCase):
                 )
                 self.assertEqual(failed_rebuild.status, "indexed")
                 self.assertEqual(failed_rebuild.evidence_level, "full_text")
-                self.assertEqual(failed_rebuild.source, "user_provided.full_text")
+                self.assertEqual(failed_rebuild.source, "pdf.full_text")
                 self.assertIn("已有高等级索引未被删除", failed_rebuild.message)
 
                 project_status = main_module.get_project_rag_index_status(project.id)

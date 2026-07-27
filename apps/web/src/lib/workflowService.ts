@@ -915,6 +915,8 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       }
       if (
         extraction.full_text.status !== "extracted" ||
+        extraction.evidence_qualification.level !== "full_text" ||
+        !extraction.evidence_qualification.verified ||
         !extraction.text.trim() ||
         !extraction.card ||
         !extraction.artifact
@@ -929,7 +931,8 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
         ...uploadedCard,
         paper_id: uploadedCard.paper_id || paperId,
         paper_title: uploadedCard.paper_title || paper.title,
-        evidence_level: "full_text",
+        evidence_level: extraction.evidence_qualification.level,
+        evidence_qualification: extraction.evidence_qualification,
         full_text: extraction.full_text,
         updated_at: extraction.updated_at || uploadedCard.updated_at || uploadedCard.created_at,
       });
@@ -938,7 +941,8 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
           ...uploadedCard,
           paper_id: uploadedCard.paper_id || paperId,
           paper_title: uploadedCard.paper_title || paper.title,
-          evidence_level: extraction.evidence_level || "full_text",
+          evidence_level: extraction.evidence_qualification.level,
+          evidence_qualification: extraction.evidence_qualification,
           full_text: extraction.full_text,
           updated_at: extraction.updated_at || uploadedCard.created_at,
         } as ApiPaperCard),
@@ -1678,6 +1682,10 @@ function buildWorkflowSteps(input: {
   const selectedPaper = input.paperRows.find((paper) => paper.id === input.selectedPaperId) ?? input.paperRows[0];
   const selectedPaperCardMatch = resolvePaperCardForPaper(input.latestPaperCard, input.directionReview, selectedPaper);
   const selectedPaperCard = selectedPaperCardMatch?.card ?? null;
+  const selectedCardHasVerifiedFullText = Boolean(
+    selectedPaperCard?.evidence_qualification?.level === "full_text" &&
+    selectedPaperCard.evidence_qualification.verified,
+  );
   const manualUnboundPaperCard = Boolean(input.latestPaperCard && !selectedPaperCard && input.latestPaperCard.card_source === "manual_unbound");
   const updatedAt = input.activeProject?.updated_at ?? "";
 
@@ -1746,11 +1754,15 @@ function buildWorkflowSteps(input: {
       status: resolveStepStatus({
         blocked: !hasProject || (!hasPapers && !selectedPaperCard && !manualUnboundPaperCard) || input.apiStatus === "offline",
         running: input.paperCardBusy,
-        complete: Boolean(selectedPaperCard && selectedPaperCard.sections.length >= 12),
+        complete: Boolean(
+          selectedPaperCard &&
+          selectedPaperCard.sections.length >= 12 &&
+          selectedCardHasVerifiedFullText
+        ),
         partial: Boolean(
           manualUnboundPaperCard ||
             (selectedPaperCard && selectedPaperCard.sections.length < 12) ||
-            (selectedPaperCard && selectedPaperCard.evidence_level !== "full_text"),
+            (selectedPaperCard && !selectedCardHasVerifiedFullText),
         ),
       }),
       warnings: [],

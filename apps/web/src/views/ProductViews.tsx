@@ -140,8 +140,8 @@ export function WorkflowShell({
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const verifiedReaderCard =
     activeView === "paper-reader" &&
-    viewModel.latestPaperCard?.evidence_level === "full_text" &&
-    viewModel.latestPaperCard.full_text?.status === "extracted";
+    viewModel.latestPaperCard?.evidence_qualification?.level === "full_text" &&
+    viewModel.latestPaperCard.evidence_qualification.verified;
   const historicalNotices = verifiedReaderCard
     ? viewModel.warnings.filter((notice) => isSupersededFullTextNotice(notice.message))
     : [];
@@ -1847,7 +1847,10 @@ function derivePaperTableCoverage(papers: PaperRow[], coverage: Record<string, n
 
 function formatEvidenceLevel(level: string): string {
   if (level === "full_text") {
-    return "全文已验证";
+    return "已验证 PDF 全文";
+  }
+  if (level === "supplemental_text") {
+    return "用户补充文本，未通过 PDF 验证";
   }
   if (level === "abstract_only") {
     return "摘要级证据";
@@ -1992,6 +1995,7 @@ export function ProductPaperReaderView({
   const cardSections = displayCard?.sections ?? [];
   const signals = displayCard?.signals;
   const evidenceLevel = displayCard?.evidence_level ?? "metadata_only";
+  const evidenceQualification = displayCard?.evidence_qualification;
   const readerTitle = formatReaderTitle(evidenceLevel, Boolean(displayCard));
   const evidenceBoundary = buildEvidenceBoundary(evidenceLevel);
   const missingEvidence = buildMissingEvidenceChecklist(displayCard);
@@ -2134,11 +2138,12 @@ export function ProductPaperReaderView({
               <ShieldCheck size={16} />
               <strong>{formatEvidenceLevel(evidenceLevel)}</strong>
               <span>来源：{formatPaperCardSource(cardMatch?.source ?? displayCard?.card_source ?? "manual_unbound")}</span>
-              {displayCard?.full_text?.status === "extracted" ? (
+              {evidenceQualification?.level === "full_text" && evidenceQualification.verified ? (
                 <span>
-                  {displayCard.full_text.page_count} 页 / {displayCard.full_text.character_count.toLocaleString("zh-CN")} 字符
+                  {evidenceQualification.page_count} 页 / {evidenceQualification.character_count.toLocaleString("zh-CN")} 字符
                 </span>
               ) : null}
+              {evidenceQualification?.reason ? <span>{evidenceQualification.reason}</span> : null}
               {displayCard?.updated_at || displayCard?.created_at ? (
                 <span>更新：{formatArtifactDate(displayCard.updated_at || displayCard.created_at)}</span>
               ) : null}
@@ -2489,7 +2494,7 @@ export function ProductPaperReaderView({
 
 function classifySignalEvidence(
   evidence: ApiSignalEvidence | undefined,
-): { label: string; status: "full_text" | "abstract_only" | "missing" | "invalid" } {
+): { label: string; status: "full_text" | "supplemental_text" | "abstract_only" | "missing" | "invalid" } {
   if (!evidence || evidence.availability === "missing") {
     return { label: "缺失", status: "missing" };
   }
@@ -2502,6 +2507,9 @@ function classifySignalEvidence(
   );
   if (allFullText && evidence.availability !== "partial") {
     return { label: "全文", status: "full_text" };
+  }
+  if (refs.some((ref) => ref.source === "user.supplemental_text")) {
+    return { label: "补充文本", status: "supplemental_text" };
   }
   return { label: "摘要", status: "abstract_only" };
 }
@@ -2535,7 +2543,7 @@ function buildPaperDecisionBrief(card: ApiPaperCard | null): {
     label: string;
     value: string;
     sourceLabel: string;
-    sourceStatus: "full_text" | "abstract_only" | "missing" | "invalid";
+    sourceStatus: "full_text" | "supplemental_text" | "abstract_only" | "missing" | "invalid";
   }>;
   nextAction: string;
   evidence: Array<{ label: string; location: string }>;
@@ -2554,8 +2562,11 @@ function buildPaperDecisionBrief(card: ApiPaperCard | null): {
   );
   const coreEvidenceStatuses = coreEvidence.map((evidence) => classifySignalEvidence(evidence).status);
   const coreSignalsVerified = coreEvidenceStatuses.every((status) => status === "full_text");
+  const cardHasVerifiedFullText =
+    card?.evidence_qualification?.level === "full_text" &&
+    card.evidence_qualification.verified;
   const readiness =
-    card?.evidence_level === "full_text" && coreSignalsPresent && coreSignalsVerified
+    cardHasVerifiedFullText && coreSignalsPresent && coreSignalsVerified
       ? "ready"
       : coreSignalsPresent || card?.evidence_level === "abstract_only"
         ? "partial"
@@ -2572,7 +2583,7 @@ function buildPaperDecisionBrief(card: ApiPaperCard | null): {
           card?.minimal_reproduction,
           "先回到 PDF 核对方法、实验设置和失败案例，再决定是否进入复现。",
         )
-      : card?.evidence_level === "full_text"
+      : cardHasVerifiedFullText
         ? "卡片已绑定全文，但任务、方法或主要主张仍有字段缺少全文定位；请先核对对应 PDF 段落，再决定是否进入复现。"
       : "上传或绑定论文 PDF，重点补齐方法、实验设置、baseline、ablation 与失败案例后重新生成。";
   const evidenceFields: Array<[string, ApiSignalEvidence | undefined]> = [
@@ -2708,6 +2719,9 @@ function formatReaderTitle(evidenceLevel: string, hasCard: boolean): string {
   if (evidenceLevel === "full_text") {
     return "全文级深读 · Paper Card";
   }
+  if (evidenceLevel === "supplemental_text") {
+    return "补充文本辅助阅读 · Paper Card";
+  }
   if (evidenceLevel === "abstract_only") {
     return "摘要级阅读 · Paper Card";
   }
@@ -2735,7 +2749,7 @@ function formatFullTextSource(source: string): string {
     return "开放获取 PDF";
   }
   if (source === "user_provided") {
-    return "用户粘贴正文";
+    return "用户补充文本，未通过 PDF 验证";
   }
   if (source === "user_uploaded_pdf") {
     return "用户上传 PDF";
@@ -2758,6 +2772,7 @@ function mergeDirectionReadingWithPaperCard(
     artifact_id: card.artifact_id ?? reading.artifact_id,
     artifact_title: card.source_artifact_title ?? reading.artifact_title,
     evidence_level: card.evidence_level ?? reading.evidence_level,
+    evidence_qualification: card.evidence_qualification ?? reading.evidence_qualification,
     full_text: card.full_text ?? reading.full_text,
     updated_at: card.updated_at || card.created_at || reading.updated_at,
     signals: card.signals ?? reading.signals,
@@ -2780,11 +2795,15 @@ function doesPaperCardMatchDirectionReading(card: ApiPaperCard, reading: ApiDire
   return Boolean(cardTitle && readingTitle && cardTitle === readingTitle);
 }
 
-function evidenceRank(level: string | undefined, provenance?: ApiFullTextProvenance): number {
-  if (level === "full_text" && provenance?.status === "extracted") {
-    return 3;
+function evidenceRank(
+  level: string | undefined,
+  provenance?: ApiFullTextProvenance,
+): number {
+  const qualification = provenance?.evidence_qualification;
+  if (qualification?.level === "full_text" && qualification.verified) {
+    return 4;
   }
-  if (level === "full_text") {
+  if (qualification?.level === "supplemental_text" || level === "supplemental_text") {
     return 2;
   }
   if (level === "abstract_only") {
@@ -2801,6 +2820,9 @@ function normalizePaperTitle(value: string | undefined): string {
 }
 
 function fullTextFailureReason(provenance: ApiFullTextProvenance): string {
+  if (provenance.status === "supplemental_text") {
+    return "用户补充文本，未通过 PDF 验证";
+  }
   if (provenance.error.trim()) {
     return provenance.error.trim();
   }
@@ -2829,7 +2851,10 @@ function FullTextProvenanceStatus({
     return null;
   }
 
-  const extracted = provenance.status === "extracted";
+  const qualification = provenance.evidence_qualification;
+  const extracted = Boolean(
+    qualification?.level === "full_text" && qualification.verified,
+  );
   return (
     <section
       className={extracted ? "full-text-provenance-status extracted" : "full-text-provenance-status limited"}
@@ -2840,7 +2865,7 @@ function FullTextProvenanceStatus({
       <div>
         <strong>
           {extracted
-            ? `已解析 ${provenance.page_count.toLocaleString("zh-CN")} 页 / ${provenance.character_count.toLocaleString("zh-CN")} 字符`
+            ? `已验证 PDF 全文 · ${provenance.page_count.toLocaleString("zh-CN")} 页 / ${provenance.character_count.toLocaleString("zh-CN")} 字符`
             : fullTextFailureReason(provenance)}
         </strong>
         <p>
@@ -2933,7 +2958,16 @@ function buildEvidenceBoundary(evidenceLevel: string | undefined): EvidenceBound
       message: "当前只基于摘要和候选元数据生成结构化阅读。它适合决定是否精读，但不能替代完整 PDF 的方法和实验核验。",
       confirmed: "摘要明确陈述的研究对象、核心任务和作者公开 claim。",
       cannotConfirm: "方法细节、完整 baseline、消融、失败样本与统计可靠性。",
-      nextAction: "上传本地 PDF，系统会重新绑定当前论文并升级为全文已验证。",
+      nextAction: "上传本地 PDF，系统会重新绑定当前论文并升级为已验证 PDF 全文。",
+    };
+  }
+  if (evidenceLevel === "supplemental_text") {
+    return {
+      title: "用户补充文本，未通过 PDF 验证",
+      message: "当前卡片可使用用户粘贴内容辅助阅读，但该内容没有经过 PDF 来源、页码、文本层和解析状态验证。",
+      confirmed: "用户明确提供的文本内容，以及其中可直接看到的关键词和陈述。",
+      cannotConfirm: "PDF 原文位置、完整上下文、全文级 claim、true gap 和实验 anchor。",
+      nextAction: "上传带可复制文本层的 PDF；只有通过统一资格检查后才会升级为已验证 PDF 全文。",
     };
   }
   return null;
@@ -2965,7 +2999,13 @@ function buildMemoryEvidenceBoundary(
     return null;
   }
   const levels = hits.map((hit) => normalizeEvidencePack(normalizeResearchSight(hit.research_sight).evidence_pack).evidence_level);
-  const limitedCount = levels.filter((level) => level === "abstract_only" || level === "metadata_only" || level === "unknown").length;
+  const limitedCount = levels.filter(
+    (level) =>
+      level === "supplemental_text" ||
+      level === "abstract_only" ||
+      level === "metadata_only" ||
+      level === "unknown",
+  ).length;
   const fullTextCount = levels.filter((level) => level === "full_text").length;
   if (limitedCount > 0 && fullTextCount === 0) {
     return {
@@ -2989,13 +3029,14 @@ function buildDecisionEvidenceBoundary(
     return null;
   }
   const abstractCount = Number(quality.abstract_only_card_count ?? 0);
+  const supplementalCount = Number(quality.supplemental_text_card_count ?? 0);
   const metadataCount = Number(quality.metadata_only_card_count ?? 0);
   const fullTextCount = Number(quality.full_text_card_count ?? 0);
-  const limitedCount = abstractCount + metadataCount;
+  const limitedCount = abstractCount + supplementalCount + metadataCount;
   if (limitedCount > 0 && fullTextCount === 0) {
     return {
       title: "摘要级证据，不是全文结论",
-      message: `当前研究决策主要依赖 ${abstractCount} 张摘要级 card 和 ${metadataCount} 张元数据级 card。Gap、Idea Validation 和实验计划只能作为保守候选，不能视为已完成全文级论证。`,
+      message: `当前研究决策主要依赖 ${supplementalCount} 张未验证补充文本 card、${abstractCount} 张摘要级 card 和 ${metadataCount} 张元数据级 card。Gap、Idea Validation 和实验计划只能作为保守候选，不能视为已完成全文级论证。`,
     };
   }
   return null;
@@ -3011,6 +3052,9 @@ function buildMissingEvidenceChecklist(card: ApiPaperCard | null): string[] {
   }
   if (card.evidence_level === "abstract_only") {
     checklist.push("缺 PDF/完整正文、method/experiment 表格和 failure case");
+  }
+  if (card.evidence_level === "supplemental_text") {
+    checklist.push("用户补充文本未通过 PDF 来源、页码和解析验证");
   }
   const missingSignals = card.signals?.missing_signals ?? [];
   missingSignals.forEach((signal) => checklist.push(`缺 ${signal}`));
@@ -3030,7 +3074,7 @@ type ParsedPaperCardSectionContent = {
 function parsePaperCardSectionContent(content: string): ParsedPaperCardSectionContent {
   let normalized = content.replace(/\r\n?/g, "\n").trim();
   const boundaryMatch = normalized.match(
-    /^证据边界[（(](?:metadata_only|abstract_only)[）)][:：][\s\S]*?(?=\n阅读提纲[:：])/,
+    /^证据边界[（(](?:metadata_only|abstract_only|supplemental_text)[）)][:：][\s\S]*?(?=\n阅读提纲[:：])/,
   );
 
   if (boundaryMatch) {
@@ -3683,7 +3727,11 @@ export function DirectionReviewView({
   const canGenerate = apiStatus === "online" && !isGenerating && direction.trim().length > 0;
   const expectedRoundCount = review?.target_paper_count ?? 10;
   const actualRoundCount = review?.relevant_read_count ?? review?.round_read_count ?? readings.length;
-  const fullTextCount = readings.filter((reading) => reading.evidence_level === "full_text").length;
+  const fullTextCount = readings.filter(
+    (reading) =>
+      reading.evidence_qualification?.level === "full_text" &&
+      reading.evidence_qualification.verified,
+  ).length;
   const isPartialReview = review?.review_status === "partial";
   const isBlockedReview = review?.review_status === "blocked";
   const coverage = review?.relevance_coverage ?? {};
@@ -4013,6 +4061,7 @@ function buildDirectionSummaryPreview(value: string, maxLength = 340): string {
 
 const baselineCheckLabels: Record<string, string> = {
   full_text: "PDF 全文",
+  supplemental_text: "用户补充文本",
   method: "方法证据",
   dataset: "数据集",
   metric: "指标",

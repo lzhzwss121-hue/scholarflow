@@ -36,6 +36,52 @@ _GENERIC_TERMS = {
     "证据",
     "当前",
 }
+_OUTCOME_PREDICATE_PATTERNS = {
+    "reduce": re.compile(
+        r"\b(?:reduce|reduces|reduced|reducing|reduction|reductions)\b|降低|减少|缓解",
+        re.IGNORECASE,
+    ),
+    "increase": re.compile(
+        r"\b(?:increase|increases|increased|increasing)\b|增加|提高",
+        re.IGNORECASE,
+    ),
+    "improve": re.compile(
+        r"\b(?:improve|improves|improved|improving|improvement|improvements)\b|改善|提升",
+        re.IGNORECASE,
+    ),
+    "outperform": re.compile(
+        r"\b(?:outperform|outperforms|outperformed|outperforming)\b|优于|超过",
+        re.IGNORECASE,
+    ),
+    "mitigate": re.compile(
+        r"\b(?:mitigate|mitigates|mitigated|mitigating|mitigation)\b|减轻|抑制",
+        re.IGNORECASE,
+    ),
+    "support": re.compile(
+        r"\b(?:support|supports|supported|supporting)\b|支持",
+        re.IGNORECASE,
+    ),
+    "preserve": re.compile(
+        r"\b(?:preserve|preserves|preserved|preserving)\b|保持|保留",
+        re.IGNORECASE,
+    ),
+    "cause": re.compile(
+        r"\b(?:cause|causes|caused|causing)\b|导致|引起",
+        re.IGNORECASE,
+    ),
+}
+_LATIN_NEGATION_PREFIX_PATTERN = re.compile(
+    r"(?:"
+    r"\b(?:not|never|no|cannot|can't|doesn't|don't|didn't)\b|"
+    r"\b(?:does|do|did|can|could|will|would|is|are|was|were|has|have|had)\s+not\b|"
+    r"\b(?:fails?|failed)\s+to\b|"
+    r"\bwithout\b"
+    r")(?:[\s\w-]{0,32})$",
+    re.IGNORECASE,
+)
+_CJK_NEGATION_PREFIX_PATTERN = re.compile(
+    r"(?:不|未|没有|并未|不能|无法|无)(?:[\u3400-\u4dbf\u4e00-\u9fff]{0,8})$",
+)
 
 
 class RagGenerationError(RuntimeError):
@@ -418,6 +464,8 @@ def claim_is_supported(
     evidence: list[dict[str, Any]],
 ) -> bool:
     evidence_text = " ".join(str(item.get("text") or "") for item in evidence)
+    if claim_has_polarity_conflict(statement, evidence):
+        return False
     statement_numbers = set(_NUMBER_PATTERN.findall(statement))
     evidence_numbers = set(_NUMBER_PATTERN.findall(evidence_text))
     if statement_numbers and not statement_numbers.issubset(evidence_numbers):
@@ -455,6 +503,42 @@ def claim_is_supported(
         2,
         len(statement_terms),
     )
+
+
+def claim_has_polarity_conflict(
+    statement: str,
+    evidence: list[dict[str, Any]],
+) -> bool:
+    statement_polarities = predicate_polarities(statement)
+    if not statement_polarities:
+        return False
+    evidence_polarities: dict[str, set[str]] = {}
+    for item in evidence:
+        for predicate, polarities in predicate_polarities(
+            str(item.get("text") or ""),
+        ).items():
+            evidence_polarities.setdefault(predicate, set()).update(polarities)
+    for predicate, polarities in statement_polarities.items():
+        supported_polarities = evidence_polarities.get(predicate)
+        if supported_polarities and polarities.isdisjoint(supported_polarities):
+            return True
+    return False
+
+
+def predicate_polarities(text: str) -> dict[str, set[str]]:
+    normalized = _normalize_text(text)
+    polarities: dict[str, set[str]] = {}
+    for predicate, pattern in _OUTCOME_PREDICATE_PATTERNS.items():
+        for match in pattern.finditer(normalized):
+            prefix = normalized[max(0, match.start() - 48) : match.start()]
+            negated = bool(
+                _LATIN_NEGATION_PREFIX_PATTERN.search(prefix)
+                or _CJK_NEGATION_PREFIX_PATTERN.search(prefix)
+            )
+            polarities.setdefault(predicate, set()).add(
+                "negative" if negated else "positive",
+            )
+    return polarities
 
 
 def build_extractive_claims(
