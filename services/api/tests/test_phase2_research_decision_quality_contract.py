@@ -101,6 +101,7 @@ class Phase2ResearchDecisionQualityContractTest(unittest.TestCase):
                 "section": "limitations",
                 "page": "9",
                 "evidence_level": "full_text",
+                "verified_full_text": True,
             },
             {
                 "paper_id": "paper_b",
@@ -112,6 +113,7 @@ class Phase2ResearchDecisionQualityContractTest(unittest.TestCase):
                 "section": "limitations",
                 "page": "11",
                 "evidence_level": "full_text",
+                "verified_full_text": True,
             },
         ]
         groups = group_grounded_gap_evidence(unrelated)
@@ -166,6 +168,7 @@ class Phase2ResearchDecisionQualityContractTest(unittest.TestCase):
                 "section": "limitations",
                 "page": "9",
                 "evidence_level": "full_text",
+                "verified_full_text": True,
             },
             {
                 "paper_id": "paper_b",
@@ -177,6 +180,7 @@ class Phase2ResearchDecisionQualityContractTest(unittest.TestCase):
                 "section": "limitations",
                 "page": "11",
                 "evidence_level": "full_text",
+                "verified_full_text": True,
             },
         ]
         groups = group_grounded_gap_evidence(corroborated)
@@ -222,6 +226,20 @@ class Phase2ResearchDecisionQualityContractTest(unittest.TestCase):
         self.assertEqual(sorted(len(group) for group in groups), [1, 2])
 
     def test_baseline_map_exposes_actionability_and_does_not_promote_age_alone(self) -> None:
+        verified_text = (
+            "[PDF page 4]\n[Section: method]\nWe propose a decoding intervention.\n"
+            "[PDF page 8]\n[Section: experiments]\nWe use COCO, CHAIR, and LLaVA.\n"
+            + "Supporting implementation context " * 80
+        )
+        qualification = {
+            "level": "full_text",
+            "verified": True,
+            "source_origin": "arxiv_pdf",
+            "character_count": len(verified_text),
+            "page_count": 8,
+            "section_names": ["method", "experiments"],
+            "reason": "Test fixture models a successfully parsed PDF.",
+        }
         selected = [
             {
                 "title": "Traceable Hallucination Baseline",
@@ -231,11 +249,14 @@ class Phase2ResearchDecisionQualityContractTest(unittest.TestCase):
                 "source": "arxiv",
                 "url": "https://arxiv.org/abs/traceable",
                 "code": "https://github.com/example/traceable",
-                "full_text": (
-                    "[PDF page 4]\n[Section: method]\nWe propose a decoding intervention.\n"
-                    "[PDF page 8]\n[Section: experiments]\nWe use COCO, CHAIR, and LLaVA."
-                ),
-                "full_text_provenance": {"status": "extracted"},
+                "full_text": verified_text,
+                "evidence_qualification": qualification,
+                "full_text_provenance": {
+                    "status": "extracted",
+                    "source": "arxiv_pdf",
+                    "character_count": len(verified_text),
+                    "page_count": 8,
+                },
                 "paper_signals": {
                     "method": "We propose a decoding intervention.",
                     "dataset": "COCO",

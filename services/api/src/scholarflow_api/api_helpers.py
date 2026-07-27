@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from scholarflow_api.agent_core import ToolContext
 from scholarflow_api.database import get_connection, new_id, row_to_dict, utc_now
+from scholarflow_api.full_text import normalize_persisted_evidence_qualification
 from scholarflow_api.rag_index import index_paper_abstract
 from scholarflow_api.schemas import (
     BaselineMap,
@@ -145,9 +146,21 @@ def enrich_paper_card_row(row: dict) -> dict:
         row["signals_json"] = json.dumps(signals, ensure_ascii=False)
     if isinstance(sections, list) and sections:
         row["sections_json"] = json.dumps(sections, ensure_ascii=False)
-    row["evidence_level"] = normalize_card_evidence_level(card_payload.get("evidence_level") or payload.get("evidence_level"))
     full_text = payload.get("full_text") if isinstance(payload.get("full_text"), dict) else card_payload.get("full_text")
     row["full_text"] = full_text if isinstance(full_text, dict) else {}
+    qualification_payload = (
+        payload.get("evidence_qualification")
+        if isinstance(payload.get("evidence_qualification"), dict)
+        else card_payload.get("evidence_qualification")
+    )
+    qualification = normalize_persisted_evidence_qualification(
+        qualification_payload,
+        row["full_text"],
+        has_abstract=bool(str(paper_payload.get("abstract") or "").strip()),
+    )
+    row["evidence_qualification"] = qualification.model_dump()
+    row["evidence_level"] = qualification.level
+    row["full_text"]["evidence_qualification"] = qualification.model_dump()
     row["artifact_id"] = row.get("artifact_id") or payload.get("artifact_id") or ""
     row["paper_title"] = row.get("paper_title") or paper_payload.get("title") or card_payload.get("paper_title") or ""
     row["updated_at"] = row.get("artifact_updated_at") or row.get("created_at") or ""
@@ -176,10 +189,22 @@ def select_best_paper_cards(rows: list[dict]) -> list[dict]:
 
 
 def paper_card_sort_key(row: dict) -> tuple[int, int, str, int]:
-    evidence_level = normalize_card_evidence_level(row.get("evidence_level"))
-    full_text = row.get("full_text") if isinstance(row.get("full_text"), dict) else {}
-    verified_full_text = evidence_level == "full_text" and full_text.get("status") == "extracted"
-    evidence_rank = {"metadata_only": 0, "abstract_only": 1, "full_text": 2}.get(evidence_level, 0)
+    qualification = (
+        row.get("evidence_qualification")
+        if isinstance(row.get("evidence_qualification"), dict)
+        else {}
+    )
+    evidence_level = normalize_card_evidence_level(qualification.get("level"))
+    verified_full_text = (
+        evidence_level == "full_text"
+        and qualification.get("verified") is True
+    )
+    evidence_rank = {
+        "metadata_only": 0,
+        "abstract_only": 1,
+        "supplemental_text": 2,
+        "full_text": 3,
+    }.get(evidence_level, 0)
     return (
         evidence_rank,
         1 if verified_full_text else 0,
@@ -198,7 +223,12 @@ def parse_json_object(value: str) -> dict:
 
 def normalize_card_evidence_level(value) -> str:
     normalized = str(value or "").strip().lower().replace("-", "_")
-    if normalized in {"metadata_only", "abstract_only", "full_text"}:
+    if normalized in {
+        "metadata_only",
+        "abstract_only",
+        "supplemental_text",
+        "full_text",
+    }:
         return normalized
     return "metadata_only"
 

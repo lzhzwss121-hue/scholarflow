@@ -266,6 +266,32 @@ class RagAnswerContractTest(unittest.TestCase):
         self.assertEqual(result["rejected_citation_ids"], ["invented:citation"])
         self.assertEqual(result["used_citation_ids"], [valid_id])
 
+    def test_citation_validator_rejects_positive_claim_from_negated_evidence(self) -> None:
+        citation = citation_fixture()
+        citation["text"] = (
+            "On the POPE benchmark, counterfactual grounding does not reduce "
+            "object hallucination rate."
+        )
+        valid_id = str(citation["citation_id"])
+
+        result = validate_generated_claims(
+            {
+                "claims": [
+                    {
+                        "statement": (
+                            "Counterfactual grounding reduces object hallucination rate on POPE."
+                        ),
+                        "citation_ids": [valid_id],
+                    },
+                ],
+            },
+            citations=[citation],
+        )
+
+        self.assertEqual(result["claims"], [])
+        self.assertEqual(result["rejected_claim_count"], 1)
+        self.assertEqual(result["used_citation_ids"], [])
+
     def test_openrouter_generation_uses_strict_evidence_payload_and_verified_tls(self) -> None:
         citation = citation_fixture()
         response = MagicMock()

@@ -259,6 +259,15 @@ async function mockReaderProject(page: Page, artifacts = [artifact]) {
 }
 
 function fullTextCardArtifact(id: string, createdAt: string) {
+  const evidenceQualification = {
+    level: "full_text" as const,
+    verified: true,
+    source_origin: "user_uploaded_pdf",
+    character_count: 50000,
+    page_count: 14,
+    section_names: ["method", "experiments", "limitations"],
+    reason: "PDF source and parser checks passed.",
+  };
   const fullText = {
     status: "extracted",
     pdf_url: "",
@@ -268,11 +277,13 @@ function fullTextCardArtifact(id: string, createdAt: string) {
     error: "",
     page_numbers: [4, 7, 9],
     section_names: ["method", "experiments", "limitations"],
+    evidence_qualification: evidenceQualification,
   };
   const card = {
     paper_title: paper.title,
     paper_id: paper.id,
     evidence_level: "full_text",
+    evidence_qualification: evidenceQualification,
     full_text: fullText,
     signals: {
       task: "VQA evidence faithfulness evaluation",
@@ -359,7 +370,15 @@ function fullTextCardArtifact(id: string, createdAt: string) {
     title: "direction_round_1_paper_card_grounded-evidence-evaluation-for-visual-question-answering.md",
     kind: "markdown",
     content_markdown: "# Full-text Paper Card",
-    content_json: JSON.stringify({ schema_version: "paper_card.v2", paper, paper_id: paper.id, card, evidence_level: "full_text", full_text: fullText }),
+    content_json: JSON.stringify({
+      schema_version: "paper_card.v2",
+      paper,
+      paper_id: paper.id,
+      card,
+      evidence_level: "full_text",
+      evidence_qualification: evidenceQualification,
+      full_text: fullText,
+    }),
     diff: "+ Parsed user uploaded PDF\n+ Full-text Paper Card",
     created_at: createdAt,
     updated_at: createdAt,
@@ -521,7 +540,11 @@ test("uploaded PDF immediately replaces a stale abstract card for the same paper
     }),
   };
   const uploadedArtifact = fullTextCardArtifact("artifact_e2e_uploaded_full_text", "2026-07-12T00:00:00+00:00");
-  const uploadedPayload = JSON.parse(uploadedArtifact.content_json) as { card: object; full_text: object };
+  const uploadedPayload = JSON.parse(uploadedArtifact.content_json) as {
+    card: object;
+    evidence_qualification: object;
+    full_text: object;
+  };
   await mockReaderProject(page, [staleCard]);
   await page.route(`**/projects/${project.id}/papers/${paper.id}/full-text`, async (route) => {
     await route.fulfill({
@@ -530,6 +553,7 @@ test("uploaded PDF immediately replaces a stale abstract card for the same paper
         text: "full text fixture",
         evidence_level: "full_text",
         evidence_quality: "full_text",
+        evidence_qualification: uploadedPayload.evidence_qualification,
         source: "user_uploaded_pdf",
         page_count: 14,
         char_count: 50000,
@@ -541,6 +565,7 @@ test("uploaded PDF immediately replaces a stale abstract card for the same paper
           paper_id: paper.id,
           artifact_id: uploadedArtifact.id,
           evidence_level: "full_text",
+          evidence_qualification: uploadedPayload.evidence_qualification,
           full_text: uploadedPayload.full_text,
           signals: (uploadedPayload.card as { signals: object }).signals,
           sections: (uploadedPayload.card as { sections: object[] }).sections,
@@ -563,11 +588,11 @@ test("uploaded PDF immediately replaces a stale abstract card for the same paper
   });
 
   await expect(page.getByRole("heading", { name: "全文级深读 · Paper Card" })).toBeVisible();
-  await expect(page.locator('.reader-evidence-level.full_text').getByText("全文已验证", { exact: true })).toBeVisible();
+  await expect(page.locator('.reader-evidence-level.full_text').getByText("已验证 PDF 全文", { exact: true })).toBeVisible();
   await expect(page.getByTestId("paper-research-decision-brief").getByText("可进入人工核验", { exact: true })).toBeVisible();
   await expect(page.getByTestId("paper-research-decision-brief").getByText("全文", { exact: true })).toHaveCount(3);
   const provenance = page.getByTestId("paper-card-provenance");
-  await expect(provenance.getByText("已解析 14 页 / 50,000 字符", { exact: true })).toBeVisible();
+  await expect(provenance.getByText("已验证 PDF 全文 · 14 页 / 50,000 字符", { exact: true })).toBeVisible();
   await expect(provenance.getByText("来源：用户上传 PDF", { exact: true })).toBeVisible();
   await expect(provenance.getByText(/更新时间：07\/12/)).toBeVisible();
   await expect(page.getByText("CERTIFICATE_VERIFY_FAILED")).toHaveCount(0);
@@ -615,7 +640,7 @@ test("refresh keeps a verified full-text direction card ahead of an old abstract
   await page.goto("/#paper-reader");
 
   await expect(page.getByRole("heading", { name: "全文级深读 · Paper Card" })).toBeVisible();
-  await expect(page.getByText("已解析 14 页 / 50,000 字符")).toBeVisible();
+  await expect(page.getByText("已验证 PDF 全文 · 14 页 / 50,000 字符")).toBeVisible();
   await expect(page.getByText("来源：用户上传 PDF")).toBeVisible();
   await expect(page.locator(".workflow-latest-notice").getByText(/CERTIFICATE_VERIFY_FAILED/)).toHaveCount(0);
   await expect(page.locator(".reader-main-panel").getByText(/CERTIFICATE_VERIFY_FAILED/)).toHaveCount(0);
@@ -624,6 +649,67 @@ test("refresh keeps a verified full-text direction card ahead of an old abstract
   await expect(history.getByText(/历史尝试/)).toBeVisible();
   await history.locator("summary").click();
   await expect(history.getByText(/CERTIFICATE_VERIFY_FAILED/)).toBeVisible();
+});
+
+test("legacy full-text artifact without qualification is conservatively downgraded", async ({ page }) => {
+  const legacy = fullTextCardArtifact("artifact_e2e_legacy_full_text", "2026-07-13T00:00:00+00:00");
+  const payload = JSON.parse(legacy.content_json) as {
+    card: Record<string, unknown>;
+    evidence_qualification?: unknown;
+    full_text: Record<string, unknown>;
+  };
+  delete payload.evidence_qualification;
+  delete payload.card.evidence_qualification;
+  delete payload.full_text.evidence_qualification;
+  legacy.content_json = JSON.stringify(payload);
+
+  await mockReaderProject(page, [legacy]);
+  await page.goto("/#paper-reader");
+
+  await expect(page.getByRole("heading", { name: "摘要级阅读 · Paper Card" })).toBeVisible();
+  await expect(page.getByText("摘要级证据", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("已验证 PDF 全文", { exact: true })).toHaveCount(0);
+});
+
+test("supplemental text is visibly distinguished from verified PDF evidence", async ({ page }) => {
+  const supplemental = fullTextCardArtifact("artifact_e2e_supplemental_text", "2026-07-14T00:00:00+00:00");
+  const payload = JSON.parse(supplemental.content_json) as {
+    card: Record<string, unknown>;
+    evidence_level: string;
+    evidence_qualification: Record<string, unknown>;
+    full_text: Record<string, unknown>;
+  };
+  const qualification = {
+    level: "supplemental_text",
+    verified: false,
+    source_origin: "user_provided",
+    character_count: 5000,
+    page_count: 0,
+    section_names: [],
+    reason: "用户补充文本未经过 PDF 解析、页码和来源验证。",
+  };
+  payload.evidence_level = "supplemental_text";
+  payload.evidence_qualification = qualification;
+  payload.card.evidence_level = "supplemental_text";
+  payload.card.evidence_qualification = qualification;
+  payload.full_text.status = "supplemental_text";
+  payload.full_text.source = "user_provided";
+  payload.full_text.page_count = 0;
+  payload.full_text.evidence_qualification = qualification;
+  supplemental.content_json = JSON.stringify(payload);
+
+  await mockReaderProject(page, [supplemental]);
+  await page.goto("/#paper-reader");
+
+  await expect(page.getByRole("heading", { name: "补充文本辅助阅读 · Paper Card" })).toBeVisible();
+  await expect(page.getByText("用户补充文本，未通过 PDF 验证", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("已验证 PDF 全文", { exact: true })).toHaveCount(0);
+  await expect(
+    page.locator('.workflow-step[data-status="partial"]', { hasText: "Deep Paper Card" }),
+  ).toBeVisible();
+  await expect(
+    page.locator('.workflow-step[data-status="complete"]', { hasText: "Deep Paper Card" }),
+  ).toHaveCount(0);
 });
 
 test("paper memory shows a no-reliable-hit boundary instead of invented evidence", async ({ page }) => {

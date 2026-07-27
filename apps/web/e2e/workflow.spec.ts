@@ -1479,6 +1479,15 @@ test("created Chinese research workflow keeps uploaded full text after refresh a
     },
   ];
   directionArtifact.content_json = JSON.stringify(directionPayload);
+  const uploadedEvidenceQualification = {
+    level: "full_text" as const,
+    verified: true,
+    source_origin: "user_uploaded_pdf",
+    character_count: 3200,
+    page_count: 2,
+    section_names: ["method", "experiments"],
+    reason: "PDF source and parser checks passed.",
+  };
   const uploadedFullText = {
     status: "extracted",
     pdf_url: "",
@@ -1488,6 +1497,7 @@ test("created Chinese research workflow keeps uploaded full text after refresh a
     error: "",
     failure_stage: "",
     recovery_hint: "",
+    evidence_qualification: uploadedEvidenceQualification,
   };
   const uploadedCard = {
     id: "paper_card_e2e_workflow_full_text",
@@ -1498,6 +1508,7 @@ test("created Chinese research workflow keeps uploaded full text after refresh a
     source_artifact_title: "paper_card_object-hallucination-full-text.md",
     card_source: "paper_table",
     evidence_level: "full_text",
+    evidence_qualification: uploadedEvidenceQualification,
     full_text: uploadedFullText,
     signals: { ...signals, missing_signals: [] },
     sections: readingSections.map((section) => ({ ...section, content: `全文核验内容：${section.content}` })),
@@ -1517,6 +1528,7 @@ test("created Chinese research workflow keeps uploaded full text after refresh a
       paper,
       paper_id: paper.id,
       evidence_level: "full_text",
+      evidence_qualification: uploadedEvidenceQualification,
       full_text: uploadedFullText,
       card: uploadedCard,
     }),
@@ -1680,6 +1692,7 @@ test("created Chinese research workflow keeps uploaded full text after refresh a
         text: "verified full text fixture",
         evidence_level: "full_text",
         evidence_quality: "full_text",
+        evidence_qualification: uploadedEvidenceQualification,
         source: "user_uploaded_pdf",
         page_count: uploadedFullText.page_count,
         char_count: uploadedFullText.character_count,
@@ -1772,11 +1785,11 @@ test("created Chinese research workflow keeps uploaded full text after refresh a
     mimeType: "application/pdf",
     buffer: Buffer.from("%PDF-1.7 workflow fixture"),
   });
-  await expect(page.locator('.reader-evidence-level.full_text').getByText("全文已验证", { exact: true })).toBeVisible();
-  await expect(page.getByText("已解析 2 页 / 3,200 字符", { exact: true })).toBeVisible();
+  await expect(page.locator('.reader-evidence-level.full_text').getByText("已验证 PDF 全文", { exact: true })).toBeVisible();
+  await expect(page.getByText("已验证 PDF 全文 · 2 页 / 3,200 字符", { exact: true })).toBeVisible();
 
   await page.reload();
-  await expect(page.locator('.reader-evidence-level.full_text').getByText("全文已验证", { exact: true })).toBeVisible();
+  await expect(page.locator('.reader-evidence-level.full_text').getByText("已验证 PDF 全文", { exact: true })).toBeVisible();
 
   await page.locator(".workflow-step", { hasText: "Paper Memory" }).click();
   await page.getByLabel("用户问题").fill("医学幻觉如何评估？");

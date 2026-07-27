@@ -4,6 +4,8 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from scholarflow_api.full_text import normalize_persisted_evidence_qualification
+
 
 @dataclass
 class EvidenceSnippet:
@@ -130,18 +132,32 @@ def build_paper_evidence_snippets(
             ),
         )
 
+    qualification = paper_evidence_qualification(paper)
     full_text = str(paper.get("full_text", "") or "")
+    text_source = (
+        "pdf.full_text"
+        if qualification.level == "full_text" and qualification.verified
+        else "user.supplemental_text"
+        if qualification.level == "supplemental_text"
+        else ""
+    )
     for index, located in enumerate(select_full_text_sentences(full_text, direction), start=1):
+        if not text_source:
+            break
         full_text_snippets.append(
             EvidenceSnippet(
-                id=f"pdf_full_text_{index}",
-                source="pdf.full_text",
+                id=f"{'pdf_full_text' if text_source == 'pdf.full_text' else 'supplemental_text'}_{index}",
+                source=text_source,
                 kind=infer_sentence_kind(located.text),
                 text=located.text[:360],
-                note="来自 PDF 文本层的定位片段；语义归类仍需回到原文复核。",
-                confidence="medium",
-                section=located.section,
-                page=located.page,
+                note=(
+                    "来自 PDF 文本层的定位片段；语义归类仍需回到原文复核。"
+                    if text_source == "pdf.full_text"
+                    else "来自用户补充文本，未通过 PDF 来源、页码和解析验证。"
+                ),
+                confidence="medium" if text_source == "pdf.full_text" else "low",
+                section=located.section if text_source == "pdf.full_text" else "",
+                page=located.page if text_source == "pdf.full_text" else None,
             ),
         )
 
@@ -234,17 +250,28 @@ def lower_confidence(left: str, right: str) -> str:
 
 
 def infer_evidence_level(paper: dict[str, Any], sections: list[dict[str, Any]]) -> str:
-    explicit = normalize_evidence_level(paper.get("evidence_level", ""))
-    if explicit:
-        return explicit
-    if normalize_space(paper.get("abstract", "")):
-        return "abstract_only"
-    return "metadata_only"
+    del sections
+    return paper_evidence_qualification(paper).level
+
+
+def paper_evidence_qualification(paper: dict[str, Any]):
+    provenance = (
+        paper.get("full_text_provenance")
+        if isinstance(paper.get("full_text_provenance"), dict)
+        else paper.get("full_text")
+        if isinstance(paper.get("full_text"), dict)
+        else {}
+    )
+    return normalize_persisted_evidence_qualification(
+        paper.get("evidence_qualification"),
+        provenance,
+        has_abstract=bool(normalize_space(paper.get("abstract", ""))),
+    )
 
 
 def normalize_evidence_level(value: Any) -> str:
     normalized = normalize_space(value).lower().replace("-", "_").replace("+", "_")
-    if normalized in {"metadata_only", "abstract_only", "full_text"}:
+    if normalized in {"metadata_only", "abstract_only", "supplemental_text", "full_text"}:
         return normalized
     if normalized in {"metadata_abstract", "metadata_abstract_paper_card"}:
         return "abstract_only"

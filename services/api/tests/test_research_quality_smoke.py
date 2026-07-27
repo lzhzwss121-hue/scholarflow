@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scholarflow_api import literature
+from scholarflow_api import full_text, literature
 from scholarflow_api.baseline_map import build_baseline_map
 from scholarflow_api.direction_review import (
     DirectionPaperReading,
@@ -1081,6 +1081,7 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                 {
                     "paper_id": "paper_method",
                     "paper_title": "A Method Paper for Trustworthy VLM Evaluation",
+                    "paper_abstract": "A method paper with benchmark discussion.",
                     "minimal_reproduction": "Claim: the method reduces hallucination.",
                     "sections_json": "The paper mentions benchmark evaluation but omits concrete fields.",
                     "weakest_assumption": "The benchmark exposes real failures.",
@@ -1399,6 +1400,44 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertEqual(response.card.minimal_reproduction, "")
         self.assertTrue(response.artifact.id)
 
+    def test_short_user_text_paper_card_stays_below_full_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api import main as main_module
+                from scholarflow_api.database import init_db
+                from scholarflow_api.schemas import PaperCardCreateRequest, ProjectCreate
+
+                init_db()
+                project = main_module.create_project(
+                    ProjectCreate(
+                        title="Short Paper Text Boundary",
+                        keyword="evidence boundary",
+                    ),
+                )
+                response = main_module.create_project_paper_card(
+                    project.id,
+                    PaperCardCreateRequest(
+                        title="Short User Text",
+                        paper_text="x" * 913,
+                    ),
+                )
+
+        self.assertEqual(response.card.evidence_level, "supplemental_text")
+        self.assertEqual(response.card.full_text.status, "supplemental_text")
+        self.assertEqual(response.card.full_text.character_count, 913)
+        self.assertFalse(response.card.evidence_qualification.verified)
+        artifact_payload = json.loads(response.artifact.content_json)
+        self.assertEqual(
+            artifact_payload["evidence_qualification"]["level"],
+            "supplemental_text",
+        )
+        self.assertFalse(artifact_payload["evidence_qualification"]["verified"])
+        self.assertEqual(
+            artifact_payload["full_text"]["evidence_qualification"]["source_origin"],
+            "user_provided",
+        )
+
     def test_paper_card_metadata_and_abstract_levels_mark_evidence_boundary(self) -> None:
         from scholarflow_api.paper_card import generate_deep_paper_card, render_card_markdown
 
@@ -1435,12 +1474,21 @@ class ResearchQualitySmokeTest(unittest.TestCase):
             "Compared with LLaVA, our method improves evidence faithfulness and reduces hallucination rate. "
             "We show the benchmark exposes object hallucination failures under conflicting visual evidence."
         )
+        paper_text += " Additional implementation context is reported for reproducibility." * 24
+        full_text_result = full_text.FullTextResult(
+            status="extracted",
+            source="user_uploaded_pdf",
+            page_count=8,
+            character_count=len(paper_text),
+            text=paper_text,
+        )
         card = generate_deep_paper_card(
             {
                 "title": "Grounded Evidence Evaluation for Visual Question Answering",
                 "abstract": "We propose a grounded evidence evaluation method for VQA.",
             },
             paper_text,
+            evidence_qualification=full_text_result.evidence_qualification(),
         )
 
         self.assertEqual(card.evidence_level, "full_text")

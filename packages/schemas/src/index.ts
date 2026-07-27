@@ -202,12 +202,27 @@ export interface ApiSignalEvidenceRef {
 
 export type ApiFullTextStatus =
   | "extracted"
+  | "supplemental_text"
   | "not_available"
   | "download_failed"
   | "parse_failed"
   | "disabled";
 
-export type ApiEvidenceLevel = "metadata_only" | "abstract_only" | "full_text";
+export type ApiEvidenceLevel =
+  | "metadata_only"
+  | "abstract_only"
+  | "supplemental_text"
+  | "full_text";
+
+export interface ApiEvidenceQualification {
+  level: ApiEvidenceLevel;
+  verified: boolean;
+  source_origin: string;
+  character_count: number;
+  page_count: number;
+  section_names: string[];
+  reason: string;
+}
 
 export interface ApiFullTextProvenance {
   status: ApiFullTextStatus;
@@ -220,6 +235,7 @@ export interface ApiFullTextProvenance {
   recovery_hint?: string;
   page_numbers?: number[];
   section_names?: string[];
+  evidence_qualification?: ApiEvidenceQualification;
 }
 
 export interface ApiEvidenceSnippet {
@@ -323,6 +339,7 @@ export interface ApiPaperCard {
   source_artifact_title?: string;
   card_source?: "paper_table" | "direction_review_artifact" | "manual_unbound";
   evidence_level?: ApiEvidenceLevel;
+  evidence_qualification?: ApiEvidenceQualification;
   full_text?: ApiFullTextProvenance;
   signals?: ApiPaperSignals;
   sections: ApiPaperCardSection[];
@@ -342,6 +359,7 @@ export interface ApiPaperFullTextExtractResponse {
   text: string;
   evidence_level: ApiEvidenceLevel;
   evidence_quality: ApiEvidenceLevel;
+  evidence_qualification: ApiEvidenceQualification;
   source: string;
   page_count: number;
   char_count: number;
@@ -375,6 +393,7 @@ export interface ApiDirectionPaperReading {
   updated_at?: string;
   abstract_translation: string;
   evidence_level?: ApiEvidenceLevel;
+  evidence_qualification?: ApiEvidenceQualification;
   full_text?: ApiFullTextProvenance;
   signals?: ApiPaperSignals;
   sections: ApiPaperCardSection[];

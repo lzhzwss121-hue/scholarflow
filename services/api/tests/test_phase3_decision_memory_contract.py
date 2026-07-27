@@ -66,6 +66,21 @@ def make_anchor_card(paper_id: str, title: str, dataset: str) -> dict[str, objec
         "paper_id": paper_id,
         "paper_title": title,
         "evidence_level": "full_text",
+        "evidence_qualification": {
+            "level": "full_text",
+            "verified": True,
+            "source_origin": "user_uploaded_pdf",
+            "character_count": 5000,
+            "page_count": 12,
+            "section_names": ["experiments", "results"],
+            "reason": "Test fixture models a successfully parsed PDF.",
+        },
+        "full_text": {
+            "status": "extracted",
+            "source": "user_uploaded_pdf",
+            "character_count": 5000,
+            "page_count": 12,
+        },
         "minimal_reproduction": "\n".join(
             [
                 f"Claim: {claim}.",
@@ -180,6 +195,42 @@ class PhaseThreeDecisionMemoryContractTest(unittest.TestCase):
         self.assertNotIn("50-100", bundle.experiment.resources)
         self.assertTrue(bundle.experiment.readiness_checks["code_or_api"].startswith("unknown:"))
         self.assertTrue(bundle.experiment.timeline[0].startswith("Day 1"))
+
+    def test_supplemental_text_paper_card_cannot_become_experiment_anchor(self) -> None:
+        paper = make_paper(
+            "paper_supplemental",
+            "User Supplied Benchmark Notes",
+            "A benchmark abstract.",
+        )
+        card = make_anchor_card("paper_supplemental", str(paper["title"]), "POPE")
+        card["evidence_level"] = "supplemental_text"
+        card["evidence_qualification"] = {
+            "level": "supplemental_text",
+            "verified": False,
+            "source_origin": "user_provided",
+            "character_count": 5000,
+            "page_count": 0,
+            "section_names": [],
+            "reason": "User text is not a verified PDF.",
+        }
+        card["full_text"] = {
+            "status": "supplemental_text",
+            "source": "user_provided",
+            "character_count": 5000,
+            "page_count": 0,
+        }
+
+        bundle = generate_research_decisions(
+            project={"title": "Supplemental boundary", "keyword": "object hallucination"},
+            papers=[paper],
+            paper_cards=[card],
+            goal="Evaluate object hallucination on POPE",
+        )
+
+        self.assertEqual(bundle.experiment.status, "blocked")
+        self.assertEqual(bundle.experiment.anchor_paper_id, "")
+        self.assertEqual(bundle.evidence_quality["full_text_card_count"], 0)
+        self.assertEqual(bundle.evidence_quality["supplemental_text_card_count"], 1)
 
     def test_card_level_full_text_cannot_hide_abstract_only_experiment_fields(self) -> None:
         paper = make_paper(

@@ -1045,6 +1045,11 @@ def paper_card_from_row(row: dict) -> PaperCard:
     sections = parse_json_list(row.get("sections_json"))
     signals = row.get("signals") if isinstance(row.get("signals"), dict) else {}
     full_text = row.get("full_text") if isinstance(row.get("full_text"), dict) else {}
+    evidence_qualification = (
+        row.get("evidence_qualification")
+        if isinstance(row.get("evidence_qualification"), dict)
+        else {}
+    )
     artifact_title = str(row.get("artifact_title") or "")
     card_source = (
         "direction_review_artifact"
@@ -1060,6 +1065,7 @@ def paper_card_from_row(row: dict) -> PaperCard:
         source_artifact_title=artifact_title,
         card_source=card_source,
         evidence_level=str(row.get("evidence_level") or "metadata_only"),
+        evidence_qualification=evidence_qualification,
         full_text=full_text,
         signals=signals,
         sections=sections,
@@ -1098,9 +1104,22 @@ def persist_project_paper_card(
         project = fetch_project_dict(connection, project_id)
         session_id = ensure_active_session(connection, project, now)
         paper = build_paper_card_source(connection, project_id, payload)
-        card_text = payload.paper_text or (full_text.text if full_text.is_extracted else "")
-        card = generate_deep_paper_card(paper, card_text)
-        provenance = full_text.to_provenance()
+        qualification = full_text.evidence_qualification(
+            has_abstract=bool(str(paper.get("abstract") or "").strip()),
+        )
+        card_text = (
+            payload.paper_text
+            if qualification.level == "supplemental_text"
+            else full_text.text
+            if qualification.level == "full_text" and qualification.verified
+            else ""
+        )
+        card = generate_deep_paper_card(
+            paper,
+            card_text,
+            evidence_qualification=qualification,
+        )
+        provenance = full_text.to_provenance(qualification)
         artifact = insert_artifact_row(
             connection=connection,
             project_id=project_id,
@@ -1131,7 +1150,11 @@ def persist_project_paper_card(
                 now,
             ),
         )
-        if payload.paper_id and full_text.is_extracted:
+        if (
+            payload.paper_id
+            and qualification.level == "full_text"
+            and qualification.verified
+        ):
             index_paper_full_text(
                 connection,
                 project_id=project_id,
@@ -1171,6 +1194,7 @@ def persist_project_paper_card(
             source_artifact_title=artifact["title"],
             card_source="paper_table" if payload.paper_id else "manual_unbound",
             evidence_level=card.evidence_level,
+            evidence_qualification=card.evidence_qualification,
             full_text=provenance,
             signals=card.signals.to_dict(),
             sections=[section.to_dict() for section in card.sections],
@@ -1196,27 +1220,34 @@ def extract_project_paper_full_text(
     with get_connection() as connection:
         paper = fetch_paper_dict(connection, project_id, paper_id)
     result = parse_pdf_bytes(payload, source="user_uploaded_pdf")
+    qualification = result.evidence_qualification(
+        has_abstract=bool(str(paper.get("abstract") or "").strip()),
+    )
     generated = (
         persist_project_paper_card(
             project_id,
             PaperCardCreateRequest(paper_id=paper_id),
             result,
         )
-        if result.is_extracted
+        if qualification.level == "full_text" and qualification.verified
         else None
     )
     updated_at = generated.card.updated_at if generated else utc_now()
-    evidence_level = "full_text" if result.is_extracted else ("abstract_only" if paper.get("abstract") else "metadata_only")
     return PaperFullTextExtractResponse(
         paper_id=paper_id,
-        text=result.text if result.is_extracted else "",
-        evidence_level=evidence_level,
-        evidence_quality=evidence_level,
+        text=(
+            result.text
+            if qualification.level == "full_text" and qualification.verified
+            else ""
+        ),
+        evidence_level=qualification.level,
+        evidence_quality=qualification.level,
+        evidence_qualification=qualification,
         source=result.source,
         page_count=result.page_count,
         char_count=result.character_count,
         updated_at=updated_at,
-        full_text=result.to_provenance(),
+        full_text=result.to_provenance(qualification),
         card=generated.card if generated else None,
         artifact=generated.artifact if generated else None,
     )
@@ -1501,13 +1532,16 @@ def rebuild_project_paper_rag_index(
         paper = fetch_paper_dict(connection, project_id, paper_id)
     result = provided_full_text(payload.paper_text) if payload.paper_text else resolve_open_full_text(paper)
     if not result.is_extracted:
+        qualification = result.evidence_qualification(
+            has_abstract=bool(str(paper.get("abstract") or "").strip()),
+        )
         with get_connection() as connection:
             status = paper_index_status(
                 connection,
                 project_id,
                 paper_id,
                 message=(
-                    f"全文索引未重建：{result.error or '输入文本没有达到全文证据阈值'} "
+                    f"全文索引未重建：{result.error or qualification.reason} "
                     "已有高等级索引未被删除。"
                 ),
             )

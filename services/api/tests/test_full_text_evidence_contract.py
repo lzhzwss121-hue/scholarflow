@@ -14,6 +14,38 @@ from scholarflow_api.baseline_map import build_baseline_map
 from scholarflow_api.direction_review import build_direction_readings
 
 
+def verified_pdf_context(text: str, *, source: str = "user_uploaded_pdf") -> tuple[str, object]:
+    normalized = full_text.normalize_extracted_text(text)
+    if len(normalized) < full_text.PDF_MIN_TEXT_CHARS:
+        normalized += "\n" + ("Supporting context " * 96)
+    result = full_text.FullTextResult(
+        status="extracted",
+        source=source,
+        page_count=max(full_text.extract_page_numbers(normalized) or [1]),
+        character_count=len(normalized),
+        text=normalized,
+    )
+    return normalized, result.evidence_qualification()
+
+
+def with_verified_pdf(paper: dict[str, object], *, source: str = "arxiv_pdf") -> dict[str, object]:
+    text, qualification = verified_pdf_context(str(paper.get("full_text") or ""), source=source)
+    result = {
+        **paper,
+        "full_text": text,
+        "evidence_level": "full_text",
+        "evidence_qualification": qualification.model_dump(),
+        "full_text_provenance": {
+            "status": "extracted",
+            "source": source,
+            "character_count": qualification.character_count,
+            "page_count": qualification.page_count,
+            "evidence_qualification": qualification.model_dump(),
+        },
+    }
+    return result
+
+
 def build_minimal_text_pdf() -> bytes:
     from pypdf import PdfWriter
     from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
@@ -353,7 +385,12 @@ Future work may explore continual learning from failed past trajectories and sca
 LEGOMem to open-ended environments and tool ecosystems.
 """
 
-        card = generate_deep_paper_card(paper, structured_text)
+        structured_text, qualification = verified_pdf_context(structured_text)
+        card = generate_deep_paper_card(
+            paper,
+            structured_text,
+            evidence_qualification=qualification,
+        )
 
         self.assertEqual(card.evidence_level, "full_text")
         self.assertEqual(card.signals.dataset, "OfficeBench")
@@ -378,7 +415,7 @@ LEGOMem to open-ended environments and tool ecosystems.
     def test_evidence_pack_reserves_slots_for_pdf_before_abstract_metadata(self) -> None:
         from scholarflow_api.evidence import build_paper_evidence_pack
 
-        pack = build_paper_evidence_pack(
+        paper = with_verified_pdf(
             {
                 "title": "Evidence Ordering",
                 "abstract": (
@@ -388,7 +425,6 @@ LEGOMem to open-ended environments and tool ecosystems.
                 "venue": "CVPR",
                 "year": "2026",
                 "url": "https://example.org/evidence-ordering",
-                "evidence_level": "full_text",
                 "full_text": (
                     "[PDF page 6]\n"
                     "[Section: results]\n"
@@ -396,6 +432,9 @@ LEGOMem to open-ended environments and tool ecosystems.
                     "causes the decoder to bind attributes to the wrong object."
                 ),
             },
+        )
+        pack = build_paper_evidence_pack(
+            paper,
             [
                 {"id": f"section-{index}", "title": f"Section {index}", "content": "Generated secondary analysis."}
                 for index in range(1, 5)
@@ -417,15 +456,17 @@ LEGOMem to open-ended environments and tool ecosystems.
             "We propose a grounded intervention method and describe its architecture for evidence faithfulness. "
             "The method uses a visual encoder and a language decoder in a controlled pipeline."
         )
-        pack = build_paper_evidence_pack(
+        paper = with_verified_pdf(
             {
                 "title": "Grounded Intervention for VQA",
                 "abstract": "We study evidence faithfulness in visual question answering.",
                 "venue": "CVPR",
                 "url": "https://example.org/paper",
-                "evidence_level": "full_text",
                 "full_text": full_text_value,
             },
+        )
+        pack = build_paper_evidence_pack(
+            paper,
             [{"id": "method", "title": "Method", "content": "Grounded intervention."}],
             "VQA evidence faithfulness",
         )
@@ -611,15 +652,106 @@ LEGOMem to open-ended environments and tool ecosystems.
         self.assertEqual(result.character_count, len(short_text))
         self.assertIn(str(full_text.PDF_MIN_TEXT_CHARS), result.error)
 
-    def test_user_provided_full_text_uses_same_status_enum_but_distinct_source(self) -> None:
+    def test_invalid_pdf_variants_never_qualify_as_full_text(self) -> None:
+        from pypdf import PdfWriter
+
+        damaged = full_text.parse_pdf_bytes(b"%PDF-1.7 damaged")
+        with patch.object(full_text, "extract_research_text_from_pdf", return_value=("", 3)):
+            no_text_layer = full_text.parse_pdf_bytes(b"%PDF-1.7 no-text")
+        with patch.object(full_text, "extract_research_text_from_pdf", return_value=("short", 3)):
+            too_short = full_text.parse_pdf_bytes(b"%PDF-1.7 short")
+
+        writer = PdfWriter()
+        writer.add_blank_page(width=612, height=792)
+        writer.encrypt("secret")
+        encrypted_buffer = BytesIO()
+        writer.write(encrypted_buffer)
+        encrypted = full_text.parse_pdf_bytes(encrypted_buffer.getvalue())
+
+        for result in (damaged, no_text_layer, too_short, encrypted):
+            with self.subTest(error=result.error):
+                qualification = result.evidence_qualification()
+                self.assertEqual(result.status, "parse_failed")
+                self.assertFalse(result.is_extracted)
+                self.assertNotEqual(qualification.level, "full_text")
+                self.assertFalse(qualification.verified)
+
+    def test_user_provided_text_is_always_unverified_supplemental_text(self) -> None:
         supplied = "Method experiment dataset metric baseline ablation result. " * 40
 
         result = full_text.provided_full_text(supplied)
+        qualification = result.evidence_qualification()
 
-        self.assertEqual(result.status, "extracted")
+        self.assertEqual(result.status, "supplemental_text")
         self.assertEqual(result.source, "user_provided")
-        self.assertTrue(result.is_extracted)
+        self.assertFalse(result.is_extracted)
         self.assertEqual(result.pdf_url, "")
+        self.assertEqual(qualification.level, "supplemental_text")
+        self.assertFalse(qualification.verified)
+        self.assertEqual(qualification.page_count, 0)
+
+    def test_913_character_user_text_cannot_upgrade_a_paper_card_to_full_text(self) -> None:
+        from scholarflow_api.paper_card import generate_deep_paper_card
+
+        supplied = "x" * 913
+
+        result = full_text.provided_full_text(supplied)
+        qualification = result.evidence_qualification()
+        card = generate_deep_paper_card(
+            {"title": "Short User Text", "abstract": ""},
+            supplied,
+            evidence_qualification=qualification,
+        )
+
+        self.assertEqual(result.status, "supplemental_text")
+        self.assertFalse(result.is_extracted)
+        self.assertEqual(result.character_count, 913)
+        self.assertEqual(qualification.level, "supplemental_text")
+        self.assertFalse(qualification.verified)
+        self.assertEqual(card.evidence_level, "supplemental_text")
+        self.assertFalse(card.evidence_qualification.verified)
+
+    def test_5000_character_user_text_still_cannot_be_full_text(self) -> None:
+        from scholarflow_api.paper_card import generate_deep_paper_card
+
+        supplied = "x" * 5000
+        result = full_text.provided_full_text(supplied)
+        qualification = result.evidence_qualification()
+        card = generate_deep_paper_card(
+            {"title": "Long User Text", "abstract": ""},
+            supplied,
+            evidence_qualification=qualification,
+        )
+
+        self.assertEqual(result.status, "supplemental_text")
+        self.assertEqual(qualification.level, "supplemental_text")
+        self.assertFalse(qualification.verified)
+        self.assertEqual(card.evidence_level, "supplemental_text")
+        self.assertFalse(card.evidence_qualification.verified)
+
+    def test_legacy_artifact_without_qualification_never_inherits_full_text(self) -> None:
+        legacy_provenance = {
+            "status": "extracted",
+            "source": "user_uploaded_pdf",
+            "character_count": 5000,
+            "page_count": 12,
+        }
+
+        abstract_fallback = full_text.normalize_persisted_evidence_qualification(
+            {},
+            legacy_provenance,
+            has_abstract=True,
+        )
+        metadata_fallback = full_text.normalize_persisted_evidence_qualification(
+            {},
+            legacy_provenance,
+            has_abstract=False,
+        )
+
+        self.assertEqual(abstract_fallback.level, "abstract_only")
+        self.assertFalse(abstract_fallback.verified)
+        self.assertEqual(metadata_fallback.level, "metadata_only")
+        self.assertFalse(metadata_fallback.verified)
 
     def test_component_analysis_paper_is_not_misclassified_as_survey_from_incidental_review_words(self) -> None:
         from scholarflow_api.paper_card import extract_paper_signals
@@ -701,7 +833,12 @@ LEGOMem to open-ended environments and tool ecosystems.
             "[PDF page 9]\n[Section: results]\n"
             "We show that FLB reduces CHAIRs while preserving answer accuracy."
         )
-        card = generate_deep_paper_card(paper, full_text)
+        full_text, qualification = verified_pdf_context(full_text)
+        card = generate_deep_paper_card(
+            paper,
+            full_text,
+            evidence_qualification=qualification,
+        )
         sight = build_research_sight(
             {**paper, "full_text": full_text, "evidence_level": "full_text"},
             [section.to_dict() for section in card.sections],
@@ -808,7 +945,7 @@ LEGOMem to open-ended environments and tool ecosystems.
 
     def test_baseline_map_uses_owned_method_evidence_and_reports_full_text_coverage(self) -> None:
         selected = [
-            {
+            with_verified_pdf({
                 "title": "F-CLIPScore for Faithful Multimodal Evaluation",
                 "abstract": (
                     "We introduce F-CLIPScore, an evaluation metric for faithful multimodal generation. "
@@ -822,12 +959,11 @@ LEGOMem to open-ended environments and tool ecosystems.
                     "[PDF page 4]\n[Section: method]\n"
                     "We introduce F-CLIPScore as an evaluation metric based on region-text consistency."
                 ),
-                "full_text_provenance": {"status": "extracted", "source": "arxiv_pdf"},
                 "paper_signals": {
                     "contribution_type": "benchmark",
                     "method": "We introduce F-CLIPScore as an evaluation metric.",
                 },
-            },
+            }),
             {
                 "title": "Mitigating Multilingual Hallucination with Logit Calibration",
                 "abstract": (
@@ -890,7 +1026,7 @@ LEGOMem to open-ended environments and tool ecosystems.
 
     def test_baseline_verification_separates_pdf_code_citation_and_reproduction_state(self) -> None:
         selected = [
-            {
+            with_verified_pdf({
                 "title": "Traceable Grounding Intervention",
                 "abstract": "We propose a grounded decoding intervention and evaluate it on POPE.",
                 "year": "2026",
@@ -904,7 +1040,6 @@ LEGOMem to open-ended environments and tool ecosystems.
                     "[PDF page 7]\n[Section: experiments]\n"
                     "Experiments use POPE, report accuracy, and compare with LLaVA-1.5."
                 ),
-                "full_text_provenance": {"status": "extracted", "source": "arxiv_pdf"},
                 "paper_signals": {
                     "contribution_type": "method",
                     "method": "方法证据：We propose a grounded decoding intervention.",
@@ -912,7 +1047,7 @@ LEGOMem to open-ended environments and tool ecosystems.
                     "metric": "accuracy",
                     "baseline": "Baseline evidence: LLaVA-1.5",
                 },
-            },
+            }),
         ]
 
         baseline_map = build_baseline_map("grounded hallucination mitigation", [], selected)
@@ -934,7 +1069,7 @@ LEGOMem to open-ended environments and tool ecosystems.
 
     def test_baseline_reproduction_stays_partial_without_code_and_blocked_without_pdf(self) -> None:
         selected = [
-            {
+            with_verified_pdf({
                 "title": "Full Text but No Repository",
                 "abstract": "We propose a method evaluated on POPE with accuracy against LLaVA.",
                 "year": "2026",
@@ -943,7 +1078,6 @@ LEGOMem to open-ended environments and tool ecosystems.
                 "url": "https://arxiv.org/abs/no-code",
                 "code": "unknown",
                 "full_text": "[PDF page 4]\n[Section: experiments]\nWe evaluate on POPE with accuracy against LLaVA.",
-                "full_text_provenance": {"status": "extracted", "source": "arxiv_pdf"},
                 "paper_signals": {
                     "contribution_type": "method",
                     "method": "方法证据：We propose a method.",
@@ -951,7 +1085,7 @@ LEGOMem to open-ended environments and tool ecosystems.
                     "metric": "accuracy",
                     "baseline": "Baseline evidence: LLaVA",
                 },
-            },
+            }),
             {
                 "title": "Abstract Candidate Only",
                 "abstract": "We propose an evaluation method.",
@@ -991,7 +1125,7 @@ LEGOMem to open-ended environments and tool ecosystems.
         self.assertEqual(abstract_only.checks["full_text"], "missing")
 
     def test_baseline_code_link_can_be_traced_to_pdf_text(self) -> None:
-        paper = {
+        paper = with_verified_pdf({
             "title": "PDF Linked Method",
             "abstract": "We propose a grounded method.",
             "year": "2026",
@@ -1004,7 +1138,6 @@ LEGOMem to open-ended environments and tool ecosystems.
                 "Code is available at https://github.com/example/pdf-linked-method.\n"
                 "[PDF page 4]\n[Section: method]\nWe propose a grounded method."
             ),
-            "full_text_provenance": {"status": "extracted", "source": "arxiv_pdf"},
             "paper_signals": {
                 "contribution_type": "method",
                 "method": "方法证据：We propose a grounded method.",
@@ -1012,7 +1145,7 @@ LEGOMem to open-ended environments and tool ecosystems.
                 "metric": "accuracy",
                 "baseline": "Baseline evidence: LLaVA",
             },
-        }
+        })
 
         verification = build_baseline_map("grounded method", [], [paper]).recent_strong_baselines[0].verification
 
@@ -1238,10 +1371,16 @@ LEGOMem to open-ended environments and tool ecosystems.
         for call in resolve.call_args_list:
             self.assertEqual(call.args[0]["pdf_url"], candidate.pdf_url)
         self.assertEqual(success_response.card.evidence_level, "full_text")
+        self.assertTrue(success_response.card.evidence_qualification.verified)
         self.assertEqual(success_response.card.full_text.status, "extracted")
         self.assertEqual(success_response.card.full_text.page_count, 10)
         success_artifact = json.loads(success_response.artifact.content_json)
         self.assertEqual(success_artifact["full_text"]["status"], "extracted")
+        self.assertTrue(success_artifact["evidence_qualification"]["verified"])
+        self.assertEqual(
+            success_artifact["full_text"]["evidence_qualification"]["level"],
+            "full_text",
+        )
         self.assertNotIn("text", success_artifact["full_text"])
 
         self.assertEqual(failed_response.card.evidence_level, "abstract_only")
@@ -1259,6 +1398,7 @@ LEGOMem to open-ended environments and tool ecosystems.
         self.assertTrue(upload_response.updated_at)
         self.assertEqual(upload_response.full_text.status, "extracted")
         self.assertEqual(upload_response.full_text.source, "user_uploaded_pdf")
+        self.assertTrue(upload_response.evidence_qualification.verified)
         self.assertIn("Method experiment dataset POPE", upload_response.text)
         self.assertIsNotNone(upload_response.card)
         self.assertIsNotNone(upload_response.artifact)
@@ -1266,6 +1406,7 @@ LEGOMem to open-ended environments and tool ecosystems.
         self.assertEqual(upload_response.card.full_text.source, "user_uploaded_pdf")
         upload_artifact = json.loads(upload_response.artifact.content_json)
         self.assertEqual(upload_artifact["full_text"]["source"], "user_uploaded_pdf")
+        self.assertTrue(upload_artifact["evidence_qualification"]["verified"])
         self.assertEqual(upload_artifact["paper"]["id"], persisted_paper.id)
         bound_cards = [card for card in active_cards if card.get("paper_id") == persisted_paper.id]
         self.assertEqual(len(bound_cards), 1)

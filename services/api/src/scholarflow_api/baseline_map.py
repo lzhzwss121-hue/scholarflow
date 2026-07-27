@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from scholarflow_api.full_text import normalize_persisted_evidence_qualification
+
 from scholarflow_api.evidence import EvidenceSnippet, build_baseline_reference_evidence
 
 
@@ -453,19 +455,14 @@ def build_baseline_verification(
         signals = {}
 
     provenance = paper.get("full_text_provenance") if isinstance(paper.get("full_text_provenance"), dict) else {}
-    full_text = normalize_space(paper.get("full_text", ""))
-    full_text_ready = bool(full_text) and (
-        not provenance or normalize_space(provenance.get("status", "")).lower() == "extracted"
+    qualification = normalize_persisted_evidence_qualification(
+        paper.get("evidence_qualification"),
+        provenance,
+        has_abstract=bool(normalize_space(paper.get("abstract", ""))),
     )
-    explicit_level = normalize_space(paper.get("evidence_level", "")).lower().replace("-", "_")
-    if full_text_ready:
-        evidence_level = "full_text"
-    elif explicit_level in {"metadata_only", "abstract_only"}:
-        evidence_level = explicit_level
-    elif normalize_space(paper.get("abstract", "")):
-        evidence_level = "abstract_only"
-    else:
-        evidence_level = "metadata_only"
+    full_text = normalize_space(paper.get("full_text", ""))
+    full_text_ready = bool(full_text) and qualification.level == "full_text" and qualification.verified
+    evidence_level = qualification.level
 
     # A family inferred from title/topic is useful for grouping, but it is not
     # sufficient evidence that the paper's actual method can be reproduced.

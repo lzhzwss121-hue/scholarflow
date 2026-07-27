@@ -6,7 +6,30 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 
-EvidenceLevel = Literal["metadata_only", "abstract_only", "full_text"]
+EvidenceLevel = Literal[
+    "metadata_only",
+    "abstract_only",
+    "supplemental_text",
+    "full_text",
+]
+
+
+class EvidenceQualification(BaseModel):
+    level: EvidenceLevel = "metadata_only"
+    verified: bool = False
+    source_origin: str = ""
+    character_count: int = Field(default=0, ge=0)
+    page_count: int = Field(default=0, ge=0)
+    section_names: list[str] = Field(default_factory=list)
+    reason: str = "证据资格尚未建立。"
+
+    @model_validator(mode="after")
+    def full_text_requires_verification(self) -> "EvidenceQualification":
+        if self.level == "full_text" and not self.verified:
+            raise ValueError("full_text evidence must be verified")
+        if self.verified and self.level != "full_text":
+            raise ValueError("only full_text evidence may be verified")
+        return self
 
 
 class HealthResponse(BaseModel):
@@ -212,6 +235,7 @@ class PaperSignals(BaseModel):
 class FullTextProvenance(BaseModel):
     status: Literal[
         "extracted",
+        "supplemental_text",
         "not_available",
         "download_failed",
         "parse_failed",
@@ -226,6 +250,7 @@ class FullTextProvenance(BaseModel):
     recovery_hint: str = ""
     page_numbers: list[int] = Field(default_factory=list)
     section_names: list[str] = Field(default_factory=list)
+    evidence_qualification: EvidenceQualification = Field(default_factory=EvidenceQualification)
 
 
 class EvidenceSnippet(BaseModel):
@@ -329,6 +354,7 @@ class PaperCard(BaseModel):
     source_artifact_title: str = ""
     card_source: Literal["paper_table", "direction_review_artifact", "manual_unbound"] = "paper_table"
     evidence_level: EvidenceLevel = "metadata_only"
+    evidence_qualification: EvidenceQualification = Field(default_factory=EvidenceQualification)
     full_text: FullTextProvenance = Field(default_factory=FullTextProvenance)
     signals: PaperSignals = Field(default_factory=PaperSignals)
     sections: list[PaperCardSection]
@@ -348,6 +374,7 @@ class PaperFullTextExtractResponse(BaseModel):
     text: str = ""
     evidence_level: EvidenceLevel = "metadata_only"
     evidence_quality: EvidenceLevel = "metadata_only"
+    evidence_qualification: EvidenceQualification = Field(default_factory=EvidenceQualification)
     source: str = ""
     page_count: int = 0
     char_count: int = 0
@@ -611,6 +638,7 @@ class DirectionPaperReading(BaseModel):
     paper: Paper
     abstract_translation: str
     evidence_level: EvidenceLevel = "metadata_only"
+    evidence_qualification: EvidenceQualification = Field(default_factory=EvidenceQualification)
     full_text: FullTextProvenance = Field(default_factory=FullTextProvenance)
     signals: PaperSignals = Field(default_factory=PaperSignals)
     sections: list[PaperCardSection]
@@ -761,7 +789,7 @@ class PaperMemoryHit(BaseModel):
     snippets: list[str]
     matched_query_terms: list[str] = Field(default_factory=list)
     query_coverage: float = 0.0
-    evidence_quality: Literal["metadata_only", "abstract_only", "full_text"] = "metadata_only"
+    evidence_quality: EvidenceLevel = "metadata_only"
     evidence_refs: list[dict[str, str]] = Field(default_factory=list)
     abstract_translation: str
     weakest_assumption: str

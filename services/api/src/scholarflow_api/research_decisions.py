@@ -5,6 +5,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from scholarflow_api.full_text import normalize_persisted_evidence_qualification
 from scholarflow_api.text_utils import extract_terms, score_term_overlap
 
 
@@ -539,6 +540,7 @@ def collect_grounded_gap_evidence(
     grounded: list[dict[str, Any]] = []
     for paper in papers:
         card = cards_by_paper_id.get(str(paper.get("id") or ""), {})
+        qualification = card_evidence_qualification(card)
         signals = card.get("signals") if isinstance(card.get("signals"), dict) else {}
         limitation = normalize_space(signals.get("limitation", ""))
         if limitation.startswith("当前证据不足"):
@@ -563,11 +565,9 @@ def collect_grounded_gap_evidence(
             "limitation": limitation,
             "section": normalize_space(source_snippet.get("section", "")),
             "page": normalize_space(source_snippet.get("page", "")),
-            "evidence_level": normalize_space(card.get("evidence_level", ""))
-            or (
-                "full_text"
-                if normalize_space(source_snippet.get("source", "")) == "pdf.full_text"
-                else "abstract_only"
+            "evidence_level": qualification.level,
+            "verified_full_text": (
+                qualification.level == "full_text" and qualification.verified
             ),
         }
         item["signature"] = build_gap_evidence_signature(item, signals)
@@ -603,7 +603,8 @@ def build_gap_evidence_signature(
         "metric_or_observation": metric,
         "source_level": (
             "full_text"
-            if normalize_space(item.get("source", "")) == "pdf.full_text"
+            if item.get("verified_full_text") is True
+            and normalize_space(item.get("source", "")) == "pdf.full_text"
             else "abstract_only"
         ),
     }
@@ -840,6 +841,7 @@ def is_corroborated_gap_group(group: list[dict[str, Any]]) -> bool:
         for item in group
         if normalize_space(item.get("paper_id", ""))
         and normalize_space(item.get("source", "")) == "pdf.full_text"
+        and item.get("verified_full_text") is True
         and gap_signature_is_specific(normalized_gap_signature(item))
     }
     return (
@@ -1012,15 +1014,24 @@ def build_evidence_quality(
         for paper in evidence_papers
         if normalize_space(paper.get("id", ""))
     }
-    card_level_rank = {"metadata_only": 0, "abstract_only": 1, "full_text": 2}
+    card_level_rank = {
+        "metadata_only": 0,
+        "abstract_only": 1,
+        "supplemental_text": 2,
+        "full_text": 3,
+    }
     relevant_card_by_paper_id: dict[str, dict[str, Any]] = {}
     for card in paper_cards:
         paper_id = normalize_space(card.get("paper_id", ""))
         if paper_id not in evidence_paper_ids:
             continue
         current = relevant_card_by_paper_id.get(paper_id)
-        current_level = normalize_space(current.get("evidence_level", "") if current else "").lower()
-        candidate_level = normalize_space(card.get("evidence_level", "")).lower()
+        current_level = (
+            card_evidence_qualification(current).level
+            if current
+            else "metadata_only"
+        )
+        candidate_level = card_evidence_qualification(card).level
         if current is None or card_level_rank.get(candidate_level, -1) >= card_level_rank.get(current_level, -1):
             relevant_card_by_paper_id[paper_id] = card
     relevant_cards = list(relevant_card_by_paper_id.values())
@@ -1043,6 +1054,7 @@ def build_evidence_quality(
         "linked_card_count": linked_card_count,
         "metadata_only_card_count": evidence_level_counts["metadata_only"],
         "abstract_only_card_count": evidence_level_counts["abstract_only"],
+        "supplemental_text_card_count": evidence_level_counts["supplemental_text"],
         "full_text_card_count": evidence_level_counts["full_text"],
         "unknown_evidence_card_count": evidence_level_counts["unknown"],
         "minimum_true_gap_paper_count": 2,
@@ -1052,15 +1064,40 @@ def build_evidence_quality(
 
 
 def count_card_evidence_levels(paper_cards: list[dict[str, Any]]) -> dict[str, int]:
-    counts = {"metadata_only": 0, "abstract_only": 0, "full_text": 0, "unknown": 0}
+    counts = {
+        "metadata_only": 0,
+        "abstract_only": 0,
+        "supplemental_text": 0,
+        "full_text": 0,
+        "unknown": 0,
+    }
     for card in paper_cards:
-        level = normalize_space(str(card.get("evidence_level", ""))).lower().replace("-", "_")
-        if level in {"metadata_abstract", "metadata_abstract_paper_card"}:
-            level = "abstract_only"
+        level = card_evidence_qualification(card).level
         if level not in counts:
             level = "unknown"
         counts[level] += 1
     return counts
+
+
+def card_evidence_qualification(card: dict[str, Any] | None):
+    card = card or {}
+    paper = card.get("paper") if isinstance(card.get("paper"), dict) else {}
+    has_abstract = bool(
+        normalize_space(
+            card.get("paper_abstract", "")
+            or paper.get("abstract", ""),
+        ),
+    )
+    return normalize_persisted_evidence_qualification(
+        card.get("evidence_qualification"),
+        card.get("full_text"),
+        has_abstract=has_abstract,
+    )
+
+
+def card_has_verified_full_text(card: dict[str, Any] | None) -> bool:
+    qualification = card_evidence_qualification(card)
+    return qualification.level == "full_text" and qualification.verified
 
 
 def build_evidence_quality_warnings(evidence_quality: dict[str, Any]) -> list[str]:
@@ -1070,7 +1107,7 @@ def build_evidence_quality_warnings(evidence_quality: dict[str, Any]) -> list[st
     full_text_count = int(evidence_quality.get("full_text_card_count") or 0)
     limited_card_count = int(evidence_quality.get("metadata_only_card_count") or 0) + int(
         evidence_quality.get("abstract_only_card_count") or 0
-    )
+    ) + int(evidence_quality.get("supplemental_text_card_count") or 0)
     if gap_count == 0:
         warnings.append("Gap evidence 不足：没有 strong/medium 且非 survey-only 的论文，不能下确定性研究结论。")
     if linked_card_count == 0:
@@ -1140,7 +1177,7 @@ def is_real_paper_anchor(paper: dict[str, Any], card: dict[str, Any]) -> bool:
         return False
     if not normalize_space(paper.get("url", "")):
         return False
-    if normalize_space(card.get("evidence_level", "")).lower().replace("-", "_") != "full_text":
+    if not card_has_verified_full_text(card):
         return False
     return True
 
@@ -1249,6 +1286,8 @@ def build_experiment_anchor_candidate(
 
 
 def verified_experiment_signal_values(card: dict[str, Any]) -> dict[str, str] | None:
+    if not card_has_verified_full_text(card):
+        return None
     signals = card.get("signals") if isinstance(card.get("signals"), dict) else {}
     evidence_map = (
         signals.get("signal_evidence")
