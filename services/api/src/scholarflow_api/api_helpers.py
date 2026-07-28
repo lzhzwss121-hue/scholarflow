@@ -411,14 +411,56 @@ def insert_artifact_row(
     diff: str,
     now: str,
 ) -> dict:
+    from scholarflow_api.jobs.context import current_job_id
+
+    job_id = current_job_id()
+    idempotency_key = (
+        f"job:{job_id}:{kind}:{title}"
+        if job_id
+        else None
+    )
+    if idempotency_key:
+        existing = connection.execute(
+            "SELECT id FROM artifacts WHERE idempotency_key = ?",
+            (idempotency_key,),
+        ).fetchone()
+        if existing is not None:
+            connection.execute(
+                """
+                UPDATE artifacts
+                SET project_id = ?, title = ?, kind = ?, content_markdown = ?,
+                    content_json = ?, diff = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    project_id,
+                    title,
+                    kind,
+                    content_markdown,
+                    content_json,
+                    diff,
+                    now,
+                    existing["id"],
+                ),
+            )
+            connection.execute(
+                "UPDATE projects SET updated_at = ? WHERE id = ?",
+                (now, project_id),
+            )
+            artifact = connection.execute(
+                "SELECT * FROM artifacts WHERE id = ?",
+                (existing["id"],),
+            ).fetchone()
+            return dict(artifact)
+
     artifact_id = new_id("artifact")
     connection.execute(
         """
         INSERT INTO artifacts (
             id, project_id, title, kind, content_markdown, content_json,
-            diff, created_at, updated_at
+            diff, created_at, updated_at, idempotency_key
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             artifact_id,
@@ -430,6 +472,7 @@ def insert_artifact_row(
             diff,
             now,
             now,
+            idempotency_key,
         ),
     )
     connection.execute(
@@ -564,10 +607,11 @@ def insert_paper_candidates(connection, project_id: str, papers: list, now: str)
             """
             INSERT INTO papers (
                 id, project_id, title, authors, abstract, year, type, venue, source, url, pdf_url,
+                doi, arxiv_id, openalex_id, canonical_work_id,
                 relation, priority, code, relevance_score, relevance_quality, matched_terms_json,
                 review_required, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 authors = excluded.authors,
@@ -578,6 +622,10 @@ def insert_paper_candidates(connection, project_id: str, papers: list, now: str)
                 source = excluded.source,
                 url = excluded.url,
                 pdf_url = excluded.pdf_url,
+                doi = excluded.doi,
+                arxiv_id = excluded.arxiv_id,
+                openalex_id = excluded.openalex_id,
+                canonical_work_id = excluded.canonical_work_id,
                 relation = excluded.relation,
                 priority = excluded.priority,
                 code = excluded.code,
@@ -598,6 +646,10 @@ def insert_paper_candidates(connection, project_id: str, papers: list, now: str)
                 paper.source,
                 paper.url,
                 getattr(paper, "pdf_url", ""),
+                getattr(paper, "doi", ""),
+                getattr(paper, "arxiv_id", ""),
+                getattr(paper, "openalex_id", ""),
+                getattr(paper, "canonical_work_id", ""),
                 paper.relation,
                 paper.priority,
                 paper.code,

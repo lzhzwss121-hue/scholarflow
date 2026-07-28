@@ -189,7 +189,7 @@ class RagRetrievalContractTest(unittest.TestCase):
                         "filtered_count": 0,
                     },
                 )
-                with patch.object(main_module, "search_literature", return_value=search_result):
+                with patch("scholarflow_api.services.workflow_runtime.search_literature", return_value=search_result):
                     literature_response = main_module.search_project_literature(
                         project.id,
                         LiteratureSearchRequest(query=project.keyword),
@@ -207,13 +207,15 @@ class RagRetrievalContractTest(unittest.TestCase):
 
                 self.assertEqual(response.status, "complete")
                 self.assertEqual(response.retrieval_mode, "hybrid")
-                self.assertEqual(response.provider, "local")
-                self.assertEqual(response.embedding_model, "local/hash-embedding-v1")
+                self.assertEqual(response.provider, "local_lexical_hash")
+                self.assertEqual(response.embedding_model, "local/lexical-hash-v1")
                 self.assertEqual(response.embedding_dimensions, 256)
                 self.assertFalse(response.external_data_transfer)
                 self.assertGreaterEqual(response.returned_hits, 1)
                 self.assertTrue(response.query_anchor_terms)
-                self.assertIn("80% 关键词相关性", response.score_explanation)
+                self.assertEqual(response.lexical_backend, "sqlite_fts5_bm25")
+                self.assertEqual(response.embedding_channel, "lexical_hash")
+                self.assertIn("lexical hash 不是语义 embedding", response.score_explanation)
                 grounding_paper = next(
                     paper
                     for paper in literature_response.papers
@@ -233,18 +235,21 @@ class RagRetrievalContractTest(unittest.TestCase):
                 self.assertTrue(response.hits[0].matched_query_terms)
 
                 after = main_module.get_project_rag_index_status(project.id)
-                self.assertEqual(after.embedding_status, "ready")
-                self.assertEqual(after.embedded_chunks, after.total_chunks)
-                self.assertEqual(after.embedding_model, "local/hash-embedding-v1")
+                self.assertEqual(after.embedding_status, "partial")
+                self.assertLess(after.embedded_chunks, after.total_chunks)
+                self.assertEqual(after.embedding_model, "local/lexical-hash-v1")
                 self.assertEqual(after.embedding_dimensions, 256)
 
-                repeated = main_module.embed_project_rag_index(
+                completed_embedding = main_module.embed_project_rag_index(
                     project.id,
                     RagEmbeddingRequest(force=False),
                 )
-                self.assertEqual(repeated.status, "ready")
-                self.assertEqual(repeated.embedded_chunks, 0)
-                self.assertEqual(repeated.skipped_chunks, after.total_chunks)
+                self.assertEqual(completed_embedding.status, "ready")
+                self.assertGreaterEqual(completed_embedding.embedded_chunks, 1)
+                self.assertEqual(
+                    completed_embedding.embedded_chunks + completed_embedding.skipped_chunks,
+                    after.total_chunks,
+                )
 
                 paper_run = main_module.embed_project_paper_rag_index(
                     project.id,
@@ -436,7 +441,7 @@ class RagRetrievalContractTest(unittest.TestCase):
             "scholarflow_api.rag_retrieval.ssl.create_default_context",
             return_value=context,
         ) as create_context, patch(
-            "scholarflow_api.rag_retrieval.urllib.request.urlopen",
+            "scholarflow_api.rag_retrieval.open_url",
             return_value=response,
         ) as urlopen:
             provider = OpenRouterEmbeddingProvider()
@@ -462,7 +467,7 @@ class RagRetrievalContractTest(unittest.TestCase):
                 "OPENROUTER_RAG_MODEL": "qwen/qwen3-embedding-8b",
             },
         ), patch(
-            "scholarflow_api.rag_retrieval.urllib.request.urlopen",
+            "scholarflow_api.rag_retrieval.open_url",
         ) as urlopen:
             provider = OpenRouterEmbeddingProvider()
             with self.assertRaisesRegex(EmbeddingError, "未向外部服务发送"):

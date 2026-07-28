@@ -1,0 +1,7 @@
+from scholarflow_api.routers._partition import partition_router
+
+
+router = partition_router(
+    lambda path: "/direction-review" in path,
+    tags=["direction-reviews"],
+)

@@ -74,6 +74,10 @@ class Paper(BaseModel):
     source: str
     url: str
     pdf_url: str = ""
+    doi: str = ""
+    arxiv_id: str = ""
+    openalex_id: str = ""
+    canonical_work_id: str = ""
     relation: str
     priority: str
     code: str
@@ -129,6 +133,20 @@ class ArtifactSummary(BaseModel):
     json_bytes: int
     markdown_preview: str
     json_schema_version: str
+
+
+class ArtifactSummaryPage(BaseModel):
+    items: list[ArtifactSummary]
+    total: int
+    limit: int
+    offset: int
+    next_offset: int | None = None
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __getitem__(self, index: int) -> ArtifactSummary:
+        return self.items[index]
 
 
 class ArtifactRef(BaseModel):
@@ -392,6 +410,11 @@ class PaperChunk(BaseModel):
     source: str
     source_origin: str = ""
     evidence_level: EvidenceLevel = "metadata_only"
+    evidence_verified: bool = False
+    doi: str = ""
+    arxiv_id: str = ""
+    openalex_id: str = ""
+    title: str = ""
     section: str = "unknown"
     page_start: int | None = None
     page_end: int | None = None
@@ -400,6 +423,8 @@ class PaperChunk(BaseModel):
     token_count: int
     chunk_hash: str
     index_version: str
+    parser_version: str = "legacy.unknown"
+    canonical_work_id: str = ""
     embedding_model: str = ""
     embedding_dimensions: int = 0
     created_at: str
@@ -470,7 +495,7 @@ class RagSearchRequest(BaseModel):
     paper_ids: list[str] = Field(default_factory=list, max_length=100)
     evidence_levels: list[EvidenceLevel] = Field(
         default_factory=lambda: ["abstract_only", "full_text"],
-        max_length=3,
+        max_length=4,
     )
     sections: list[str] = Field(default_factory=list, max_length=30)
     min_score: float = Field(default=0.18, ge=0.0, le=1.0)
@@ -491,18 +516,28 @@ class RagSearchHit(BaseModel):
     chunk_id: str
     chunk_index: int
     chunk_hash: str
+    doi: str = ""
+    arxiv_id: str = ""
+    openalex_id: str = ""
+    canonical_work_id: str = ""
+    duplicate_paper_ids: list[str] = Field(default_factory=list)
     source: str
     source_origin: str = ""
     evidence_level: EvidenceLevel
+    evidence_verified: bool = False
+    parser_version: str = "legacy.unknown"
     section: str
     page_start: int | None = None
     page_end: int | None = None
     text: str
+    bm25_score: float = 0.0
     lexical_score: float
     vector_score: float
     hybrid_score: float
     anchor_coverage: float = 0.0
     matched_query_terms: list[str] = Field(default_factory=list)
+    stance: Literal["support_candidate", "counterevidence", "context"] = "context"
+    candidate_source: Literal["fts5_bm25", "bounded_embedding_pool"] = "fts5_bm25"
     match_strength: Literal["strong", "moderate", "borderline"] = "borderline"
     match_explanation: str = ""
 
@@ -519,12 +554,23 @@ class RagSearchResponse(BaseModel):
     embedding_dimensions: int = 0
     external_data_transfer: bool = False
     candidate_chunks: int = 0
+    fts_candidate_chunks: int = 0
     vector_ready_chunks: int = 0
     returned_hits: int = 0
     top_k: int
     min_score: float
     query_anchor_terms: list[str] = Field(default_factory=list)
     rejected_by_relevance_gate: int = 0
+    rejected_by_evidence_gate: int = 0
+    supporting_hits: int = 0
+    counterevidence_hits: int = 0
+    lexical_backend: str = "sqlite_fts5_bm25"
+    embedding_channel: Literal[
+        "lexical_hash",
+        "semantic_external",
+        "disabled",
+    ] = "disabled"
+    pipeline_stages: list[str] = Field(default_factory=list)
     score_explanation: str = ""
     hits: list[RagSearchHit] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -719,8 +765,8 @@ class DirectionReviewRunStatusResponse(BaseModel):
     project_id: str
     direction: str
     round: int
-    status: Literal["queued", "running", "complete", "partial", "blocked", "failed"]
-    stage: Literal["queued", "scoping", "retrieving", "reading", "curating", "persisting", "completed", "failed"]
+    status: Literal["queued", "running", "complete", "partial", "blocked", "failed", "cancelled"]
+    stage: Literal["queued", "scoping", "retrieving", "reading", "curating", "persisting", "completed", "failed", "cancelled"]
     progress: int = Field(ge=0, le=100)
     message: str
     notices: list[WorkflowNoticeMessage] = Field(default_factory=list)
@@ -870,6 +916,7 @@ class ResearchMemoryQueryResponse(BaseModel):
     claims: list[ResearchMemoryClaim] = Field(default_factory=list)
     unanswered_parts: list[str] = Field(default_factory=list)
     query_coverage: dict[str, object] = Field(default_factory=dict)
+    source_chunks: list[RagSearchHit] = Field(default_factory=list)
     artifact: Artifact
     warnings: list[str]
     workflow_steps: list[WorkflowStepState] = Field(default_factory=list)
@@ -878,7 +925,6 @@ class ResearchMemoryQueryResponse(BaseModel):
 class AgentPlanRequest(BaseModel):
     project_id: str
     task: str = Field(min_length=1, max_length=1000)
-    provider: str = "openrouter"
 
 
 class AgentExecuteRequest(BaseModel):
@@ -915,6 +961,20 @@ class AgentPlanStep(BaseModel):
     metrics: dict[str, object] = Field(default_factory=dict)
 
 
+class ModelCallAuditRecord(BaseModel):
+    provider: str
+    model: str
+    purpose: str
+    prompt_version: str
+    request_timestamp: str
+    latency_ms: int = 0
+    response_status: str
+    fallback_reason: str = ""
+    requested_provider: str = ""
+    requested_model: str = ""
+    external_data_sent: bool = False
+
+
 class AgentRun(BaseModel):
     id: str
     project_id: str
@@ -936,6 +996,9 @@ class AgentPlanResponse(BaseModel):
     session_id: str
     task: str
     provider: str
+    run_kind: Literal["research_workflow"] = "research_workflow"
+    execution_mode: Literal["deterministic_tool_graph"] = "deterministic_tool_graph"
+    model_call: ModelCallAuditRecord
     status: AgentRunStatusLiteral
     rationale: str
     steps: list[AgentPlanStep]
@@ -944,6 +1007,9 @@ class AgentPlanResponse(BaseModel):
 
 class AgentExecuteResponse(BaseModel):
     run_id: str
+    run_kind: Literal["research_workflow"] = "research_workflow"
+    execution_mode: Literal["deterministic_tool_graph"] = "deterministic_tool_graph"
+    model_call: ModelCallAuditRecord | None = None
     status: AgentRunStatusLiteral
     artifact: Artifact | None = None
     papers: list[dict[str, object]] = Field(default_factory=list)
@@ -964,6 +1030,9 @@ class AgentExecuteResponse(BaseModel):
 
 class AgentRunStatusResponse(BaseModel):
     run_id: str
+    run_kind: Literal["research_workflow"] = "research_workflow"
+    execution_mode: Literal["deterministic_tool_graph"] = "deterministic_tool_graph"
+    model_call: ModelCallAuditRecord | None = None
     status: AgentRunStatusLiteral
     steps: list[AgentPlanStep]
     summary_metrics: dict[str, object] = Field(default_factory=dict)

@@ -13,6 +13,7 @@ from scholarflow_api.rag_retrieval import (
     split_query_intent,
 )
 from scholarflow_api.text_utils import extract_terms, normalize_space, normalize_terms, score_term_overlap
+from scholarflow_api.rag_retrieval import retrieve_project_chunks
 
 RESEARCH_MEMORY_SCHEMA_VERSION = "research_memory_answer.v4"
 MIN_RELIABLE_MEMORY_SCORE = 0.28
@@ -227,6 +228,7 @@ class ResearchMemoryAnswer:
     claims: list[MemoryClaim] = field(default_factory=list)
     unanswered_parts: list[str] = field(default_factory=list)
     query_coverage: dict[str, Any] = field(default_factory=dict)
+    source_chunks: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -244,6 +246,7 @@ class ResearchMemoryAnswer:
             "claims": [claim.to_dict() for claim in self.claims],
             "unanswered_parts": self.unanswered_parts,
             "query_coverage": self.query_coverage,
+            "source_chunks": self.source_chunks,
         }
 
 
@@ -555,6 +558,20 @@ def query_research_memory(
     direction: str = "",
 ) -> ResearchMemoryAnswer:
     backfill_project_research_memory(connection, project_id, now)
+    raw_retrieval = (
+        retrieve_project_chunks(
+            connection,
+            project_id=project_id,
+            query=question,
+            top_k=max(5, top_k),
+            min_score=0.18,
+            max_chunks_per_paper=2,
+            refresh_embeddings=False,
+        )
+        if connection is not None
+        else {}
+    )
+    source_chunks = list(raw_retrieval.get("hits") or [])
     requested_direction = normalize_space(direction)
     records = fetch_memory_records(connection, project_id, requested_direction)
     resolved_direction = requested_direction
@@ -647,8 +664,39 @@ def query_research_memory(
             ),
         )
         warnings.append("未把只命中主题、但没有 facet 证据的论文包装成维度结论。")
+    if source_chunks:
+        claims = build_source_chunk_claims(source_chunks)
+        answer_summary = (
+            f"从 {len({chunk.get('paper_id') for chunk in source_chunks})} 篇论文的"
+            f" {len(source_chunks)} 个原始 chunk 中找到可定位证据；"
+            "Paper Memory summary 仅用于辅助组织，不作为直接 citation。"
+        )
+        unanswered_parts = []
+        reliability_status = "reliable"
+        reliability_reason = (
+            "回答由项目隔离的原始论文 chunk 支撑，并已通过 FTS5/BM25、"
+            "相关性门槛和 evidence gate。"
+        )
+        query_coverage["retrieval_backend"] = str(
+            raw_retrieval.get("lexical_backend") or "sqlite_fts5_bm25"
+        )
+        query_coverage["raw_chunk_count"] = len(source_chunks)
+        covered_facets = list(dict.fromkeys(claim.facet for claim in claims if claim.facet))
+        query_coverage["covered_facets"] = covered_facets
+        answer_text = render_memory_synthesis_text(
+            answer_summary,
+            claims,
+            unanswered_parts,
+        )
+    elif reliable_hits:
+        warnings.append(
+            "原始 chunk 索引未命中；仅保留 Paper Memory 内嵌的原始 source snippet，"
+            "生成的 memory summary 未被当作直接证据。"
+        )
     answer_text = (
-        render_memory_synthesis_text(answer_summary, claims, unanswered_parts)
+        answer_text
+        if source_chunks
+        else render_memory_synthesis_text(answer_summary, claims, unanswered_parts)
         if reliable_hits
         else build_memory_answer(question, reliable_hits, snapshot, reliability_status, missing_terms)
     )
@@ -666,7 +714,66 @@ def query_research_memory(
         claims=claims,
         unanswered_parts=unanswered_parts,
         query_coverage=query_coverage,
+        source_chunks=source_chunks,
     )
+
+
+def build_source_chunk_claims(
+    source_chunks: list[dict[str, Any]],
+) -> list[MemoryClaim]:
+    claims: list[MemoryClaim] = []
+    for index, chunk in enumerate(source_chunks, start=1):
+        text = normalize_space(chunk.get("text", ""))
+        if not text:
+            continue
+        page_start = chunk.get("page_start")
+        page_end = chunk.get("page_end")
+        page = (
+            str(page_start)
+            if page_start is not None and page_start == page_end
+            else f"{page_start}-{page_end}"
+            if page_start is not None and page_end is not None
+            else ""
+        )
+        stance = normalize_space(chunk.get("stance", "context"))
+        facet = "counterevidence" if stance == "counterevidence" else "source_evidence"
+        paper_id = normalize_space(chunk.get("paper_id", ""))
+        claims.append(
+            MemoryClaim(
+                id=f"source-chunk-claim-{index}",
+                facet=facet,
+                statement=(
+                    f"{normalize_space(chunk.get('paper_title', 'Untitled'))}："
+                    f"{text[:500]}"
+                ),
+                support_status="single_source",
+                confidence=(
+                    "high"
+                    if chunk.get("evidence_level") == "full_text"
+                    and bool(chunk.get("evidence_verified"))
+                    else "medium"
+                ),
+                paper_ids=[paper_id] if paper_id else [],
+                evidence_refs=[
+                    {
+                        "paper_id": paper_id,
+                        "paper_title": normalize_space(chunk.get("paper_title", "Untitled")),
+                        "snippet_id": normalize_space(chunk.get("citation_id", "")),
+                        "source": normalize_space(chunk.get("source", "")),
+                        "section": normalize_space(chunk.get("section", "")),
+                        "page": page,
+                        "text": text,
+                        "confidence": (
+                            "high"
+                            if chunk.get("evidence_level") == "full_text"
+                            and bool(chunk.get("evidence_verified"))
+                            else "medium"
+                        ),
+                    }
+                ],
+            )
+        )
+    return claims
 
 
 def unique_memory_directions(records: list[dict[str, Any]]) -> list[str]:

@@ -33,8 +33,13 @@ Workspace resolution:
   2. SCHOLARFLOW_WORKSPACE
   3. ~/.scholarflow
 
-Phase 4 scope:
-  本地工作区初始化、Web/API 启动、停止、状态查看。`);
+Local durable services:
+  start 会分别检查并启动 API、Web 与 SQLite worker。
+  status 同时核对 PID、HTTP 健康与 worker heartbeat。
+
+Research Workflow Run:
+  默认执行确定性工具图，不是无限自治 Agent。
+  模型 provider 只从 API 进程环境变量读取；缺少 key 时明确使用 local fallback。`);
 }
 
 function parseArgs(argv) {
@@ -235,18 +240,14 @@ function startService(serviceName, command, args, options) {
   };
 }
 
-function startServices(args) {
+async function startServices(args, runtime = {}) {
+  const readStateFn = runtime.readStateFn ?? readState;
+  const writeStateFn = runtime.writeStateFn ?? writeState;
+  const startServiceFn = runtime.startServiceFn ?? startService;
+  const isProcessRunningFn = runtime.isProcessRunningFn ?? isProcessRunning;
   const workspacePath = resolveWorkspace(args.workspace);
   const workspace = ensureWorkspace(workspacePath);
-  const currentState = readState(workspace.state);
-  const apiStatus = getServiceStatus(currentState?.services?.api);
-  const webStatus = getServiceStatus(currentState?.services?.web);
-
-  if (apiStatus === "running" || webStatus === "running") {
-    console.log("ScholarFlow services are already running.");
-    printStatus(workspace, currentState);
-    return;
-  }
+  const currentState = readStateFn(workspace.state);
 
   const apiUrl = `http://${args.host}:${args.apiPort}`;
   const webUrl = `http://${args.host}:${args.webPort}`;
@@ -257,52 +258,91 @@ function startServices(args) {
     SCHOLARFLOW_DB_PATH: workspace.database,
     PYTHONPATH: appendEnvPath(process.env.PYTHONPATH, pythonPath),
   };
+  const existingServices = currentState?.services ?? {};
+  const startedNames = [];
+  const api =
+    getServiceStatusWith(existingServices.api, isProcessRunningFn) === "running"
+      ? existingServices.api
+      : startServiceFn(
+          "api",
+          getPythonCommand(),
+          [
+            "-m",
+            "uvicorn",
+            "scholarflow_api.main:app",
+            "--app-dir",
+            "services/api/src",
+            "--host",
+            args.host,
+            "--port",
+            String(args.apiPort),
+          ],
+          {
+            workspace,
+            env: baseEnv,
+            url: apiUrl,
+          },
+        );
+  if (api !== existingServices.api) {
+    startedNames.push("api");
+  }
 
-  const api = startService(
-    "api",
-    getPythonCommand(),
-    [
-      "-m",
-      "uvicorn",
-      "scholarflow_api.main:app",
-      "--app-dir",
-      "services/api/src",
-      "--host",
-      args.host,
-      "--port",
-      String(args.apiPort),
-    ],
-    {
-      workspace,
-      env: baseEnv,
-      url: apiUrl,
-    },
-  );
+  const web =
+    getServiceStatusWith(existingServices.web, isProcessRunningFn) === "running"
+      ? existingServices.web
+      : startServiceFn(
+          "web",
+          getNpmCommand(),
+          [
+            "--workspace",
+            "@scholarflow/web",
+            "run",
+            "dev",
+            "--",
+            "--host",
+            args.host,
+            "--port",
+            String(args.webPort),
+            "--strictPort",
+          ],
+          {
+            workspace,
+            env: {
+              ...baseEnv,
+              VITE_SCHOLARFLOW_API_BASE_URL: apiUrl,
+            },
+            url: webUrl,
+          },
+        );
+  if (web !== existingServices.web) {
+    startedNames.push("web");
+  }
 
-  const web = startService(
-    "web",
-    getNpmCommand(),
-    [
-      "--workspace",
-      "@scholarflow/web",
-      "run",
-      "dev",
-      "--",
-      "--host",
-      args.host,
-      "--port",
-      String(args.webPort),
-      "--strictPort",
-    ],
-    {
-      workspace,
-      env: {
-        ...baseEnv,
-        VITE_SCHOLARFLOW_API_BASE_URL: apiUrl,
-      },
-      url: webUrl,
-    },
-  );
+  const workerId =
+    existingServices.worker?.workerId ??
+    `cli-worker-${Date.now()}-${process.pid}`;
+  const worker =
+    getServiceStatusWith(existingServices.worker, isProcessRunningFn) === "running"
+      ? existingServices.worker
+      : {
+          ...startServiceFn(
+            "worker",
+            getPythonCommand(),
+            ["-m", "scholarflow_api.jobs.worker"],
+            {
+              workspace,
+              env: {
+                ...baseEnv,
+                SCHOLARFLOW_WORKER_ID: workerId,
+              },
+              url: `${apiUrl}/health/jobs?worker_id=${encodeURIComponent(workerId)}`,
+            },
+          ),
+          workerId,
+        };
+  if (worker !== existingServices.worker) {
+    startedNames.push("worker");
+  }
 
   const state = {
     version: VERSION,
@@ -317,15 +357,22 @@ function startServices(args) {
         ...web,
         port: args.webPort,
       },
+      worker,
     },
   };
-  writeState(workspace.state, state);
+  writeStateFn(workspace.state, state);
 
-  console.log("ScholarFlow services started.");
+  console.log(
+    startedNames.length
+      ? `ScholarFlow repaired/started: ${startedNames.join(", ")}.`
+      : "ScholarFlow API, Web and worker are already running.",
+  );
   console.log(`Workspace: ${workspace.root}`);
   console.log(`API: ${apiUrl}`);
   console.log(`Web: ${webUrl}`);
+  console.log(`Worker: ${worker.workerId}`);
   console.log(`Logs: ${workspace.logs}`);
+  return state;
 }
 
 async function stopServices(args) {
@@ -390,7 +437,9 @@ async function waitForServicesToStop(services) {
   }
 }
 
-function printStatus(workspace, state) {
+async function printStatus(workspace, state, runtime = {}) {
+  const isProcessRunningFn = runtime.isProcessRunningFn ?? isProcessRunning;
+  const fetchFn = runtime.fetchFn ?? globalThis.fetch;
   const initialized = fs.existsSync(workspace.config);
   console.log(`Workspace: ${workspace.root}`);
   console.log(`Initialized: ${initialized ? "yes" : "no"}`);
@@ -399,14 +448,94 @@ function printStatus(workspace, state) {
 
   if (!state?.services) {
     console.log("Services: not started");
-    return;
+    return false;
   }
 
-  for (const [name, service] of Object.entries(state.services)) {
-    const status = getServiceStatus(service);
+  let healthy = true;
+  for (const name of ["api", "web", "worker"]) {
+    const service = state.services[name];
+    if (!service) {
+      healthy = false;
+      console.log(`${name}: not-started`);
+      console.log("  warning: service is missing from local service state");
+      continue;
+    }
+    const pidRunning = isProcessRunningFn(service.pid);
+    const healthResult = await probeServiceHealth(name, service, state, fetchFn);
+    const status = deriveServiceStatus(pidRunning, healthResult.healthy);
     const url = service.url ? ` ${service.url}` : "";
     console.log(`${name}: ${status} pid=${service.pid}${url}`);
     console.log(`  log: ${service.log}`);
+    if (status !== "running") {
+      healthy = false;
+      console.log(`  warning: ${healthResult.message}`);
+    }
+  }
+  return healthy;
+}
+
+function getServiceStatusWith(service, isProcessRunningFn) {
+  if (!service) {
+    return "not-started";
+  }
+  return isProcessRunningFn(service.pid) ? "running" : "stale";
+}
+
+function deriveServiceStatus(pidRunning, healthHealthy) {
+  if (pidRunning && healthHealthy) {
+    return "running";
+  }
+  if (pidRunning && !healthHealthy) {
+    return "unhealthy";
+  }
+  if (!pidRunning && healthHealthy) {
+    return "pid-mismatch";
+  }
+  return "stale";
+}
+
+async function probeServiceHealth(name, service, state, fetchFn) {
+  if (typeof fetchFn !== "function") {
+    return { healthy: false, message: "health fetch is unavailable" };
+  }
+  const apiUrl = state.services.api?.url;
+  const healthUrl =
+    name === "api"
+      ? `${service.url}/health`
+      : name === "worker"
+        ? `${apiUrl}/health/jobs?worker_id=${encodeURIComponent(service.workerId ?? "")}`
+        : service.url;
+  if (!healthUrl) {
+    return { healthy: false, message: "health URL is missing" };
+  }
+  try {
+    const response = await fetchFn(healthUrl, {
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!response.ok) {
+      return {
+        healthy: false,
+        message: `health check returned HTTP ${response.status}`,
+      };
+    }
+    if (name !== "worker") {
+      return { healthy: true, message: "HTTP health check passed" };
+    }
+    const payload = await response.json();
+    const matchingWorker = Array.isArray(payload.workers)
+      ? payload.workers.find((worker) => worker.worker_id === service.workerId)
+      : null;
+    return matchingWorker?.healthy
+      ? { healthy: true, message: "worker heartbeat is fresh" }
+      : {
+          healthy: false,
+          message: "PID exists but the matching worker heartbeat is missing or stale",
+        };
+  } catch (error) {
+    return {
+      healthy: false,
+      message: `health check failed: ${error.message}`,
+    };
   }
 }
 
@@ -438,7 +567,7 @@ async function main() {
       break;
     }
     case "start":
-      startServices(args);
+      await startServices(args);
       break;
     case "stop":
       await stopServices(args);
@@ -446,7 +575,10 @@ async function main() {
     case "status": {
       const workspacePath = resolveWorkspace(args.workspace);
       const workspace = getWorkspacePaths(workspacePath);
-      printStatus(workspace, readState(workspace.state));
+      const healthy = await printStatus(workspace, readState(workspace.state));
+      if (!healthy) {
+        process.exitCode = 1;
+      }
       break;
     }
     default:
@@ -456,7 +588,20 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error.message);
-  process.exitCode = 1;
-});
+const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : "";
+const invokedRealPath =
+  invokedPath && fs.existsSync(invokedPath) ? fs.realpathSync(invokedPath) : invokedPath;
+if (invokedRealPath === fs.realpathSync(__filename)) {
+  main().catch((error) => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
+}
+
+export {
+  deriveServiceStatus,
+  getServiceStatusWith,
+  printStatus,
+  probeServiceHealth,
+  startServices,
+};

@@ -16,13 +16,15 @@ from typing import Any, Protocol
 import certifi
 
 from scholarflow_api.database import utc_now
+from scholarflow_api.integrations.http import open_url
 
 
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_OPENROUTER_EMBEDDING_MODEL = "qwen/qwen3-embedding-8b"
 DEFAULT_LOCAL_DIMENSIONS = 384
 DEFAULT_MIN_SCORE = 0.18
-LOCAL_EMBEDDING_MODEL = "local/hash-embedding-v1"
+LOCAL_EMBEDDING_MODEL = "local/lexical-hash-v1"
+DEFAULT_FTS_CANDIDATE_LIMIT = 80
 _CJK_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
 _LATIN_PATTERN = re.compile(r"[a-z0-9]+(?:[-_][a-z0-9]+)*")
 _RETRIEVAL_STOP_TERMS = {
@@ -101,6 +103,8 @@ _REQUESTED_FACET_PATTERNS: dict[str, tuple[str, ...]] = {
 _CJK_ANCHOR_STOP_RUNS = {
     "以上",
     "以下",
+    "请给出",
+    "和页码",
     "分别",
     "说明",
     "返回",
@@ -109,6 +113,27 @@ _CJK_ANCHOR_STOP_RUNS = {
     "证据",
     "问题",
     "回答",
+}
+_NON_DISTINCTIVE_ANCHORS = {
+    "accuracy",
+    "calibration",
+    "comparison",
+    "condition",
+    "decrease",
+    "direction",
+    "does",
+    "error",
+    "expected",
+    "increase",
+    "limitation",
+    "metric",
+    "numeric",
+    "original",
+    "page",
+    "report",
+    "result",
+    "score",
+    "dataset",
 }
 
 
@@ -165,7 +190,7 @@ class LocalHashEmbeddingProvider:
     fallback, while OpenRouter can be selected explicitly for semantic vectors.
     """
 
-    name = "local"
+    name = "local_lexical_hash"
     model = LOCAL_EMBEDDING_MODEL
     external_data_transfer = False
 
@@ -249,7 +274,7 @@ class OpenRouterEmbeddingProvider:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(
+            with open_url(
                 request,
                 timeout=self.timeout_seconds,
                 context=ssl.create_default_context(cafile=certifi.where()),
@@ -448,43 +473,44 @@ def retrieve_project_chunks(
             query_anchor_terms=[],
             query_intent=query_intent,
         )
-    query_terms = retrieval_terms(normalized_query)
     query_anchors = retrieval_anchor_terms(normalized_query)
-
-    parameters: list[Any] = [project_id]
-    filters = ["pc.project_id = ?"]
-    if paper_ids:
-        placeholders = ",".join("?" for _ in paper_ids)
-        filters.append(f"pc.paper_id IN ({placeholders})")
-        parameters.extend(paper_ids)
-    if evidence_levels:
-        placeholders = ",".join("?" for _ in evidence_levels)
-        filters.append(f"pc.evidence_level IN ({placeholders})")
-        parameters.extend(evidence_levels)
-    if sections:
-        placeholders = ",".join("?" for _ in sections)
-        filters.append(f"pc.section IN ({placeholders})")
-        parameters.extend(sections)
-    rows = [
-        dict(row)
-        for row in connection.execute(
+    effective_levels = list(evidence_levels or ["abstract_only", "full_text"])
+    filters, parameters = _metadata_filters(
+        project_id=project_id,
+        paper_ids=paper_ids,
+        evidence_levels=effective_levels,
+        sections=sections,
+    )
+    candidate_chunks = int(
+        connection.execute(
             f"""
-            SELECT
-                pc.*,
-                p.title AS paper_title,
-                p.authors AS paper_authors,
-                p.year AS paper_year,
-                p.venue AS paper_venue,
-                p.url AS paper_url
+            SELECT COUNT(*)
             FROM paper_chunks pc
             JOIN papers p ON p.id = pc.paper_id AND p.project_id = pc.project_id
             WHERE {' AND '.join(filters)}
-            ORDER BY pc.paper_id ASC, pc.chunk_index ASC
             """,
             parameters,
-        ).fetchall()
-    ]
-    if not rows:
+        ).fetchone()[0]
+    )
+    candidate_limit = max(
+        top_k * 12,
+        _env_int(
+            "SCHOLARFLOW_RAG_FTS_CANDIDATE_LIMIT",
+            DEFAULT_FTS_CANDIDATE_LIMIT,
+            minimum=20,
+            maximum=500,
+        ),
+    )
+    fts_query = build_fts5_query(normalized_query)
+    rows = _fts_candidate_rows(
+        connection,
+        fts_query=fts_query,
+        filters=filters,
+        parameters=parameters,
+        limit=candidate_limit,
+    )
+    fts_candidate_chunks = len(rows)
+    if not rows and candidate_chunks == 0:
         return _empty_retrieval_result(
             query,
             top_k,
@@ -492,9 +518,21 @@ def retrieve_project_chunks(
             "当前项目或筛选范围没有可检索的论文 chunk。",
             query_anchor_terms=query_anchors,
             query_intent=query_intent,
+            candidate_chunks=candidate_chunks,
         )
 
     warnings: list[str] = []
+    if not rows:
+        rows = _bounded_semantic_candidate_rows(
+            connection,
+            filters=filters,
+            parameters=parameters,
+            limit=candidate_limit,
+        )
+        warnings.append(
+            "SQLite FTS5/BM25 没有词法候选；仅在有界候选池中尝试可选 embedding，"
+            "不会扫描并在 Python 中逐个计算全部 chunk 的词法分数。"
+        )
     active_provider: EmbeddingProvider | None = provider
     embedding_run: EmbeddingRun | None = None
     try:
@@ -510,30 +548,72 @@ def retrieve_project_chunks(
             if embedding_run.embedded_chunks:
                 rows = _refresh_embedding_columns(connection, rows)
         query_vector = active_provider.embed_query(normalized_query)
+        if active_provider.external_data_transfer:
+            warnings.append(
+                "已启用外部 semantic embedding：问题和候选原文 chunk 会发送给 "
+                f"{active_provider.name}/{active_provider.model}。"
+            )
     except EmbeddingError as error:
         query_vector = []
         warnings.append(str(error))
 
-    document_term_sets = [set(retrieval_terms(str(row["chunk_text"]))) for row in rows]
-    document_frequency = Counter(
-        term
-        for terms in document_term_sets
-        for term in set(query_terms).intersection(terms)
-    )
     scored: list[dict[str, Any]] = []
     vector_ready_count = 0
-    for row, document_terms in zip(rows, document_term_sets, strict=True):
-        lexical_score = lexical_relevance_score(
-            normalized_query,
-            query_terms,
-            str(row["chunk_text"]),
-            document_terms,
-            document_frequency,
-            len(rows),
+    title_anchor_frequency = {
+        anchor: sum(
+            1
+            for candidate in rows
+            if matched_retrieval_anchors(
+                [anchor],
+                str(candidate.get("paper_title") or ""),
+            )
         )
+        for anchor in query_anchors
+    }
+    positive_title_frequencies = [
+        count for count in title_anchor_frequency.values() if count > 0
+    ]
+    minimum_title_frequency = min(positive_title_frequencies, default=0)
+    title_identity_anchors = [
+        anchor
+        for anchor, count in title_anchor_frequency.items()
+        if count == minimum_title_frequency and count > 0
+    ]
+    for row in rows:
+        lexical_score = float(row.get("bm25_score") or 0.0)
         stored_vector = _parse_stored_vector(row, active_provider)
         vector_score = cosine_similarity(query_vector, stored_vector) if query_vector and stored_vector else 0.0
-        matched_query_terms = matched_retrieval_anchors(query_anchors, str(row["chunk_text"]))
+        searchable_text = " ".join(
+            [
+                str(row.get("paper_title") or ""),
+                str(row.get("section") or ""),
+                str(row.get("chunk_text") or ""),
+            ]
+        )
+        matched_query_terms = matched_retrieval_anchors(query_anchors, searchable_text)
+        distinctive_anchors = [
+            anchor
+            for anchor in query_anchors
+            if normalize_retrieval_match_text(anchor) not in _NON_DISTINCTIVE_ANCHORS
+        ]
+        matched_normalized = {
+            normalize_retrieval_match_text(anchor)
+            for anchor in matched_query_terms
+        }
+        distinctive_anchor_matched = (
+            not distinctive_anchors
+            or any(
+                normalize_retrieval_match_text(anchor) in matched_normalized
+                for anchor in distinctive_anchors
+            )
+        )
+        title_identity_matched = (
+            not title_identity_anchors
+            or any(
+                normalize_retrieval_match_text(anchor) in matched_normalized
+                for anchor in title_identity_anchors
+            )
+        )
         anchor_coverage = (
             len(matched_query_terms) / len(query_anchors)
             if query_anchors
@@ -544,17 +624,22 @@ def retrieve_project_chunks(
         if query_vector and stored_vector:
             if active_provider and (
                 active_provider.model == LOCAL_EMBEDDING_MODEL
-                or active_provider.name == "local"
+                or active_provider.name == "local_lexical_hash"
             ):
-                # The local provider is a deterministic lexical hash, not a
-                # semantic model. Keep collision-prone vector similarity as a
-                # small tie-breaker instead of the main relevance signal.
-                hybrid_score = 0.80 * lexical_score + 0.20 * max(0.0, vector_score)
+                hybrid_score = (
+                    0.70 * lexical_score
+                    + 0.25 * anchor_coverage
+                    + 0.05 * max(0.0, vector_score)
+                )
             else:
-                hybrid_score = 0.45 * lexical_score + 0.55 * max(0.0, vector_score)
+                hybrid_score = (
+                    0.45 * lexical_score
+                    + 0.20 * anchor_coverage
+                    + 0.35 * max(0.0, vector_score)
+                )
             retrieval_mode = "hybrid"
         else:
-            hybrid_score = lexical_score
+            hybrid_score = 0.72 * lexical_score + 0.28 * anchor_coverage
             retrieval_mode = "lexical_only"
         passes_relevance_gate = passes_query_relevance_gate(
             query_anchor_count=len(query_anchors),
@@ -563,8 +648,18 @@ def retrieve_project_chunks(
             vector_score=max(0.0, vector_score),
             retrieval_mode=retrieval_mode,
             provider=active_provider,
-        )
-        if str(row.get("evidence_level")) == "full_text" and hybrid_score > 0:
+        ) and distinctive_anchor_matched and title_identity_matched
+        evidence_verified = bool(row.get("evidence_verified"))
+        locatable = citation_is_locatable(row)
+        passes_evidence_gate = (
+            str(row.get("evidence_level") or "") != "full_text"
+            or evidence_verified
+        ) and locatable
+        if (
+            str(row.get("evidence_level")) == "full_text"
+            and evidence_verified
+            and hybrid_score > 0
+        ):
             hybrid_score = min(1.0, hybrid_score + 0.015)
         scored.append(
             {
@@ -576,37 +671,68 @@ def retrieve_project_chunks(
                 "matched_query_terms": matched_query_terms,
                 "query_anchor_count": len(query_anchors),
                 "passes_relevance_gate": passes_relevance_gate,
+                "passes_evidence_gate": passes_evidence_gate,
                 "retrieval_mode": retrieval_mode,
+                "stance": evidence_stance(normalized_query, str(row.get("chunk_text") or "")),
             }
         )
 
     scored.sort(
         key=lambda row: (
             float(row["hybrid_score"]),
-            1 if row.get("evidence_level") == "full_text" else 0,
+            1
+            if row.get("evidence_level") == "full_text"
+            and bool(row.get("evidence_verified"))
+            else 0,
             -int(row.get("chunk_index") or 0),
         ),
         reverse=True,
     )
+    scored = merge_duplicate_versions(scored)
     selected: list[dict[str, Any]] = []
-    per_paper: Counter[str] = Counter()
+    per_work: Counter[str] = Counter()
     gated_count = 0
+    evidence_gated_count = 0
+    support_count = 0
+    counterevidence_count = 0
+    eligible_rows: list[dict[str, Any]] = []
     for row in scored:
         if float(row["hybrid_score"]) < min_score:
             continue
         if not bool(row["passes_relevance_gate"]):
             gated_count += 1
             continue
-        paper_id = str(row["paper_id"])
-        if per_paper[paper_id] >= max_chunks_per_paper:
+        if not bool(row["passes_evidence_gate"]):
+            evidence_gated_count += 1
             continue
-        per_paper[paper_id] += 1
+        eligible_rows.append(row)
+
+    counter_rows = [
+        row for row in eligible_rows if row.get("stance") == "counterevidence"
+    ]
+    other_rows = [
+        row for row in eligible_rows if row.get("stance") != "counterevidence"
+    ]
+    selection_order = (
+        [other_rows[0], counter_rows[0], *other_rows[1:], *counter_rows[1:]]
+        if other_rows and counter_rows and top_k > 1
+        else eligible_rows
+    )
+    for row in selection_order:
+        work_id = str(row.get("canonical_work_id") or row["paper_id"])
+        if per_work[work_id] >= max_chunks_per_paper:
+            continue
+        per_work[work_id] += 1
+        if row.get("stance") == "counterevidence":
+            counterevidence_count += 1
+        else:
+            support_count += 1
         selected.append(_retrieval_hit(row, rank=len(selected) + 1))
         if len(selected) >= top_k:
             break
 
     vector_complete = bool(query_vector) and vector_ready_count == len(rows)
-    retrieval_mode = "hybrid" if vector_complete else "lexical_only"
+    retrieval_mode = "hybrid" if query_vector and vector_ready_count else "lexical_only"
     if not selected:
         status = "no_reliable_hit"
         if gated_count:
@@ -615,6 +741,12 @@ def retrieve_project_chunks(
             )
         warnings.append(
             f"没有 chunk 达到最小相关性阈值 {min_score:.2f}；未返回低置信度证据。"
+        )
+    elif evidence_gated_count:
+        status = "partial"
+        warnings.append(
+            "部分候选未通过 evidence gate：未验证 full_text 或缺少可定位页码/章节，"
+            "未用于直接 citation。"
         )
     elif vector_complete and not warnings:
         status = "complete"
@@ -635,7 +767,8 @@ def retrieve_project_chunks(
         "embedding_model": model,
         "embedding_dimensions": dimensions,
         "external_data_transfer": bool(active_provider and active_provider.external_data_transfer),
-        "candidate_chunks": len(rows),
+        "candidate_chunks": candidate_chunks,
+        "fts_candidate_chunks": fts_candidate_chunks,
         "vector_ready_chunks": vector_ready_count,
         "returned_hits": len(selected),
         "top_k": top_k,
@@ -645,10 +778,245 @@ def retrieve_project_chunks(
         "requested_facets": query_intent["requested_facets"],
         "query_anchor_terms": query_anchors,
         "rejected_by_relevance_gate": gated_count,
+        "rejected_by_evidence_gate": evidence_gated_count,
+        "supporting_hits": support_count,
+        "counterevidence_hits": counterevidence_count,
+        "lexical_backend": "sqlite_fts5_bm25",
+        "embedding_channel": (
+            "semantic_external"
+            if active_provider and active_provider.external_data_transfer
+            else "lexical_hash"
+            if active_provider
+            and (
+                active_provider.name == "local_lexical_hash"
+                or active_provider.model == LOCAL_EMBEDDING_MODEL
+            )
+            else "disabled"
+        ),
+        "pipeline_stages": [
+            "query_normalization",
+            "bilingual_alias_expansion",
+            "fts5_bm25",
+            "optional_embedding",
+            "metadata_filter",
+            "reranking",
+            "evidence_gate",
+            "citation_construction",
+        ],
         "score_explanation": score_explanation,
         "hits": selected,
         "warnings": list(dict.fromkeys(warnings)),
     }
+
+
+def _metadata_filters(
+    *,
+    project_id: str,
+    paper_ids: list[str] | None,
+    evidence_levels: list[str],
+    sections: list[str] | None,
+) -> tuple[list[str], list[Any]]:
+    parameters: list[Any] = [project_id]
+    filters = ["pc.project_id = ?"]
+    if paper_ids:
+        placeholders = ",".join("?" for _ in paper_ids)
+        filters.append(f"pc.paper_id IN ({placeholders})")
+        parameters.extend(paper_ids)
+    if evidence_levels:
+        placeholders = ",".join("?" for _ in evidence_levels)
+        filters.append(f"pc.evidence_level IN ({placeholders})")
+        parameters.extend(evidence_levels)
+    if sections:
+        placeholders = ",".join("?" for _ in sections)
+        filters.append(f"pc.section IN ({placeholders})")
+        parameters.extend(sections)
+    filters.append(
+        "(pc.evidence_level <> 'full_text' OR pc.evidence_verified = 1)"
+    )
+    return filters, parameters
+
+
+def build_fts5_query(query: str) -> str:
+    anchors = retrieval_anchor_terms(query)
+    terms = anchors or retrieval_terms(query)
+    safe_terms: list[str] = []
+    for term in terms:
+        normalized = normalize_retrieval_match_text(term)
+        if not normalized or len(normalized) > 80:
+            continue
+        safe_terms.append('"' + normalized.replace('"', '""') + '"')
+    return " OR ".join(dict.fromkeys(safe_terms[:24]))
+
+
+def _fts_candidate_rows(
+    connection: sqlite3.Connection,
+    *,
+    fts_query: str,
+    filters: list[str],
+    parameters: list[Any],
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not fts_query:
+        return []
+    rows = [
+        dict(row)
+        for row in connection.execute(
+            f"""
+            SELECT
+                pc.*,
+                p.title AS paper_title,
+                p.authors AS paper_authors,
+                p.year AS paper_year,
+                p.venue AS paper_venue,
+                p.url AS paper_url,
+                bm25(
+                    paper_chunks_fts,
+                    0.0, 0.0, 0.0, 3.0, 1.5, 1.0, 0.7
+                ) AS bm25_rank
+            FROM paper_chunks_fts
+            JOIN paper_chunks pc ON pc.id = paper_chunks_fts.chunk_id
+            JOIN papers p ON p.id = pc.paper_id AND p.project_id = pc.project_id
+            WHERE paper_chunks_fts MATCH ?
+              AND {' AND '.join(filters)}
+            ORDER BY bm25_rank ASC, pc.updated_at DESC
+            LIMIT ?
+            """,
+            [fts_query, *parameters, limit],
+        ).fetchall()
+    ]
+    for index, row in enumerate(rows):
+        row["bm25_score"] = round(1.0 / (1.0 + 0.12 * index), 6)
+        row["candidate_source"] = "fts5_bm25"
+    return rows
+
+
+def _bounded_semantic_candidate_rows(
+    connection: sqlite3.Connection,
+    *,
+    filters: list[str],
+    parameters: list[Any],
+    limit: int,
+) -> list[dict[str, Any]]:
+    rows = [
+        dict(row)
+        for row in connection.execute(
+            f"""
+            SELECT
+                pc.*,
+                p.title AS paper_title,
+                p.authors AS paper_authors,
+                p.year AS paper_year,
+                p.venue AS paper_venue,
+                p.url AS paper_url
+            FROM paper_chunks pc
+            JOIN papers p ON p.id = pc.paper_id AND p.project_id = pc.project_id
+            WHERE {' AND '.join(filters)}
+            ORDER BY
+                CASE
+                    WHEN pc.embedding_json <> '' THEN 0
+                    ELSE 1
+                END,
+                pc.updated_at DESC
+            LIMIT ?
+            """,
+            [*parameters, limit],
+        ).fetchall()
+    ]
+    for row in rows:
+        row["bm25_score"] = 0.0
+        row["candidate_source"] = "bounded_embedding_pool"
+    return rows
+
+
+def citation_is_locatable(row: dict[str, Any]) -> bool:
+    section = str(row.get("section") or "").strip().lower()
+    level = str(row.get("evidence_level") or "")
+    if not section or section == "unknown":
+        return False
+    if level == "full_text":
+        return row.get("page_start") is not None
+    return level == "abstract_only" and section == "abstract"
+
+
+def evidence_stance(query: str, evidence_text: str) -> str:
+    normalized_query = normalize_retrieval_text(query)
+    if any(
+        marker in normalized_query
+        for marker in ("?", "what", "how", "whether", "是否", "什么", "如何", "请")
+    ):
+        return "context"
+    query_negative = _contains_negation(normalized_query)
+    evidence_negative = _contains_negation(evidence_text)
+    if query_negative != evidence_negative:
+        return "counterevidence"
+    query_direction = _comparison_direction(normalized_query)
+    evidence_direction = _comparison_direction(evidence_text)
+    if query_direction and evidence_direction and query_direction != evidence_direction:
+        return "counterevidence"
+    return "support_candidate"
+
+
+def _contains_negation(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:not|no|without|fail(?:s|ed)?|cannot|can't)\b|(?:不|未|没有|无法|并非)",
+            normalize_retrieval_text(text),
+        )
+    )
+
+
+def _comparison_direction(text: str) -> str:
+    normalized = normalize_retrieval_text(text)
+    if re.search(r"\b(?:increase|higher|improve|raise|gain)\w*\b|(?:提升|增加|高于|改善)", normalized):
+        return "up"
+    if re.search(r"\b(?:decrease|lower|reduce|degrade|drop)\w*\b|(?:下降|减少|低于|退化)", normalized):
+        return "down"
+    return ""
+
+
+def merge_duplicate_versions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    works: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        work_id = str(row.get("canonical_work_id") or row.get("paper_id") or "")
+        works.setdefault(work_id, []).append(row)
+
+    selected: list[dict[str, Any]] = []
+    for work_rows in works.values():
+        by_paper: dict[str, list[dict[str, Any]]] = {}
+        for row in work_rows:
+            by_paper.setdefault(str(row.get("paper_id") or ""), []).append(row)
+        preferred_paper_id = max(
+            by_paper,
+            key=lambda paper_id: (
+                max(
+                    (
+                        1
+                        if row.get("evidence_level") == "full_text"
+                        and bool(row.get("evidence_verified"))
+                        else 0
+                    )
+                    for row in by_paper[paper_id]
+                ),
+                len(by_paper[paper_id]),
+                max(
+                    float(row.get("hybrid_score") or 0.0)
+                    for row in by_paper[paper_id]
+                ),
+            ),
+        )
+        duplicates = [
+            paper_id
+            for paper_id in by_paper
+            if paper_id and paper_id != preferred_paper_id
+        ]
+        for row in by_paper[preferred_paper_id]:
+            row["duplicate_paper_ids"] = duplicates
+            selected.append(row)
+    return sorted(
+        selected,
+        key=lambda row: float(row.get("hybrid_score") or 0.0),
+        reverse=True,
+    )
 
 
 def local_hash_embedding(text: str, dimensions: int) -> list[float]:
@@ -782,14 +1150,20 @@ def passes_query_relevance_gate(
 ) -> bool:
     if query_anchor_count <= 0:
         return lexical_score >= 0.18
-    minimum_coverage = 1.0 if query_anchor_count == 1 else (0.34 if query_anchor_count <= 3 else 0.25)
-    lexical_support = anchor_coverage >= minimum_coverage and lexical_score >= 0.10
+    minimum_coverage = (
+        1.0
+        if query_anchor_count == 1
+        else 0.50
+        if query_anchor_count <= 6
+        else 0.40
+    )
+    lexical_support = anchor_coverage >= minimum_coverage and lexical_score >= 0.18
     if lexical_support:
         return True
     semantic_provider = bool(
         retrieval_mode == "hybrid"
         and provider
-        and provider.name != "local"
+        and provider.name != "local_lexical_hash"
         and provider.model != LOCAL_EMBEDDING_MODEL
     )
     return semantic_provider and vector_score >= 0.55
@@ -912,18 +1286,28 @@ def _retrieval_hit(row: dict[str, Any], *, rank: int) -> dict[str, Any]:
         "chunk_id": str(row["id"]),
         "chunk_index": int(row["chunk_index"]),
         "chunk_hash": str(row["chunk_hash"]),
+        "doi": str(row.get("doi") or ""),
+        "arxiv_id": str(row.get("arxiv_id") or ""),
+        "openalex_id": str(row.get("openalex_id") or ""),
+        "canonical_work_id": str(row.get("canonical_work_id") or row.get("paper_id") or ""),
+        "duplicate_paper_ids": list(row.get("duplicate_paper_ids") or []),
         "source": str(row.get("source") or ""),
         "source_origin": str(row.get("source_origin") or ""),
         "evidence_level": str(row.get("evidence_level") or "metadata_only"),
+        "evidence_verified": bool(row.get("evidence_verified")),
+        "parser_version": str(row.get("parser_version") or "legacy.unknown"),
         "section": section,
         "page_start": page_start,
         "page_end": page_end,
         "text": str(row.get("chunk_text") or ""),
+        "bm25_score": float(row.get("bm25_score") or 0.0),
         "lexical_score": float(row["lexical_score"]),
         "vector_score": float(row["vector_score"]),
         "hybrid_score": float(row["hybrid_score"]),
         "anchor_coverage": float(row.get("anchor_coverage") or 0.0),
         "matched_query_terms": list(row.get("matched_query_terms") or []),
+        "stance": str(row.get("stance") or "context"),
+        "candidate_source": str(row.get("candidate_source") or "fts5_bm25"),
         "match_strength": match_strength,
         "match_explanation": match_explanation,
     }
@@ -959,8 +1343,11 @@ def retrieval_match_explanation(
     anchor_count = max(0, int(row.get("query_anchor_count") or 0))
     matched_label = " / ".join(matched[:6]) if matched else "无直接词面锚点"
     evidence_label = (
-        "PDF/用户全文"
+        "已验证 PDF 全文"
         if str(row.get("evidence_level") or "") == "full_text"
+        and bool(row.get("evidence_verified"))
+        else "用户补充文本"
+        if str(row.get("evidence_level") or "") == "supplemental_text"
         else "论文摘要"
         if str(row.get("evidence_level") or "") == "abstract_only"
         else "元数据"
@@ -989,12 +1376,12 @@ def retrieval_score_explanation(
             "该分数不是论文结论正确率。"
         )
     if provider and (
-        provider.name == "local"
+        provider.name == "local_lexical_hash"
         or provider.model == LOCAL_EMBEDDING_MODEL
     ):
         return (
-            "本地模式的混合分由 80% 关键词相关性与 20% hash 向量相似度组成；"
-            "hash 向量只作排序辅助，不是训练语义模型，结果仍须通过问题锚点门槛。"
+            "本地模式先由 SQLite FTS5/BM25 召回，再以问题锚点覆盖和 5% lexical hash "
+            "相似度重排；lexical hash 不是语义 embedding，结果仍须通过证据门槛。"
         )
     return (
         "外部语义模式的混合分由 45% 关键词相关性与 55% 向量相似度组成；"
@@ -1095,6 +1482,7 @@ def _empty_retrieval_result(
     *,
     query_anchor_terms: list[str],
     query_intent: dict[str, Any] | None = None,
+    candidate_chunks: int = 0,
 ) -> dict[str, Any]:
     query_intent = query_intent or split_query_intent(query)
     return {
@@ -1105,7 +1493,8 @@ def _empty_retrieval_result(
         "embedding_model": "",
         "embedding_dimensions": 0,
         "external_data_transfer": False,
-        "candidate_chunks": 0,
+        "candidate_chunks": candidate_chunks,
+        "fts_candidate_chunks": 0,
         "vector_ready_chunks": 0,
         "returned_hits": 0,
         "top_k": top_k,
@@ -1115,6 +1504,21 @@ def _empty_retrieval_result(
         "requested_facets": query_intent["requested_facets"],
         "query_anchor_terms": query_anchor_terms,
         "rejected_by_relevance_gate": 0,
+        "rejected_by_evidence_gate": 0,
+        "supporting_hits": 0,
+        "counterevidence_hits": 0,
+        "lexical_backend": "sqlite_fts5_bm25",
+        "embedding_channel": "disabled",
+        "pipeline_stages": [
+            "query_normalization",
+            "bilingual_alias_expansion",
+            "fts5_bm25",
+            "optional_embedding",
+            "metadata_filter",
+            "reranking",
+            "evidence_gate",
+            "citation_construction",
+        ],
         "score_explanation": (
             "当前没有可评分的命中；系统不会把空结果或低相关 chunk 包装成答案。"
         ),

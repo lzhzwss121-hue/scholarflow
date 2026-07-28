@@ -9,10 +9,10 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node src/index.js",
-    "check": "node src/index.js --version"
+    "check": "node src/index.js --version",
+    "test": "node --test test/*.test.js"
   },
   "engines": {
     "node": ">=20"
   }
 }
-

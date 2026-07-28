@@ -15,6 +15,7 @@ from typing import Any
 
 import certifi
 
+from scholarflow_api.integrations.http import open_url
 from scholarflow_api.schemas import EvidenceQualification
 
 
@@ -485,7 +486,7 @@ def download_pdf_bytes(url: str) -> bytes:
         # Use certifi's CA bundle explicitly. Some Python builds on macOS do not
         # discover the system trust store, which otherwise makes valid arXiv
         # certificates look untrusted. SSL verification remains enabled.
-        with urllib.request.urlopen(
+        with open_url(
             request,
             timeout=PDF_TIMEOUT_SECONDS,
             context=trusted_ssl_context(),

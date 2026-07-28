@@ -715,7 +715,7 @@ class ResearchQualitySmokeTest(unittest.TestCase):
             def read(self) -> bytes:
                 return b"cached payload"
 
-        with patch.object(literature.urllib.request, "urlopen", return_value=FakeResponse()):
+        with patch.object(literature, "open_url", return_value=FakeResponse()):
             first = literature.request_text(url)
             second = literature.request_text(url)
 
@@ -1137,7 +1137,7 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                     ],
                     errors=["using_cached_results:arxiv:evidence faithfulness: 使用缓存。"],
                 )
-                with patch.object(main_module, "search_literature", return_value=fake_result):
+                with patch("scholarflow_api.services.workflow_runtime.search_literature", return_value=fake_result):
                     response = main_module.search_project_literature(
                         project.id,
                         LiteratureSearchRequest(query=project.keyword),
@@ -1203,7 +1203,7 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                     errors=[],
                 )
 
-                with patch.object(main_module, "search_literature", side_effect=[first, second]):
+                with patch("scholarflow_api.services.workflow_runtime.search_literature", side_effect=[first, second]):
                     main_module.search_project_literature(
                         project.id,
                         LiteratureSearchRequest(query="first query"),
@@ -1271,7 +1271,7 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                     errors=[],
                 )
 
-                with patch.object(main_module, "search_literature", return_value=existing):
+                with patch("scholarflow_api.services.workflow_runtime.search_literature", return_value=existing):
                     main_module.search_project_literature(
                         project.id,
                         LiteratureSearchRequest(query=project.keyword),
@@ -1285,7 +1285,7 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                 )
                 with get_connection() as connection:
                     registry = main_module.build_agent_tool_registry(connection)
-                    with patch.object(main_module, "search_literature", return_value=incoming):
+                    with patch("scholarflow_api.services.workflow_runtime.search_literature", return_value=incoming):
                         registry.run("literature_search", context)
 
                 titles = {paper.title for paper in main_module.list_project_papers(project.id)}
@@ -1793,6 +1793,7 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                         self.skipTest("FastAPI is not installed in the current Python environment.")
                     raise
                 from scholarflow_api.schemas import AgentExecuteRequest, AgentPlanRequest, ProjectCreate
+                from scholarflow_api.jobs.worker import DurableWorker
 
                 init_db()
                 project = main_module.create_project(
@@ -1822,7 +1823,7 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                     errors=[],
                 )
 
-                with patch.object(main_module, "search_literature", return_value=fake_result), patch.object(
+                with patch("scholarflow_api.services.workflow_runtime.search_literature", return_value=fake_result), patch.object(
                     direction_review_module,
                     "search_literature",
                     return_value=fake_result,
@@ -1836,6 +1837,7 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                     )
                     result = main_module.execute_agent_run(plan.run_id, AgentExecuteRequest(confirmed=True))
                     self.assertEqual(result.status, "running")
+                    DurableWorker("agent-smoke-worker").run_once()
                     status = result
                     for _ in range(80):
                         polled = main_module.get_agent_run_status(plan.run_id)
@@ -1909,6 +1911,45 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertTrue(any(step.status == "cancelled" for step in status.steps))
         self.assertFalse(any(step.status == "running" for step in status.steps))
         self.assertTrue(any(event.tool == "agent.cancel" for event in timeline))
+
+    def test_agent_run_cancel_stops_queued_durable_job_before_worker_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api import main as main_module
+                from scholarflow_api.database import init_db
+                from scholarflow_api.jobs.repository import get_job
+                from scholarflow_api.schemas import (
+                    AgentExecuteRequest,
+                    AgentPlanRequest,
+                    ProjectCreate,
+                )
+
+                init_db()
+                project = main_module.create_project(
+                    ProjectCreate(
+                        title="Queued Agent Cancel",
+                        keyword="durable cancellation",
+                    ),
+                )
+                plan = main_module.create_agent_plan(
+                    AgentPlanRequest(
+                        project_id=project.id,
+                        task="Queue then cancel",
+                        provider="local",
+                    ),
+                )
+                started = main_module.execute_agent_run(
+                    plan.run_id,
+                    AgentExecuteRequest(confirmed=True),
+                )
+                cancelled = main_module.cancel_agent_run(plan.run_id)
+                job = get_job(plan.run_id)
+
+        self.assertEqual(started.status, "running")
+        self.assertEqual(cancelled.status, "cancelled")
+        self.assertEqual(job.status, "cancelled")
+        self.assertFalse(any(step.status == "running" for step in cancelled.steps))
 
 
 if __name__ == "__main__":

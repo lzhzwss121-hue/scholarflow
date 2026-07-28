@@ -20,8 +20,13 @@ RAG_CHUNK_OVERLAP = max(
     ),
 )
 RAG_MIN_CHUNK_CHARS = max(40, int(os.getenv("SCHOLARFLOW_RAG_MIN_CHUNK_CHARS", "120")))
-RAG_INDEX_VERSION = "paper_chunks.v1"
-EVIDENCE_RANK = {"metadata_only": 0, "abstract_only": 1, "full_text": 2}
+RAG_INDEX_VERSION = "paper_chunks.v2"
+EVIDENCE_RANK = {
+    "metadata_only": 0,
+    "abstract_only": 1,
+    "supplemental_text": 2,
+    "full_text": 3,
+}
 
 
 @dataclass
@@ -40,6 +45,11 @@ class PaperChunkRecord:
     source: str
     source_origin: str
     evidence_level: str
+    evidence_verified: int
+    doi: str
+    arxiv_id: str
+    openalex_id: str
+    title: str
     section: str
     page_start: int | None
     page_end: int | None
@@ -48,6 +58,9 @@ class PaperChunkRecord:
     token_count: int
     chunk_hash: str
     index_version: str
+    parser_version: str
+    canonical_work_id: str
+    lexical_text: str
     embedding_model: str
     embedding_dimensions: int
     embedding_json: str
@@ -66,6 +79,13 @@ def build_paper_chunks(
     source: str,
     source_origin: str,
     evidence_level: str,
+    evidence_verified: bool,
+    doi: str,
+    arxiv_id: str,
+    openalex_id: str,
+    title: str,
+    parser_version: str,
+    canonical_work_id: str,
     now: str,
     chunk_size: int | None = None,
     overlap: int | None = None,
@@ -77,13 +97,18 @@ def build_paper_chunks(
     effective_overlap = max(0, min(effective_size // 3, RAG_CHUNK_OVERLAP if overlap is None else overlap))
     records: list[PaperChunkRecord] = []
     for block in parse_located_text_blocks(normalized):
+        block_section = (
+            "abstract"
+            if evidence_level == "abstract_only" and block.section == "unknown"
+            else block.section
+        )
         pieces = split_block_text(block.text, effective_size, effective_overlap)
         for piece in pieces:
             if len(piece) < RAG_MIN_CHUNK_CHARS and records:
                 previous = records[-1]
                 if (
                     previous.page_start == block.page
-                    and previous.section == block.section
+                    and previous.section == block_section
                     and len(previous.chunk_text) + len(piece) + 1 <= effective_size + effective_overlap
                 ):
                     merged = normalize_inline_text(f"{previous.chunk_text} {piece}")
@@ -96,6 +121,11 @@ def build_paper_chunks(
                         page=previous.page_start,
                         text=merged,
                     )
+                    previous.lexical_text = build_lexical_index_text(
+                        previous.title,
+                        previous.section,
+                        merged,
+                    )
                     continue
             chunk_index = len(records)
             records.append(
@@ -107,7 +137,12 @@ def build_paper_chunks(
                     source=source,
                     source_origin=source_origin,
                     evidence_level=evidence_level,
-                    section=block.section,
+                    evidence_verified=1 if evidence_verified else 0,
+                    doi=doi,
+                    arxiv_id=arxiv_id,
+                    openalex_id=openalex_id,
+                    title=title,
+                    section=block_section,
                     page_start=block.page,
                     page_end=block.page,
                     chunk_text=piece,
@@ -115,11 +150,18 @@ def build_paper_chunks(
                     token_count=estimate_token_count(piece),
                     chunk_hash=chunk_checksum(
                         source=source,
-                        section=block.section,
+                        section=block_section,
                         page=block.page,
                         text=piece,
                     ),
                     index_version=RAG_INDEX_VERSION,
+                    parser_version=parser_version,
+                    canonical_work_id=canonical_work_id,
+                    lexical_text=build_lexical_index_text(
+                        title,
+                        block_section,
+                        piece,
+                    ),
                     embedding_model="",
                     embedding_dimensions=0,
                     embedding_json="",
@@ -212,7 +254,44 @@ def replace_paper_chunks(
     evidence_level: str,
     now: str,
     allow_downgrade: bool = False,
+    evidence_verified: bool = False,
+    parser_version: str = "",
 ) -> list[dict[str, Any]]:
+    paper = connection.execute(
+        """
+        SELECT title, source, url, pdf_url, doi, arxiv_id, openalex_id,
+               canonical_work_id
+        FROM papers
+        WHERE project_id = ? AND id = ?
+        """,
+        (project_id, paper_id),
+    ).fetchone()
+    if paper is None:
+        raise ValueError(f"Cannot index missing project paper: {project_id}/{paper_id}")
+    title = str(paper["title"] or "")
+    identifiers = infer_paper_identifiers(
+        title=title,
+        source=str(paper["source"] or ""),
+        url=str(paper["url"] or ""),
+        pdf_url=str(paper["pdf_url"] or ""),
+        doi=str(paper["doi"] or ""),
+        arxiv_id=str(paper["arxiv_id"] or ""),
+        openalex_id=str(paper["openalex_id"] or ""),
+        canonical_work_id=str(paper["canonical_work_id"] or ""),
+    )
+    if evidence_level == "full_text" and not evidence_verified:
+        evidence_level = "supplemental_text"
+        source = "user.supplemental_text"
+        source_origin = source_origin or "user_provided"
+    if evidence_verified and evidence_level != "full_text":
+        raise ValueError("Only verified full_text may set evidence_verified.")
+    effective_parser_version = parser_version or (
+        "pypdf.v1"
+        if evidence_verified
+        else "metadata.v1"
+        if evidence_level == "abstract_only"
+        else "user_text.v1"
+    )
     existing = connection.execute(
         """
         SELECT evidence_level
@@ -220,7 +299,8 @@ def replace_paper_chunks(
         WHERE project_id = ? AND paper_id = ?
         ORDER BY
             CASE evidence_level
-                WHEN 'full_text' THEN 2
+                WHEN 'full_text' THEN 3
+                WHEN 'supplemental_text' THEN 2
                 WHEN 'abstract_only' THEN 1
                 ELSE 0
             END DESC
@@ -243,6 +323,13 @@ def replace_paper_chunks(
         source=source,
         source_origin=source_origin,
         evidence_level=evidence_level,
+        evidence_verified=evidence_verified,
+        doi=identifiers["doi"],
+        arxiv_id=identifiers["arxiv_id"],
+        openalex_id=identifiers["openalex_id"],
+        title=title,
+        parser_version=effective_parser_version,
+        canonical_work_id=identifiers["canonical_work_id"],
         now=now,
     )
     if not records:
@@ -256,15 +343,19 @@ def replace_paper_chunks(
         """
         INSERT INTO paper_chunks (
             id, project_id, paper_id, chunk_index, source, source_origin,
-            evidence_level, section, page_start, page_end, chunk_text,
+            evidence_level, evidence_verified, doi, arxiv_id, openalex_id, title,
+            section, page_start, page_end, chunk_text,
             char_count, token_count, chunk_hash, index_version,
+            parser_version, canonical_work_id, lexical_text,
             embedding_model, embedding_dimensions, embedding_json,
             created_at, updated_at
         )
         VALUES (
             :id, :project_id, :paper_id, :chunk_index, :source, :source_origin,
-            :evidence_level, :section, :page_start, :page_end, :chunk_text,
+            :evidence_level, :evidence_verified, :doi, :arxiv_id, :openalex_id, :title,
+            :section, :page_start, :page_end, :chunk_text,
             :char_count, :token_count, :chunk_hash, :index_version,
+            :parser_version, :canonical_work_id, :lexical_text,
             :embedding_model, :embedding_dimensions, :embedding_json,
             :created_at, :updated_at
         )
@@ -292,6 +383,8 @@ def index_paper_abstract(
         source_origin=source_origin,
         evidence_level="abstract_only",
         now=now,
+        evidence_verified=False,
+        parser_version="metadata.abstract.v1",
     )
 
 
@@ -303,8 +396,10 @@ def index_paper_full_text(
     text: str,
     source_origin: str,
     now: str,
+    evidence_verified: bool,
+    parser_version: str = "pypdf.v1",
 ) -> list[dict[str, Any]]:
-    source = "user_provided.full_text" if source_origin == "user_provided" else "pdf.full_text"
+    source = "pdf.full_text" if evidence_verified else "user.supplemental_text"
     return replace_paper_chunks(
         connection,
         project_id=project_id,
@@ -314,6 +409,8 @@ def index_paper_full_text(
         source_origin=source_origin,
         evidence_level="full_text",
         now=now,
+        evidence_verified=evidence_verified,
+        parser_version=parser_version,
     )
 
 
@@ -363,7 +460,20 @@ def paper_index_status(
             if row.get("page_start") is not None
         },
     )
-    evidence_level = "full_text" if "full_text" in levels else ("abstract_only" if rows else "metadata_only")
+    verified_full_text = any(
+        str(row.get("evidence_level") or "") == "full_text"
+        and bool(row.get("evidence_verified"))
+        for row in rows
+    )
+    evidence_level = (
+        "full_text"
+        if verified_full_text
+        else "supplemental_text"
+        if "supplemental_text" in levels
+        else "abstract_only"
+        if rows
+        else "metadata_only"
+    )
     embedded_count = sum(1 for row in rows if str(row.get("embedding_json") or ""))
     embedding_models = {
         str(row.get("embedding_model") or "")
@@ -417,7 +527,12 @@ def project_index_status(connection: sqlite3.Connection, project_id: str) -> dic
         SELECT
             COUNT(*) AS total_chunks,
             COUNT(DISTINCT paper_id) AS indexed_papers,
-            SUM(CASE WHEN evidence_level = 'full_text' THEN 1 ELSE 0 END) AS full_text_chunks,
+            SUM(
+                CASE
+                    WHEN evidence_level = 'full_text' AND evidence_verified = 1 THEN 1
+                    ELSE 0
+                END
+            ) AS full_text_chunks,
             SUM(CASE WHEN evidence_level = 'abstract_only' THEN 1 ELSE 0 END) AS abstract_chunks,
             SUM(CASE WHEN embedding_json <> '' THEN 1 ELSE 0 END) AS embedded_chunks,
             COUNT(DISTINCT CASE WHEN embedding_json <> '' THEN embedding_model END) AS embedding_models,
@@ -475,6 +590,69 @@ def normalize_source_text(value: Any) -> str:
     text = re.sub(r"[ \t\f\v]+", " ", text)
     text = re.sub(r" *\n *", "\n", text)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def build_lexical_index_text(*values: Any) -> str:
+    normalized = normalize_inline_text(" ".join(str(value or "") for value in values)).lower()
+    latin_terms = re.findall(r"[a-z0-9]+(?:[-_][a-z0-9]+)*", normalized)
+    cjk_terms: list[str] = []
+    for run in re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff]+", normalized):
+        characters = list(run)
+        cjk_terms.extend(characters)
+        cjk_terms.extend(
+            "".join(characters[index : index + 2])
+            for index in range(len(characters) - 1)
+        )
+    return " ".join([normalized, *latin_terms, *cjk_terms]).strip()
+
+
+def infer_paper_identifiers(
+    *,
+    title: str,
+    source: str,
+    url: str,
+    pdf_url: str,
+    doi: str = "",
+    arxiv_id: str = "",
+    openalex_id: str = "",
+    canonical_work_id: str = "",
+) -> dict[str, str]:
+    combined = " ".join([source, url, pdf_url])
+    doi_match = re.search(r"(10\.\d{4,9}/[-._;()/:a-z0-9]+)", combined, re.IGNORECASE)
+    arxiv_match = re.search(
+        r"(?:arxiv(?:\.org)?/(?:abs|pdf)/|arxiv:)([a-z-]+/\d{7}|\d{4}\.\d{4,5})(?:v\d+)?",
+        combined,
+        re.IGNORECASE,
+    )
+    openalex_match = re.search(r"(?:openalex\.org/)?(W\d{4,})", combined, re.IGNORECASE)
+    doi = (
+        doi.lower().removeprefix("https://doi.org/")
+        or (doi_match.group(1).rstrip(".,;)").lower() if doi_match else "")
+    )
+    arxiv_id = arxiv_id.lower() or (arxiv_match.group(1).lower() if arxiv_match else "")
+    openalex_id = openalex_id.upper() or (openalex_match.group(1).upper() if openalex_match else "")
+    normalized_title = re.sub(
+        r"[^a-z0-9\u3400-\u4dbf\u4e00-\u9fff]+",
+        "",
+        title.casefold(),
+    )
+    canonical_work_id = canonical_work_id or (
+        f"title:{hashlib.sha256(normalized_title.encode('utf-8')).hexdigest()[:24]}"
+        if normalized_title
+        else f"doi:{doi}"
+        if doi
+        else f"arxiv:{arxiv_id}"
+        if arxiv_id
+        else f"openalex:{openalex_id}"
+        if openalex_id
+        else ""
+    )
+    return {
+        "doi": doi,
+        "arxiv_id": arxiv_id,
+        "openalex_id": openalex_id,
+        "canonical_work_id": canonical_work_id,
+    }
 
 
 def normalize_inline_text(value: Any) -> str:

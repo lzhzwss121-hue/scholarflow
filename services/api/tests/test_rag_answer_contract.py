@@ -35,6 +35,8 @@ def citation_fixture() -> dict[str, object]:
         "source": "pdf.full_text",
         "source_origin": "user_uploaded_pdf",
         "evidence_level": "full_text",
+        "evidence_verified": True,
+        "parser_version": "pypdf.v1",
         "section": "experiments",
         "page_start": 9,
         "page_end": 9,
@@ -119,6 +121,7 @@ class RagAnswerContractTest(unittest.TestCase):
                         text=full_text,
                         source_origin="user_uploaded_pdf",
                         now=now,
+                        evidence_verified=True,
                     )
 
                 response = main_module.create_project_rag_answer(
@@ -138,13 +141,7 @@ class RagAnswerContractTest(unittest.TestCase):
                 self.assertIsNotNone(response.quality_assessment)
                 self.assertEqual(
                     response.quality_assessment.quality_status,
-                    "review_required",
-                )
-                self.assertTrue(
-                    any(
-                        "检索匹配强度偏低" in item
-                        for item in response.quality_assessment.risk_flags
-                    )
+                    "strong_evidence",
                 )
                 self.assertTrue(response.quality_assessment.human_review_required)
                 self.assertGreaterEqual(len(response.claims), 1)
@@ -615,7 +612,7 @@ class RagAnswerContractTest(unittest.TestCase):
             "scholarflow_api.rag_answer.ssl.create_default_context",
             return_value=context,
         ) as create_context, patch(
-            "scholarflow_api.rag_answer.urllib.request.urlopen",
+            "scholarflow_api.rag_answer.open_url",
             return_value=response,
         ) as urlopen:
             generator = OpenRouterRagAnswerGenerator()
@@ -646,7 +643,7 @@ class RagAnswerContractTest(unittest.TestCase):
             os.environ,
             {"OPENROUTER_API_KEY": ""},
         ), patch(
-            "scholarflow_api.rag_answer.urllib.request.urlopen",
+            "scholarflow_api.rag_answer.open_url",
         ) as urlopen:
             generator = OpenRouterRagAnswerGenerator()
             with self.assertRaisesRegex(RagGenerationError, "未向外部生成模型发送"):

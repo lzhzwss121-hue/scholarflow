@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from scholarflow_api.database import get_connection, new_id, utc_now
+from scholarflow_api.integrations.http import open_url
 from scholarflow_api.text_utils import extract_terms, score_term_overlap
 
 try:
@@ -206,6 +207,10 @@ class PaperCandidate:
     relevance_quality: str = "medium"
     matched_terms: list[str] = field(default_factory=list)
     review_required: bool = False
+    doi: str = ""
+    arxiv_id: str = ""
+    openalex_id: str = ""
+    canonical_work_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -627,6 +632,7 @@ def search_arxiv(query: str, max_results: int, relaxed: bool = False) -> list[Pa
                 pdf_url=pdf_url,
                 relation="待排序：由 ScholarFlow 根据关键词相关性计算。",
                 priority="Medium",
+                arxiv_id=extract_arxiv_identifier(" ".join([url, pdf_url])),
             ),
         )
 
@@ -707,6 +713,16 @@ def search_openalex(query: str, max_results: int) -> list[PaperCandidate]:
                 relation="待排序：由 ScholarFlow 根据关键词相关性计算。",
                 priority="Medium",
                 relevance_score=min(float(work.get("cited_by_count") or 0) / 3000.0, 0.35),
+                doi=normalize_space(work.get("doi") or "").removeprefix("https://doi.org/").lower(),
+                arxiv_id=extract_arxiv_identifier(
+                    " ".join(
+                        [
+                            normalize_space(url),
+                            normalize_space(pdf_url),
+                        ]
+                    )
+                ),
+                openalex_id=normalize_space(work.get("id") or "").rsplit("/", 1)[-1],
             ),
         )
     return papers
@@ -744,7 +760,7 @@ def request_text(url: str) -> str:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=DEFAULT_TIMEOUT_SECONDS, context=get_ssl_context()) as response:
+        with open_url(request, timeout=DEFAULT_TIMEOUT_SECONDS, context=get_ssl_context()) as response:
             payload = response.read().decode("utf-8")
     except urllib.error.HTTPError as error:
         if error.code in TRANSIENT_HTTP_STATUS:
@@ -870,17 +886,30 @@ def rank_and_deduplicate(candidates: list[PaperCandidate], query: str) -> list[P
 
 def rank_and_deduplicate_result(candidates: list[PaperCandidate], query: str) -> RankedPaperSet:
     deduped: dict[str, PaperCandidate] = {}
-    for candidate in candidates:
-        key = normalize_title_key(candidate.title)
+    aliases: dict[str, str] = {}
+    for index, candidate in enumerate(candidates):
+        keys = candidate_identity_keys(candidate)
+        key = next(
+            (aliases[item] for item in keys if item in aliases),
+            keys[0] if keys else f"record:{index}",
+        )
         existing = deduped.get(key)
         if existing is None:
             deduped[key] = candidate
+            for identity in keys:
+                aliases[identity] = key
             continue
         if source_rank(candidate.source) > source_rank(existing.source):
             merge_candidate_access(candidate, existing)
             deduped[key] = candidate
         else:
             merge_candidate_access(existing, candidate)
+        for identity in {
+            *keys,
+            *candidate_identity_keys(existing),
+            *candidate_identity_keys(deduped[key]),
+        }:
+            aliases[identity] = key
 
     intent = build_query_intent(query)
     ranked: list[PaperCandidate] = []
@@ -916,7 +945,55 @@ def merge_candidate_access(preferred: PaperCandidate, alternate: PaperCandidate)
         preferred.pdf_url = alternate.pdf_url or derive_arxiv_pdf_url(alternate.url)
     if not preferred.url and alternate.url:
         preferred.url = alternate.url
+    preferred.doi = preferred.doi or alternate.doi
+    preferred.arxiv_id = preferred.arxiv_id or alternate.arxiv_id
+    preferred.openalex_id = preferred.openalex_id or alternate.openalex_id
+    preferred.canonical_work_id = (
+        preferred.canonical_work_id
+        or alternate.canonical_work_id
+        or canonical_title_identity(preferred.title)
+    )
     return preferred
+
+
+def candidate_identity_keys(candidate: PaperCandidate) -> list[str]:
+    doi = normalize_space(candidate.doi).lower().removeprefix("https://doi.org/")
+    arxiv_id = normalize_space(candidate.arxiv_id).lower() or extract_arxiv_identifier(
+        " ".join([candidate.url, candidate.pdf_url])
+    )
+    openalex_id = normalize_space(candidate.openalex_id).upper()
+    title_key = canonical_title_identity(candidate.title)
+    keys = [
+        f"doi:{doi}" if doi else "",
+        f"arxiv:{arxiv_id}" if arxiv_id else "",
+        f"openalex:{openalex_id}" if openalex_id else "",
+        title_key,
+    ]
+    candidate.doi = doi
+    candidate.arxiv_id = arxiv_id
+    candidate.openalex_id = openalex_id
+    candidate.canonical_work_id = title_key or next((item for item in keys if item), "")
+    return [item for item in keys if item]
+
+
+def canonical_title_identity(title: str) -> str:
+    normalized = normalize_title_key(title)
+    normalized = re.sub(
+        r"\b(?:preprint|conference version|journal version|extended version)\b",
+        "",
+        normalized,
+    )
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return f"title:{normalized}" if normalized else ""
+
+
+def extract_arxiv_identifier(value: str) -> str:
+    match = re.search(
+        r"(?:arxiv(?:\.org)?/(?:abs|pdf)/|arxiv:)([a-z-]+/\d{7}|\d{4}\.\d{4,5})(?:v\d+)?",
+        normalize_space(value),
+        re.IGNORECASE,
+    )
+    return match.group(1).lower() if match else ""
 
 
 def derive_arxiv_pdf_url(url: str) -> str:

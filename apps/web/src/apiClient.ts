@@ -7,6 +7,7 @@ import type {
   ApiArtifact,
   ApiArtifactCreate,
   ApiArtifactSummary,
+  ApiArtifactSummaryPage,
   ApiDirectionReviewRequest,
   ApiDirectionReviewResponse,
   ApiDirectionReviewRunStatusResponse,
@@ -358,12 +359,20 @@ export function listProjectRagEvaluations(projectId: string, limit = 20, options
   );
 }
 
-export function listProjectArtifacts(projectId: string, options?: RequestInit) {
-  return request<ApiArtifact[]>(`/projects/${projectId}/artifacts`, options);
+export async function listProjectArtifacts(projectId: string, options?: RequestInit) {
+  const response = await request<ApiArtifactSummaryPage | ApiArtifactSummary[]>(
+    `/projects/${projectId}/artifacts`,
+    options,
+  );
+  return Array.isArray(response) ? response : response.items;
 }
 
-export function listProjectArtifactSummaries(projectId: string, options?: RequestInit) {
-  return request<ApiArtifactSummary[]>(`/projects/${projectId}/artifacts/summary`, options);
+export async function listProjectArtifactSummaries(projectId: string, options?: RequestInit) {
+  const response = await request<ApiArtifactSummaryPage | ApiArtifactSummary[]>(
+    `/projects/${projectId}/artifacts/summary`,
+    options,
+  );
+  return Array.isArray(response) ? response : response.items;
 }
 
 export function saveArtifact(payload: ApiArtifactCreate, options?: RequestInit) {

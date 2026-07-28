@@ -61,6 +61,13 @@ class RagIndexContractTest(unittest.TestCase):
             source="pdf.full_text",
             source_origin="user_uploaded_pdf",
             evidence_level="full_text",
+            evidence_verified=True,
+            doi="",
+            arxiv_id="2601.00011",
+            openalex_id="",
+            title="Counterfactual Grounding for Object Hallucination",
+            parser_version="pypdf.v1",
+            canonical_work_id="title:counterfactual-grounding",
             now="2026-07-18T00:00:00Z",
             chunk_size=420,
             overlap=60,
@@ -72,6 +79,13 @@ class RagIndexContractTest(unittest.TestCase):
             source="pdf.full_text",
             source_origin="user_uploaded_pdf",
             evidence_level="full_text",
+            evidence_verified=True,
+            doi="",
+            arxiv_id="2601.00011",
+            openalex_id="",
+            title="Counterfactual Grounding for Object Hallucination",
+            parser_version="pypdf.v1",
+            canonical_work_id="title:counterfactual-grounding",
             now="2026-07-19T00:00:00Z",
             chunk_size=420,
             overlap=60,
@@ -117,7 +131,7 @@ class RagIndexContractTest(unittest.TestCase):
                         "filtered_count": 0,
                     },
                 )
-                with patch.object(main_module, "search_literature", return_value=search_result):
+                with patch("scholarflow_api.services.workflow_runtime.search_literature", return_value=search_result):
                     search_response = main_module.search_project_literature(
                         project.id,
                         LiteratureSearchRequest(query=project.keyword, sources=["arxiv"]),
@@ -140,7 +154,7 @@ class RagIndexContractTest(unittest.TestCase):
                     character_count=len(source_text),
                     text=source_text,
                 )
-                with patch.object(main_module, "resolve_open_full_text", return_value=extracted):
+                with patch("scholarflow_api.services.workflow_runtime.resolve_open_full_text", return_value=extracted):
                     main_module.create_project_paper_card(
                         project.id,
                         PaperCardCreateRequest(paper_id=paper.id),
@@ -157,7 +171,7 @@ class RagIndexContractTest(unittest.TestCase):
                 self.assertEqual({chunk.section for chunk in full_chunks}, {"method", "experiments"})
                 self.assertTrue(all(chunk.embedding_model == "" for chunk in full_chunks))
 
-                with patch.object(main_module, "search_literature", return_value=search_result):
+                with patch("scholarflow_api.services.workflow_runtime.search_literature", return_value=search_result):
                     main_module.search_project_literature(
                         project.id,
                         LiteratureSearchRequest(query=project.keyword, sources=["arxiv"]),

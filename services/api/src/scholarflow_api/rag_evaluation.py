@@ -100,6 +100,7 @@ def assess_rag_answer(
         1
         for item in used_citations
         if item.get("evidence_level") == "full_text"
+        and bool(item.get("evidence_verified"))
     )
     full_text_coverage = _ratio(
         full_text_count,

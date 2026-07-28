@@ -39,6 +39,7 @@ def answer_fixture(
                 "citation_id": citation_id,
                 "paper_id": "paper_eval",
                 "evidence_level": evidence_level,
+                "evidence_verified": evidence_level == "full_text",
                 "hybrid_score": 0.52,
                 **(
                     {"anchor_coverage": anchor_coverage}

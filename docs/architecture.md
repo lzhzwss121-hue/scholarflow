@@ -4,36 +4,46 @@ This document describes the target architecture and the current v0.1.0 public pr
 
 ## Product Shape
 
-ScholarFlow is a local-first AI research workflow agent. It should feel closer to a coding agent workspace than a normal chatbot:
+ScholarFlow is a local-first, evidence-aware research workflow system. Its default execution unit is a **Research Workflow Run**, not an autonomous Agent:
 
 - The user gives a research goal.
-- The agent creates a plan before execution.
+- ScholarFlow creates a bounded plan before execution.
 - Tool calls are visible in a timeline.
 - Intermediate and final outputs are saved as artifacts.
 - Users can inspect, edit, compare, and reuse artifacts across projects.
+- A deterministic state machine owns tools, evidence gates, refusals, and readiness.
 
 ## High-Level Components
 
 ```text
 React Web UI
   -> Backend API
-  -> Agent Orchestrator
+  -> Research Workflow Orchestrator
   -> Model Providers
   -> Research Tools
   -> Local Workspace / Database
   -> External APIs
 ```
 
-## Planned Repository Layout
+## Repository Layout
 
 ```text
 apps/
   web/              React + Vite research workspace
   cli/              Local command entry
 services/
-  api/              FastAPI service
+  api/
+    src/scholarflow_api/
+      main.py                 FastAPI assembly only
+      routers/                HTTP transport grouped by resource
+      services/               deterministic workflow orchestration
+      repositories/           SQLite persistence operations
+      integrations/           external network I/O adapters
+      jobs/                   durable local worker and leases
 packages/
-  schemas/          Shared TypeScript/Python-compatible contracts
+  schemas/
+    src/api.generated.ts      generated from FastAPI OpenAPI
+    src/index.ts              compatibility and cross-end domain types
 docs/
   architecture.md
   deep-paper-card.md
@@ -45,8 +55,8 @@ Current v0.1.0 entry points:
 
 - `apps/web`: React research workspace with API-aware project, timeline, paper, and artifact state.
 - `apps/cli`: Node CLI with workspace initialization and Web/API service management.
-- `services/api`: FastAPI app with SQLite persistence, the first minimal agent loop, literature retrieval adapters, direction-level paper review, paper memory retrieval, single-paper card generation, and research decision generation.
-- `packages/schemas`: shared TypeScript API contracts.
+- `services/api`: FastAPI app with SQLite persistence, a deterministic and durable research workflow runner, literature retrieval adapters, direction-level paper review, paper memory retrieval, single-paper card generation, and research decision generation.
+- `packages/schemas`: generated API DTOs plus cross-end domain and legacy-hydration compatibility types.
 - `.github`: CI, Issue templates, and pull request template for open-source contribution.
 - `examples/workflows`: public-safe example artifacts.
 
@@ -57,29 +67,31 @@ The web UI should expose the research workflow, not hide it behind a single chat
 Planned layout:
 
 - Project Navigator: projects, papers, artifacts, notes, experiments.
-- Agent Workspace: user task, agent plan, current step, messages.
+- Workflow Workspace: user task, confirmed plan, current step, messages.
 - Artifact Preview: paper tables, paper cards, gap boards, experiment plans, diffs.
 - Tool Timeline: retrieval queries, filters, model calls, artifact writes, errors.
 
-The v0.1.0 implementation reads and writes local API data for projects, papers, artifacts, sessions, tool events, agent runs, paper cards, paper memories, and direction memories. It can retrieve paper candidates from arXiv/OpenAlex, run a direction-level review over 10 recent high-relevance papers per round, extract PaperSignals from title/abstract/pasted text, generate 12-section Deep Paper Cards, build a searchable Paper Memory Bank, retrieve 3-8 relevant paper memories for follow-up questions, and turn those assets into a Gap Board, Idea Validation Report, and Experiment Plan. It intentionally does not download PDFs, parse full-paper PDFs in bulk, or run training jobs yet.
+The current implementation persists projects, papers, artifacts, sessions, tool events, durable jobs, workflow runs, paper cards, paper memories, source chunks, RAG evaluations, and model-call audits. It retrieves candidates from arXiv/OpenAlex, downloads eligible open PDFs, verifies parsed PDF evidence, generates 12-section Deep Paper Cards, builds project-scoped FTS5/BM25 plus optional semantic retrieval, and turns qualified evidence into Gap Board, Idea Validation, and Experiment Plan artifacts. It does not run training jobs or treat user-pasted text as verified PDF evidence.
 
-The UI is Chinese-first. Technical terms such as Agent Loop, Artifact, Timeline, Gap, Claim, Baseline, and Ablation can remain in English when useful.
+The UI is Chinese-first. Technical terms such as Artifact, Timeline, Gap, Claim, Baseline, and Ablation can remain in English when useful. “Agent” is reserved for a future bounded dynamic mode and is not used to market the current fixed workflow.
+
+The frontend boundary is organized around `state/useWorkflowController.ts`, domain API modules under `services/`, an `ActiveView` composition layer, and page modules. The legacy `workflowService.ts` and `ProductViews.tsx` paths remain as compatibility barrels. AbortController cancellation, project-switch stale-response guards, partial resource loading, and conservative artifact hydration stay in the controller/hydration boundary rather than page components.
 
 ## Backend API
 
-The backend owns persistence, agent orchestration, and external integrations.
+The backend owns persistence, deterministic workflow orchestration, and external integrations. `main.py` only assembles lifespan, CORS, and resource routers. Route modules do not own research decisions: deterministic orchestration stays in `services`, SQLite statements stay in `repositories`, and outbound socket calls are reached through `integrations`.
 
 Planned responsibilities:
 
 - Project and artifact CRUD.
 - Session and timeline storage.
-- Agent run lifecycle.
+- Research Workflow Run lifecycle.
 - Model provider routing.
 - Paper retrieval adapters.
 - Workspace configuration.
 - Future authentication and team features.
 
-SQLite is the current database because the first version is local-first.
+SQLite is the current database because the first version is local-first. Every connection enables `foreign_keys=ON` and a 5000 ms busy timeout. Initialization enables WAL and applies idempotent, versioned migrations. Durable Direction Review and Research Workflow jobs use atomic leases, heartbeats, bounded retries, cancellation checkpoints, and idempotent artifact writes; restarting the API does not silently discard leased work.
 
 Current tables:
 
@@ -89,17 +101,22 @@ Current tables:
 - `paper_cards`
 - `paper_memories`
 - `direction_memories`
+- `paper_chunks` and `paper_chunks_fts`
+- `rag_evaluations`
 - `sessions`
+- `agent_runs` (legacy-compatible storage name for Research Workflow Runs)
+- `jobs` and `worker_heartbeats`
+- `model_call_audits`
 - `tool_events`
 
 Current API capabilities:
 
 - Create and read projects.
 - Read project papers.
-- Save and read artifacts.
+- Save artifacts, page through lightweight summaries, and fetch complete Markdown/JSON only from the artifact detail endpoint. The deprecated project artifact-list path also returns summaries and never embeds large bodies.
 - Read project sessions.
 - Read session and project timelines.
-- Generate and execute minimal agent plans.
+- Generate and execute bounded Research Workflow Run plans.
 - Retrieve and persist ranked paper tables from arXiv/OpenAlex.
 - Generate and persist single-paper Deep Paper Cards with PaperSignals through `POST /projects/{project_id}/paper-cards`.
 - Generate direction reviews through `POST /projects/{project_id}/direction-reviews`, with 10 papers per round and three rounds maximum.
@@ -115,11 +132,9 @@ scholarflow init
 scholarflow start
 scholarflow stop
 scholarflow status
-scholarflow ask "VLM hallucination benchmark"
-scholarflow plan "我想做多模态可信评测方向"
 ```
 
-Phase 4 implements the first four commands only. The CLI is not the core product logic. It starts services, manages local configuration, and provides a lightweight command surface.
+The CLI is not the core product logic. It starts services, manages local configuration, and provides a lightweight command surface.
 
 Default local workspace:
 
@@ -134,27 +149,27 @@ Default local workspace:
     services.json
 ```
 
-The CLI launches the API with `SCHOLARFLOW_DB_PATH=<workspace>/cache/scholarflow.sqlite3` and launches the Web UI with `VITE_SCHOLARFLOW_API_BASE_URL` pointing to the selected API host and port. Service logs are written to the workspace `logs/` directory.
+The CLI launches API, Web UI, and the durable SQLite worker. It sets `SCHOLARFLOW_DB_PATH=<workspace>/cache/scholarflow.sqlite3` for the backend and `VITE_SCHOLARFLOW_API_BASE_URL` for the Web UI. Service logs are written to the workspace `logs/` directory. Provider configuration remains backend-only and is inherited by API/worker processes; it is never written into workspace configuration.
 
-## Agent Core
+## Research Workflow Core
 
-ScholarFlow should borrow the following ideas from Claude Code-like systems:
+Current behavior:
 
-- Agent Loop: the model alternates between reasoning, tool selection, tool execution, and artifact updates.
-- Plan Mode: the agent creates a research plan before taking expensive actions.
+- Research Workflow Run: the API executes a fixed, allowlisted tool graph after explicit user confirmation.
+- Planning: a model may suggest focus, rationale, and wording for existing steps, but cannot add, remove, reorder, or rename tools.
 - Tool Registry: every callable research capability has an explicit schema and execution contract.
-- Permission Gates: sensitive operations such as sending data to external APIs or writing files should be explicit.
+- Permission Gates: external data transfer and execution confirmation are explicit.
 - Timeline: every important action becomes a visible event.
 - Memory: user preferences and project decisions are reusable across sessions.
-- Skills: research workflows such as deep paper reading, novelty check, and reproduction planning can be packaged.
-- Sub-Agents: literature, reading, skeptic, novelty, and experiment roles can work on separate subtasks.
-- MCP-Style Integrations: Zotero, GitHub, Hugging Face, Papers with Code, and local file tools can be added without rewriting the core loop.
+
+The model does not own evidence qualification, citation integrity, state transitions, refusal behavior, or Experiment readiness. ScholarFlow does not implement an unlimited autonomous loop.
 
 Current model-provider implementation:
 
 - `ModelProvider` abstraction.
-- `OpenRouterProvider` as the default provider, using `OPENROUTER_MODEL=minimax/minimax-m2.5` unless overridden.
-- `DeepSeekProvider` as an optional fallback provider.
+- Unified `create_plan`, `synthesize_answer`, and `validate_claim_optional` interface.
+- Local deterministic provider as the default.
+- OpenRouter and DeepSeek as optional OpenAI-compatible HTTP providers configured only by backend environment variables.
 - `ToolRegistry`.
 - `agent_runs` table.
 - `POST /agent/plan`.
@@ -162,18 +177,17 @@ Current model-provider implementation:
 - Default tools: `literature_search`, `direction_review`, `research_memory_query`, `research_decision`, `save_artifact`, `update_timeline`.
 - Demo tool: `search_mock_papers` remains registered for offline demos and is marked as Demo Mode in the UI when used.
 
-When `OPENROUTER_API_KEY` is available, Research Plan Mode calls the OpenRouter OpenAI-compatible chat completions API. Without a key or after an API failure, ScholarFlow falls back to the deterministic local planner so local development and CI remain stable.
+When a selected remote provider has a key, ScholarFlow calls its real chat-completions endpoint. Missing keys, HTTP 401/429/500, timeouts, network errors, and invalid JSON produce an explicit local fallback; the provider label then reports `local`, not the requested remote provider. Safe audit records store provider/model/purpose/prompt version/request time/latency/status/fallback reason and never store prompts, responses, API keys, or Authorization headers.
 
 ## Model Provider Strategy
 
-The implementation should define a provider abstraction before binding to a specific model.
+Configuration comes only from the API process environment:
 
-Preferred default:
+- `SCHOLARFLOW_MODEL_PROVIDER=local|openrouter|deepseek`
+- `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `OPENROUTER_BASE_URL`
+- `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`, `DEEPSEEK_BASE_URL`
 
-- `minimax/minimax-m2.5`: default planning model through OpenRouter.
-- `qwen/qwen3-embedding-8b`: configured RAG embedding model alias for future evidence retrieval workflows.
-
-Providers remain swappable through configuration. ScholarFlow stores the provider name on each `agent_run` so artifacts can show whether a plan came from OpenRouter, DeepSeek, or local fallback.
+The browser cannot select or override the provider. Remote model output is schema-validated and treated as advisory. Deterministic code reconstructs the canonical tool graph, so prompt-injection text cannot grant tools or write scientific state.
 
 ## Research Tools
 
@@ -197,22 +211,33 @@ Initial tool categories:
 
 Every tool should return structured data where possible.
 
+## API Contracts And Artifact Transport
+
+FastAPI OpenAPI is the source for transport DTOs. `npm run generate:api-types` regenerates `packages/schemas/src/api.generated.ts`; the backend contract test fails if the checked-in output drifts. `packages/schemas/src/index.ts` keeps compatibility aliases and only the richer domain shapes needed to conservatively hydrate legacy artifacts.
+
+Artifact transport is two-step:
+
+1. `GET /projects/{project_id}/artifacts/summary?limit=...&offset=...` returns paginated metadata, byte counts, a short Markdown preview, and schema version.
+2. `GET /artifacts/{artifact_id}` returns complete `content_markdown`, `content_json`, and diff only for a selected or hydration-required artifact.
+
+The web client accepts both the new page object and the old array-shaped mocked response, then hydrates only the newest relevant artifacts. This preserves old local artifacts without making list requests carry every full document.
+
 ## Core Data Objects
 
 Planned entities:
 
 - Project: a research workspace.
 - Paper: metadata, source links, code links, tags, relevance score.
-- Artifact: Markdown or JSON output saved by the agent.
+- Artifact: Markdown or JSON output saved by a workflow tool.
 - PaperCard: structured deep analysis for one paper.
 - BaselineMap: comparative context used by direction review and memory.
 - ResearchSight: structured critique attached to one paper reading.
 - EvidenceSnippet / EvidencePack: metadata, abstract, and paper-card snippets that ground a critique, plus confidence and missing evidence.
 - PaperMemory: searchable compressed record created from a direction-review paper card.
 - DirectionMemory: cumulative summary over up to 30 paper memories for one research direction.
-- Session: one agent run or conversation.
+- Session: one Research Workflow Run or related interaction sequence.
 - ToolEvent: one visible tool call or system action.
-- AgentRun: one plan-and-confirm execution unit.
+- AgentRun: legacy-compatible API/storage name for one plan-and-confirm Research Workflow Run.
 - ExperimentPlan: proposed reproduction or ablation plan.
 
 ## Evidence And Integrity
@@ -222,11 +247,14 @@ ScholarFlow must avoid unsupported research claims.
 Expected behavior:
 
 - Link claims to paper sections, metadata, code repositories, or experiment outputs.
-- Distinguish paper claims from the agent's interpretation.
+- Distinguish paper claims from model-generated drafts and workflow synthesis.
 - Mark uncertain conclusions.
 - Surface confidence and missing evidence when a critique is based only on metadata, abstract, or generated paper-card content.
 - Preserve search queries and retrieval sources.
 - Avoid inventing citations, datasets, metrics, or experimental results.
+- Treat pasted text as unverified `supplemental_text`; only successfully parsed and qualified PDF content can be verified `full_text`.
+- Retrieve project-isolated source chunks with SQLite FTS5/BM25 and optional external semantic embeddings. Local lexical hash remains labelled lexical rather than semantic.
+- Keep `no_reliable_hit` when evidence gates fail, and represent claim checks as supported, contradicted, insufficient, or not checked instead of a generic validated boolean.
 
 The Phase 6 paper table artifact preserves expanded queries, source API names, source URLs, relevance reasons, and retrieval warnings. Phase 7 paper-card artifacts preserve the 12 sections, weakest assumption, minimal reproduction, counterexample, and follow-up idea in structured JSON. Phase 8 decision artifacts preserve true/engineering/pseudo gap labels, novelty risk, feasibility, and experiment plans. Phase 9 adds public release documentation, contribution templates, CI, release notes, and synthetic example artifacts. Phase 10 direction-review artifacts preserve the scope, selected papers, abstract Chinese reading entry, 12-section card content, direction summary, and top-3 self-reading recommendation. Phase 11 memory artifacts preserve the user question, retrieved paper memories, direction memory snapshot, answer, and retrieval warnings. Phase 13 artifacts preserve the direction-level BaselineMap and paper-level ResearchSight critique. Phase 14 adds EvidencePack boundaries to these critiques, making explicit whether a judgment is grounded in metadata, abstract, generated paper-card content, or still missing full-paper evidence.
 

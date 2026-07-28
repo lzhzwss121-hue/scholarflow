@@ -1,8 +1,10 @@
 # ScholarFlow
 
-面向 AI 研究者的中文科研工作流 Agent。
+面向 AI 研究者的中文、local-first、证据感知科研工作流。
 
 ScholarFlow 将“输入研究方向”推进为一条可持续的研究流程：检索论文、阅读证据、建立项目记忆、分析研究空白，并生成可核验的实验计划。它不是论文搜索框，也不会把摘要包装成全文结论。
+
+默认入口称为 **Research Workflow Run**：用户确认后，系统按固定、可恢复的工具图执行。它不是无限自治 Agent。可选模型只负责查询扩展、阅读计划建议、候选论断草稿与解释表达；证据等级、引用完整性、状态机、拒答和 Experiment readiness 始终由确定性代码决定。
 
 ![ScholarFlow 工作台](docs/assets/scholarflow-dashboard.png)
 
@@ -31,15 +33,16 @@ flowchart LR
 
 ## 证据边界
 
-ScholarFlow 区分三种证据等级：
+ScholarFlow 区分四种证据等级：
 
 | 等级 | 含义 |
 | --- | --- |
 | `metadata_only` | 只有标题、作者、年份等元数据 |
 | `abstract_only` | 已获得摘要，但未成功解析完整 PDF |
-| `full_text` | PDF 文本已通过解析与最小文本量校验 |
+| `supplemental_text` | 用户补充文本，未通过 PDF 来源与解析验证 |
+| `full_text` | PDF 文本已通过来源、解析状态和最小文本量校验 |
 
-发现 `pdf_url` 不代表已经读取 PDF；只有 `full_text.status=extracted` 才表示正文解析成功。扫描件、加密文件或没有文本层的 PDF 当前无法通过 OCR 处理。
+发现 `pdf_url` 或出现 `status=extracted` 都不能单独证明已读取全文；只有统一 evidence qualification 同时为 `level=full_text` 和 `verified=true` 才属于已验证 PDF 全文。扫描件、加密文件或没有文本层的 PDF 当前无法通过 OCR 处理。
 
 原文 RAG 采用项目隔离的 chunk 索引、关键词与向量混合检索、相关性门槛和 claim-level citation 校验。没有可靠证据时返回 `no_reliable_hit`，而不是补写一个看似完整的答案。
 
@@ -170,7 +173,7 @@ ScholarFlow 提供两条互不覆盖的查询通道：
   -> citation 与 claim 校验
 ```
 
-默认 embedding 和回答均在本地运行：本地 hash embedding 用于零配置召回，回答只摘录命中证据。它适合可审计的本地 fallback，但不等同于训练得到的语义模型。需要更强的语义检索或综合回答时，可以显式启用远程 provider；启用后，选中的文本或查询会发送给第三方服务。
+默认召回和回答均在本地运行：SQLite FTS5/BM25 负责词法召回，本地 lexical hash 只作为词面通道，回答只摘录命中证据。Lexical hash 不是语义 embedding。需要更强的语义检索或综合回答时，可以在后端环境变量中显式启用远程 provider；启用后，选中的文本或查询会发送给第三方服务。
 
 ## Gap Board 与 Experiment Plan
 
@@ -208,7 +211,7 @@ examples/workflows/     公开示例
 | 后端 | FastAPI、Pydantic |
 | 数据 | SQLite、本地 artifact |
 | 检索 | arXiv、OpenAlex、开放 PDF |
-| 可选模型服务 | OpenRouter；未配置时使用本地确定性 fallback |
+| 可选模型服务 | OpenRouter、DeepSeek；默认使用本地确定性模式 |
 
 更多设计说明见 [Architecture](docs/architecture.md)。
 
@@ -219,7 +222,9 @@ examples/workflows/     公开示例
 | 变量 | 默认值 | 作用 |
 | --- | --- | --- |
 | `OPENALEX_API_KEY` | 空 | 提高 OpenAlex 可用额度 |
-| `OPENROUTER_API_KEY` | 空 | 可选的远程 Research Plan / RAG 服务 |
+| `SCHOLARFLOW_MODEL_PROVIDER` | `local` | Workflow 建议 provider：`local`、`openrouter` 或 `deepseek` |
+| `OPENROUTER_API_KEY` | 空 | 可选的 OpenRouter Workflow/RAG 服务 |
+| `DEEPSEEK_API_KEY` | 空 | 可选的 DeepSeek Workflow 建议服务 |
 | `SCHOLARFLOW_DB_PATH` | `services/api/.data/scholarflow.sqlite3` | 手动启动模式的数据库路径 |
 | `SCHOLARFLOW_AUTO_FETCH_PDF` | `1` | 自动获取开放 PDF |
 | `SCHOLARFLOW_PDF_MAX_BYTES` | `20971520` | PDF 下载与上传上限 |
@@ -269,7 +274,9 @@ ScholarFlow 默认绑定 `127.0.0.1`，当前没有用户认证或多租户隔�
 - 论文检索会把检索词发送给 arXiv/OpenAlex。
 - 开放 PDF 会从公开 URL 下载并在本地解析。
 - 本地 PDF 原文件不落盘，但提取出的证据文本会写入 SQLite。
-- 只有显式启用远程 provider 时，相关查询或选定证据才会发送给第三方。
+- 只有后端显式启用且存在有效 key 的远程 provider 才会发送相关输入；前端不能选择 provider。
+- 模型调用只保存 provider、model、purpose、prompt version、时间、延迟、状态和 fallback 原因等非敏感审计字段。
+- API key 不写入前端、SQLite、Artifact 或日志。
 
 请勿提交 API Key、本地数据库、未公开论文、日志、私人研究笔记或未发表实验结果。更多说明见 [Security Policy](SECURITY.md)。
 
@@ -310,7 +317,7 @@ curl -fsS http://127.0.0.1:8000/health
 <details>
 <summary>没有 API Key 能否运行？</summary>
 
-可以。无模型 Key 时 Research Plan 使用本地确定性 fallback；论文检索仍需要连接 arXiv/OpenAlex。
+可以。默认 Research Workflow Run 使用本地确定性工具图；如果后端选择了 OpenRouter/DeepSeek 但没有 key，UI 会明确显示 local fallback。论文检索仍需要连接 arXiv/OpenAlex。
 
 </details>
 

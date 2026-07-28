@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +12,16 @@ from uuid import uuid4
 
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / ".data" / "scholarflow.sqlite3"
+SQLITE_BUSY_TIMEOUT_MS = 5000
+CURRENT_SCHEMA_VERSION = 4
+
+
+class DatabaseInitializationError(RuntimeError):
+    """Raised when SQLite cannot establish the required integrity contract."""
+
+
+class DatabaseMigrationError(DatabaseInitializationError):
+    """Raised when a schema migration cannot finish atomically."""
 
 
 def utc_now() -> str:
@@ -30,21 +41,170 @@ def get_db_path() -> Path:
 def get_connection() -> Iterator[sqlite3.Connection]:
     db_path = get_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(db_path)
-    connection.execute("PRAGMA foreign_keys = ON")
-    connection.row_factory = sqlite3.Row
+    connection = sqlite3.connect(
+        db_path,
+        timeout=SQLITE_BUSY_TIMEOUT_MS / 1000,
+    )
     try:
-        yield connection
-        connection.commit()
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+        connection.row_factory = sqlite3.Row
+        verify_foreign_keys_enabled(connection)
+        try:
+            yield connection
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
     finally:
         connection.close()
 
 
 def init_db() -> None:
     with get_connection() as connection:
-        connection.executescript(
+        enable_wal(connection)
+        run_schema_migrations(connection)
+        verify_foreign_keys_enabled(connection)
+        connection.execute("BEGIN IMMEDIATE")
+        seed_demo_project(connection)
+
+
+def enable_wal(connection: sqlite3.Connection) -> None:
+    deadline = time.monotonic() + (SQLITE_BUSY_TIMEOUT_MS / 1000)
+    while True:
+        try:
+            row = connection.execute("PRAGMA journal_mode = WAL").fetchone()
+            break
+        except sqlite3.OperationalError as error:
+            if "locked" not in str(error).lower() or time.monotonic() >= deadline:
+                raise DatabaseInitializationError(
+                    "SQLite initialization failed while enabling WAL."
+                ) from error
+            time.sleep(0.05)
+    journal_mode = str(row[0] if row else "").lower()
+    if journal_mode != "wal":
+        raise DatabaseInitializationError(
+            "SQLite initialization failed: PRAGMA journal_mode did not become WAL "
+            f"(reported {journal_mode or 'unknown'})."
+        )
+
+
+def verify_foreign_keys_enabled(connection: sqlite3.Connection) -> None:
+    row = connection.execute("PRAGMA foreign_keys").fetchone()
+    enabled = int(row[0] if row else 0)
+    if enabled != 1:
+        raise DatabaseInitializationError(
+            "SQLite integrity initialization failed: PRAGMA foreign_keys must equal 1 "
+            f"for every connection (reported {enabled})."
+        )
+
+
+def run_schema_migrations(connection: sqlite3.Connection) -> None:
+    current_version = schema_version(connection)
+    if current_version > CURRENT_SCHEMA_VERSION:
+        raise DatabaseMigrationError(
+            "SQLite schema is newer than this ScholarFlow build: "
+            f"database={current_version}, supported={CURRENT_SCHEMA_VERSION}."
+        )
+    if current_version == CURRENT_SCHEMA_VERSION:
+        validate_schema_contracts(connection)
+        return
+
+    for version in range(current_version + 1, CURRENT_SCHEMA_VERSION + 1):
+        apply_schema_migration(connection, version)
+
+    validate_schema_contracts(connection)
+
+
+def apply_schema_migration(connection: sqlite3.Connection, version: int) -> None:
+    migration_names = {
+        1: "baseline_integrity_contract",
+        2: "durable_local_jobs",
+        3: "evidence_hybrid_rag_fts5",
+        4: "model_provider_audit_contract",
+    }
+    connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        foreign_keys_row = connection.execute("PRAGMA foreign_keys").fetchone()
+        if int(foreign_keys_row[0] if foreign_keys_row else 1) != 0:
+            raise DatabaseMigrationError(
+                "SQLite migration could not temporarily suspend foreign-key enforcement."
+            )
+        if version == 1:
+            initialize_schema_v1(connection)
+            ensure_foreign_key_contracts(connection)
+            create_schema_indexes(connection)
+        elif version == 2:
+            initialize_schema_v2(connection)
+        elif version == 3:
+            initialize_schema_v3(connection)
+        elif version == 4:
+            initialize_schema_v4(connection)
+        else:
+            raise DatabaseMigrationError(f"Unknown SQLite schema migration: {version}.")
+
+        # Another local process may have completed this migration while this
+        # connection was waiting for BEGIN IMMEDIATE. Re-check under the write
+        # lock so concurrent API/worker startup remains idempotent.
+        if schema_version(connection) >= version:
+            connection.rollback()
+            return
+
+        violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            details = "; ".join(
+                f"table={row[0]} rowid={row[1]} parent={row[2]}"
+                for row in violations[:10]
+            )
+            raise DatabaseMigrationError(
+                "SQLite migration found orphaned rows and was rolled back: " + details
+            )
+        connection.execute(
             """
-            PRAGMA foreign_keys = ON;
+            INSERT INTO schema_migrations (version, name, applied_at)
+            VALUES (?, ?, ?)
+            """,
+            (version, migration_names[version], utc_now()),
+        )
+        connection.execute(f"PRAGMA user_version = {version}")
+        connection.commit()
+    except BaseException as error:
+        connection.rollback()
+        if isinstance(error, DatabaseMigrationError):
+            raise
+        raise DatabaseMigrationError(
+            f"SQLite schema migration {version} failed and was rolled back: {error}"
+        ) from error
+    finally:
+        connection.execute("PRAGMA foreign_keys = ON")
+        verify_foreign_keys_enabled(connection)
+
+
+def schema_version(connection: sqlite3.Connection) -> int:
+    table = connection.execute(
+        """
+        SELECT 1 FROM sqlite_master
+        WHERE type = 'table' AND name = 'schema_migrations'
+        """
+    ).fetchone()
+    if table is None:
+        return 0
+    row = connection.execute(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+    ).fetchone()
+    return int(row[0] if row else 0)
+
+
+def initialize_schema_v1(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+            """
+            BEGIN IMMEDIATE;
+
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            );
 
             CREATE TABLE IF NOT EXISTS projects (
                 id TEXT PRIMARY KEY,
@@ -57,7 +217,9 @@ def init_db() -> None:
                 stage TEXT NOT NULL DEFAULT 'api',
                 active_session_id TEXT,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (active_session_id) REFERENCES sessions(id)
+                    ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED
             );
 
             CREATE TABLE IF NOT EXISTS papers (
@@ -290,23 +452,647 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_tool_events_session_id ON tool_events(session_id);
             CREATE INDEX IF NOT EXISTS idx_retrieval_cache_lookup ON retrieval_cache(source, query, max_results, created_at);
             """
+    )
+    ensure_legacy_columns(connection)
+
+
+def initialize_schema_v2(connection: sqlite3.Connection) -> None:
+    connection.execute("BEGIN IMMEDIATE")
+    artifact_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(artifacts)").fetchall()
+    }
+    if "idempotency_key" not in artifact_columns:
+        connection.execute("ALTER TABLE artifacts ADD COLUMN idempotency_key TEXT")
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_idempotency_key
+        ON artifacts(idempotency_key)
+        WHERE idempotency_key IS NOT NULL
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS jobs (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            session_id TEXT,
+            job_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'queued',
+            stage TEXT NOT NULL DEFAULT 'queued',
+            progress INTEGER NOT NULL DEFAULT 0,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 3,
+            lease_owner TEXT,
+            lease_until TEXT,
+            heartbeat_at TEXT,
+            cancellation_requested INTEGER NOT NULL DEFAULT 0,
+            checkpoint_json TEXT NOT NULL DEFAULT '{}',
+            result_json TEXT NOT NULL DEFAULT '',
+            error TEXT NOT NULL DEFAULT '',
+            next_attempt_at TEXT,
+            dedupe_key TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL
         )
-        ensure_paper_columns(connection)
-        ensure_paper_card_columns(connection)
-        ensure_paper_memory_columns(connection)
-        ensure_direction_memory_columns(connection)
-        ensure_agent_run_columns(connection)
-        ensure_direction_review_run_columns(connection)
-        recover_interrupted_direction_review_runs(connection)
-        seed_demo_project(connection)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_jobs_claim
+        ON jobs(status, next_attempt_at, lease_until, created_at)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_jobs_project
+        ON jobs(project_id, created_at)
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS worker_heartbeats (
+            worker_id TEXT PRIMARY KEY,
+            pid INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            heartbeat_at TEXT NOT NULL,
+            stopped_at TEXT
+        )
+        """
+    )
 
 
-def ensure_paper_columns(connection: sqlite3.Connection) -> None:
-    existing_columns = {
-        row["name"]
+def initialize_schema_v3(connection: sqlite3.Connection) -> None:
+    connection.execute("BEGIN IMMEDIATE")
+    existing_paper_columns = {
+        str(row["name"])
         for row in connection.execute("PRAGMA table_info(papers)").fetchall()
     }
-    columns = {
+    for column_name in ("doi", "arxiv_id", "openalex_id", "canonical_work_id"):
+        if column_name not in existing_paper_columns:
+            connection.execute(
+                f"ALTER TABLE papers ADD COLUMN {quote_identifier(column_name)} "
+                "TEXT NOT NULL DEFAULT ''"
+            )
+    existing_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(paper_chunks)").fetchall()
+    }
+    additions = {
+        "doi": "TEXT NOT NULL DEFAULT ''",
+        "arxiv_id": "TEXT NOT NULL DEFAULT ''",
+        "openalex_id": "TEXT NOT NULL DEFAULT ''",
+        "title": "TEXT NOT NULL DEFAULT ''",
+        "evidence_verified": "INTEGER NOT NULL DEFAULT 0",
+        "parser_version": "TEXT NOT NULL DEFAULT 'legacy.unknown'",
+        "canonical_work_id": "TEXT NOT NULL DEFAULT ''",
+        "lexical_text": "TEXT NOT NULL DEFAULT ''",
+    }
+    for column_name, definition in additions.items():
+        if column_name not in existing_columns:
+            connection.execute(
+                f"ALTER TABLE paper_chunks "
+                f"ADD COLUMN {quote_identifier(column_name)} {definition}"
+            )
+
+    connection.execute(
+        """
+        UPDATE paper_chunks
+        SET title = COALESCE(
+                NULLIF(title, ''),
+                (SELECT papers.title FROM papers WHERE papers.id = paper_chunks.paper_id),
+                ''
+            ),
+            canonical_work_id = COALESCE(NULLIF(canonical_work_id, ''), paper_id),
+            lexical_text = CASE
+                WHEN lexical_text <> '' THEN lexical_text
+                ELSE LOWER(
+                    COALESCE(
+                        (SELECT papers.title FROM papers WHERE papers.id = paper_chunks.paper_id),
+                        ''
+                    ) || ' ' || section || ' ' || chunk_text
+                )
+            END
+        """
+    )
+    try:
+        connection.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS paper_chunks_fts USING fts5(
+                chunk_id UNINDEXED,
+                project_id UNINDEXED,
+                paper_id UNINDEXED,
+                title,
+                section,
+                chunk_text,
+                lexical_text,
+                tokenize = 'unicode61 remove_diacritics 2'
+            )
+            """
+        )
+    except sqlite3.OperationalError as error:
+        raise DatabaseMigrationError(
+            "SQLite FTS5 is required for Evidence-aware Hybrid RAG but is unavailable."
+        ) from error
+
+    for statement in (
+        """
+        CREATE TRIGGER IF NOT EXISTS paper_chunks_fts_insert
+        AFTER INSERT ON paper_chunks
+        BEGIN
+            INSERT INTO paper_chunks_fts (
+                chunk_id, project_id, paper_id, title, section, chunk_text, lexical_text
+            )
+            VALUES (
+                new.id, new.project_id, new.paper_id, new.title,
+                new.section, new.chunk_text, new.lexical_text
+            );
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS paper_chunks_fts_delete
+        AFTER DELETE ON paper_chunks
+        BEGIN
+            DELETE FROM paper_chunks_fts WHERE chunk_id = old.id;
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS paper_chunks_fts_update
+        AFTER UPDATE OF project_id, paper_id, title, section, chunk_text, lexical_text
+        ON paper_chunks
+        BEGIN
+            DELETE FROM paper_chunks_fts WHERE chunk_id = old.id;
+            INSERT INTO paper_chunks_fts (
+                chunk_id, project_id, paper_id, title, section, chunk_text, lexical_text
+            )
+            VALUES (
+                new.id, new.project_id, new.paper_id, new.title,
+                new.section, new.chunk_text, new.lexical_text
+            );
+        END
+        """,
+    ):
+        connection.execute(statement)
+    connection.execute("DELETE FROM paper_chunks_fts")
+    connection.execute(
+        """
+        INSERT INTO paper_chunks_fts (
+            chunk_id, project_id, paper_id, title, section, chunk_text, lexical_text
+        )
+        SELECT id, project_id, paper_id, title, section, chunk_text, lexical_text
+        FROM paper_chunks
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_paper_chunks_evidence_gate
+        ON paper_chunks(project_id, evidence_verified, evidence_level, paper_id)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_paper_chunks_canonical_work
+        ON paper_chunks(project_id, canonical_work_id, paper_id)
+        """
+    )
+
+
+def initialize_schema_v4(connection: sqlite3.Connection) -> None:
+    connection.execute("BEGIN IMMEDIATE")
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS model_call_audits (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            run_id TEXT,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            purpose TEXT NOT NULL,
+            prompt_version TEXT NOT NULL,
+            request_timestamp TEXT NOT NULL,
+            latency_ms INTEGER NOT NULL DEFAULT 0,
+            response_status TEXT NOT NULL,
+            fallback_reason TEXT NOT NULL DEFAULT '',
+            requested_provider TEXT NOT NULL DEFAULT '',
+            requested_model TEXT NOT NULL DEFAULT '',
+            external_data_sent INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (run_id) REFERENCES agent_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_model_call_audits_project
+        ON model_call_audits(project_id, request_timestamp)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_model_call_audits_run
+        ON model_call_audits(run_id, request_timestamp)
+        """
+    )
+
+
+FOREIGN_KEY_CONTRACTS: dict[str, frozenset[tuple[str, str, str, str]]] = {
+    "projects": frozenset(
+        {("active_session_id", "sessions", "id", "SET NULL")}
+    ),
+    "papers": frozenset({("project_id", "projects", "id", "CASCADE")}),
+    "artifacts": frozenset({("project_id", "projects", "id", "CASCADE")}),
+    "paper_cards": frozenset(
+        {
+            ("project_id", "projects", "id", "CASCADE"),
+            ("paper_id", "papers", "id", "SET NULL"),
+            ("artifact_id", "artifacts", "id", "SET NULL"),
+        }
+    ),
+    "paper_memories": frozenset(
+        {
+            ("project_id", "projects", "id", "CASCADE"),
+            ("paper_id", "papers", "id", "SET NULL"),
+        }
+    ),
+    "direction_memories": frozenset(
+        {("project_id", "projects", "id", "CASCADE")}
+    ),
+    "paper_chunks": frozenset(
+        {
+            ("project_id", "projects", "id", "CASCADE"),
+            ("paper_id", "papers", "id", "CASCADE"),
+        }
+    ),
+    "rag_evaluations": frozenset(
+        {
+            ("project_id", "projects", "id", "CASCADE"),
+            ("answer_artifact_id", "artifacts", "id", "SET NULL"),
+        }
+    ),
+    "sessions": frozenset({("project_id", "projects", "id", "CASCADE")}),
+    "agent_runs": frozenset(
+        {
+            ("project_id", "projects", "id", "CASCADE"),
+            ("session_id", "sessions", "id", "CASCADE"),
+            ("plan_artifact_id", "artifacts", "id", "SET NULL"),
+            ("result_artifact_id", "artifacts", "id", "SET NULL"),
+        }
+    ),
+    "direction_review_runs": frozenset(
+        {
+            ("project_id", "projects", "id", "CASCADE"),
+            ("session_id", "sessions", "id", "CASCADE"),
+        }
+    ),
+    "tool_events": frozenset({("session_id", "sessions", "id", "CASCADE")}),
+    "jobs": frozenset(
+        {
+            ("project_id", "projects", "id", "CASCADE"),
+            ("session_id", "sessions", "id", "SET NULL"),
+        }
+    ),
+    "model_call_audits": frozenset(
+        {
+            ("project_id", "projects", "id", "CASCADE"),
+            ("run_id", "agent_runs", "id", "SET NULL"),
+        }
+    ),
+}
+
+V1_FOREIGN_KEY_CONTRACTS = {
+    table_name: contract
+    for table_name, contract in FOREIGN_KEY_CONTRACTS.items()
+    if table_name not in {"jobs", "model_call_audits"}
+}
+
+
+def canonical_schema_objects() -> tuple[dict[str, str], list[str]]:
+    canonical = sqlite3.connect(":memory:")
+    canonical.row_factory = sqlite3.Row
+    try:
+        initialize_schema_v1(canonical)
+        canonical.commit()
+        tables = {
+            str(row["name"]): str(row["sql"])
+            for row in canonical.execute(
+                """
+                SELECT name, sql FROM sqlite_master
+                WHERE type = 'table' AND name IN (
+                    'projects', 'papers', 'artifacts', 'paper_cards',
+                    'paper_memories', 'direction_memories', 'paper_chunks',
+                    'rag_evaluations', 'sessions', 'agent_runs',
+                    'direction_review_runs', 'tool_events'
+                )
+                """
+            ).fetchall()
+        }
+        indexes = [
+            str(row["sql"])
+            for row in canonical.execute(
+                """
+                SELECT sql FROM sqlite_master
+                WHERE type = 'index' AND sql IS NOT NULL
+                ORDER BY name
+                """
+            ).fetchall()
+        ]
+        return tables, indexes
+    finally:
+        canonical.close()
+
+
+def foreign_key_signatures(
+    connection: sqlite3.Connection,
+    table_name: str,
+) -> set[tuple[str, str, str, str]]:
+    return {
+        (
+            str(row["from"]),
+            str(row["table"]),
+            str(row["to"]),
+            str(row["on_delete"]).upper(),
+        )
+        for row in connection.execute(
+            f"PRAGMA foreign_key_list({quote_identifier(table_name)})"
+        ).fetchall()
+    }
+
+
+def ensure_foreign_key_contracts(connection: sqlite3.Connection) -> None:
+    canonical_tables, _ = canonical_schema_objects()
+    for table_name, expected in V1_FOREIGN_KEY_CONTRACTS.items():
+        actual = foreign_key_signatures(connection, table_name)
+        if actual != expected:
+            rebuild_table(
+                connection,
+                table_name=table_name,
+                canonical_sql=canonical_tables[table_name],
+            )
+
+
+def validate_schema_contracts(connection: sqlite3.Connection) -> None:
+    for table_name, expected in FOREIGN_KEY_CONTRACTS.items():
+        actual = foreign_key_signatures(connection, table_name)
+        if actual != expected:
+            raise DatabaseInitializationError(
+                "SQLite foreign-key contract mismatch for "
+                f"{table_name}: expected={sorted(expected)}, actual={sorted(actual)}."
+            )
+    violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+    if violations:
+        details = "; ".join(
+            f"table={row[0]} rowid={row[1]} parent={row[2]}"
+            for row in violations[:10]
+        )
+        raise DatabaseInitializationError(
+            "SQLite foreign-key integrity check failed: " + details
+        )
+    artifact_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(artifacts)").fetchall()
+    }
+    if "idempotency_key" not in artifact_columns:
+        raise DatabaseInitializationError(
+            "SQLite schema contract mismatch: artifacts.idempotency_key is missing."
+        )
+    idempotency_index = connection.execute(
+        """
+        SELECT 1 FROM sqlite_master
+        WHERE type = 'index' AND name = 'idx_artifacts_idempotency_key'
+        """
+    ).fetchone()
+    if idempotency_index is None:
+        raise DatabaseInitializationError(
+            "SQLite schema contract mismatch: artifact idempotency index is missing."
+        )
+    required_job_columns = {
+        "id",
+        "project_id",
+        "session_id",
+        "job_type",
+        "payload_json",
+        "status",
+        "stage",
+        "progress",
+        "attempts",
+        "max_attempts",
+        "lease_owner",
+        "lease_until",
+        "heartbeat_at",
+        "cancellation_requested",
+        "checkpoint_json",
+        "result_json",
+        "error",
+        "created_at",
+        "updated_at",
+        "completed_at",
+    }
+    actual_job_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
+    }
+    missing_job_columns = sorted(required_job_columns - actual_job_columns)
+    if missing_job_columns:
+        raise DatabaseInitializationError(
+            "SQLite schema contract mismatch: jobs columns are missing: "
+            + ", ".join(missing_job_columns)
+        )
+    required_chunk_columns = {
+        "project_id",
+        "paper_id",
+        "doi",
+        "arxiv_id",
+        "openalex_id",
+        "title",
+        "section",
+        "page_start",
+        "page_end",
+        "source_origin",
+        "evidence_level",
+        "evidence_verified",
+        "parser_version",
+        "chunk_hash",
+        "canonical_work_id",
+        "lexical_text",
+    }
+    actual_chunk_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(paper_chunks)").fetchall()
+    }
+    missing_chunk_columns = sorted(required_chunk_columns - actual_chunk_columns)
+    if missing_chunk_columns:
+        raise DatabaseInitializationError(
+            "SQLite schema contract mismatch: paper_chunks columns are missing: "
+            + ", ".join(missing_chunk_columns)
+        )
+    required_paper_identifiers = {
+        "doi",
+        "arxiv_id",
+        "openalex_id",
+        "canonical_work_id",
+    }
+    actual_paper_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(papers)").fetchall()
+    }
+    if not required_paper_identifiers.issubset(actual_paper_columns):
+        raise DatabaseInitializationError(
+            "SQLite schema contract mismatch: paper identity columns are missing."
+        )
+    fts_table = connection.execute(
+        """
+        SELECT sql FROM sqlite_master
+        WHERE type = 'table' AND name = 'paper_chunks_fts'
+        """
+    ).fetchone()
+    if fts_table is None or "fts5" not in str(fts_table["sql"] or "").lower():
+        raise DatabaseInitializationError(
+            "SQLite schema contract mismatch: paper_chunks_fts must be an FTS5 index."
+        )
+    trigger_names = {
+        str(row["name"])
+        for row in connection.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type = 'trigger' AND name LIKE 'paper_chunks_fts_%'
+            """
+        ).fetchall()
+    }
+    required_triggers = {
+        "paper_chunks_fts_insert",
+        "paper_chunks_fts_delete",
+        "paper_chunks_fts_update",
+    }
+    if not required_triggers.issubset(trigger_names):
+        raise DatabaseInitializationError(
+            "SQLite schema contract mismatch: paper_chunks_fts sync triggers are missing."
+        )
+    required_audit_columns = {
+        "id",
+        "project_id",
+        "run_id",
+        "provider",
+        "model",
+        "purpose",
+        "prompt_version",
+        "request_timestamp",
+        "latency_ms",
+        "response_status",
+        "fallback_reason",
+        "requested_provider",
+        "requested_model",
+        "external_data_sent",
+        "created_at",
+    }
+    actual_audit_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(model_call_audits)").fetchall()
+    }
+    missing_audit_columns = sorted(required_audit_columns - actual_audit_columns)
+    if missing_audit_columns:
+        raise DatabaseInitializationError(
+            "SQLite schema contract mismatch: model_call_audits columns are missing: "
+            + ", ".join(missing_audit_columns)
+        )
+
+
+def rebuild_table(
+    connection: sqlite3.Connection,
+    *,
+    table_name: str,
+    canonical_sql: str,
+) -> None:
+    temporary_name = f"__scholarflow_migration_{table_name}"
+    connection.execute(f"DROP TABLE IF EXISTS {quote_identifier(temporary_name)}")
+    prefix = f"CREATE TABLE {table_name}"
+    if not canonical_sql.startswith(prefix):
+        raise DatabaseMigrationError(
+            f"Cannot rebuild {table_name}: unexpected canonical CREATE TABLE statement."
+        )
+    connection.execute(
+        canonical_sql.replace(
+            prefix,
+            f"CREATE TABLE {quote_identifier(temporary_name)}",
+            1,
+        )
+    )
+
+    old_columns = {
+        str(row["name"]): row
+        for row in connection.execute(
+            f"PRAGMA table_info({quote_identifier(table_name)})"
+        ).fetchall()
+    }
+    new_columns = {
+        str(row["name"]): row
+        for row in connection.execute(
+            f"PRAGMA table_info({quote_identifier(temporary_name)})"
+        ).fetchall()
+    }
+    for column_name, column in old_columns.items():
+        if column_name in new_columns:
+            continue
+        connection.execute(
+            f"ALTER TABLE {quote_identifier(temporary_name)} "
+            f"ADD COLUMN {quote_identifier(column_name)} "
+            f"{legacy_column_definition(column)}"
+        )
+        new_columns[column_name] = column
+
+    shared_columns = [
+        column_name
+        for column_name in old_columns
+        if column_name in new_columns
+    ]
+    if shared_columns:
+        columns_sql = ", ".join(quote_identifier(name) for name in shared_columns)
+        connection.execute(
+            f"INSERT INTO {quote_identifier(temporary_name)} ({columns_sql}) "
+            f"SELECT {columns_sql} FROM {quote_identifier(table_name)}"
+        )
+    connection.execute(f"DROP TABLE {quote_identifier(table_name)}")
+    connection.execute(
+        f"ALTER TABLE {quote_identifier(temporary_name)} "
+        f"RENAME TO {quote_identifier(table_name)}"
+    )
+
+
+def legacy_column_definition(column: sqlite3.Row) -> str:
+    declared_type = str(column["type"] or "BLOB")
+    parts = [declared_type]
+    default_value = column["dflt_value"]
+    if int(column["notnull"] or 0):
+        if default_value is None:
+            raise DatabaseMigrationError(
+                "Cannot safely preserve unknown NOT NULL legacy column "
+                f"{column['name']} without a default."
+            )
+        parts.append("NOT NULL")
+    if default_value is not None:
+        parts.append(f"DEFAULT {default_value}")
+    return " ".join(parts)
+
+
+def quote_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def create_schema_indexes(connection: sqlite3.Connection) -> None:
+    _, index_statements = canonical_schema_objects()
+    for statement in index_statements:
+        connection.execute(
+            statement.replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", 1)
+        )
+
+
+LEGACY_COLUMN_ADDITIONS: dict[str, dict[str, str]] = {
+    "papers": {
         "authors": "TEXT NOT NULL DEFAULT ''",
         "abstract": "TEXT NOT NULL DEFAULT ''",
         "source": "TEXT NOT NULL DEFAULT ''",
@@ -316,120 +1102,39 @@ def ensure_paper_columns(connection: sqlite3.Connection) -> None:
         "relevance_quality": "TEXT NOT NULL DEFAULT 'medium'",
         "matched_terms_json": "TEXT NOT NULL DEFAULT '[]'",
         "review_required": "INTEGER NOT NULL DEFAULT 0",
-    }
-    for name, definition in columns.items():
-        if name not in existing_columns:
-            connection.execute(f"ALTER TABLE papers ADD COLUMN {name} {definition}")
-
-
-def ensure_paper_card_columns(connection: sqlite3.Connection) -> None:
-    existing_columns = {
-        row["name"]
-        for row in connection.execute("PRAGMA table_info(paper_cards)").fetchall()
-    }
-    columns = {
+    },
+    "paper_cards": {
         "research_sight_json": "TEXT NOT NULL DEFAULT '{}'",
-    }
-    for name, definition in columns.items():
-        if name not in existing_columns:
-            connection.execute(f"ALTER TABLE paper_cards ADD COLUMN {name} {definition}")
-
-
-def ensure_paper_memory_columns(connection: sqlite3.Connection) -> None:
-    existing_columns = {
-        row["name"]
-        for row in connection.execute("PRAGMA table_info(paper_memories)").fetchall()
-    }
-    columns = {
+    },
+    "paper_memories": {
         "research_sight_json": "TEXT NOT NULL DEFAULT '{}'",
-    }
-    for name, definition in columns.items():
-        if name not in existing_columns:
-            connection.execute(f"ALTER TABLE paper_memories ADD COLUMN {name} {definition}")
-
-
-def ensure_direction_memory_columns(connection: sqlite3.Connection) -> None:
-    existing_columns = {
-        row["name"]
-        for row in connection.execute("PRAGMA table_info(direction_memories)").fetchall()
-    }
-    columns = {
+    },
+    "direction_memories": {
         "baseline_map_json": "TEXT NOT NULL DEFAULT '{}'",
-    }
-    for name, definition in columns.items():
-        if name not in existing_columns:
-            connection.execute(f"ALTER TABLE direction_memories ADD COLUMN {name} {definition}")
-
-
-def ensure_agent_run_columns(connection: sqlite3.Connection) -> None:
-    existing_columns = {
-        row["name"]
-        for row in connection.execute("PRAGMA table_info(agent_runs)").fetchall()
-    }
-    columns = {
+    },
+    "agent_runs": {
         "cancellation_requested": "INTEGER NOT NULL DEFAULT 0",
-    }
-    for name, definition in columns.items():
-        if name not in existing_columns:
-            connection.execute(f"ALTER TABLE agent_runs ADD COLUMN {name} {definition}")
-
-
-def ensure_direction_review_run_columns(connection: sqlite3.Connection) -> None:
-    existing_columns = {
-        row["name"]
-        for row in connection.execute("PRAGMA table_info(direction_review_runs)").fetchall()
-    }
-    columns = {
+    },
+    "direction_review_runs": {
         "started_at": "TEXT",
-    }
-    for name, definition in columns.items():
-        if name not in existing_columns:
-            connection.execute(f"ALTER TABLE direction_review_runs ADD COLUMN {name} {definition}")
+    },
+}
 
 
-def recover_interrupted_direction_review_runs(connection: sqlite3.Connection) -> None:
-    """Do not leave process-local background work looking alive after restart."""
-
-    rows = connection.execute(
-        """
-        SELECT id, notices_json FROM direction_review_runs
-        WHERE status IN ('queued', 'running')
-        """
-    ).fetchall()
-    if not rows:
-        return
-    recovered_at = utc_now()
-    for row in rows:
-        try:
-            notices = json.loads(str(row["notices_json"] or "[]"))
-        except json.JSONDecodeError:
-            notices = []
-        if not isinstance(notices, list):
-            notices = []
-        notices.append(
-            {
-                "severity": "error",
-                "code": "direction_review_process_interrupted",
-                "stage": "failed",
-                "message": "后端进程在任务完成前重启；该运行已标记失败，请重新启动 Direction Review。",
-                "occurred_at": recovered_at,
-            },
-        )
-        connection.execute(
-            """
-            UPDATE direction_review_runs
-            SET status = 'failed', stage = 'failed', progress = 100,
-                message = ?, notices_json = ?, updated_at = ?, completed_at = ?
-            WHERE id = ?
-            """,
-            (
-                "Direction Review 因后端进程中断而失败，未伪装为仍在运行。",
-                json.dumps(notices, ensure_ascii=False, indent=2),
-                recovered_at,
-                recovered_at,
-                row["id"],
-            ),
-        )
+def ensure_legacy_columns(connection: sqlite3.Connection) -> None:
+    for table_name, columns in LEGACY_COLUMN_ADDITIONS.items():
+        existing_columns = {
+            str(row["name"])
+            for row in connection.execute(
+                f"PRAGMA table_info({quote_identifier(table_name)})"
+            ).fetchall()
+        }
+        for column_name, definition in columns.items():
+            if column_name not in existing_columns:
+                connection.execute(
+                    f"ALTER TABLE {quote_identifier(table_name)} "
+                    f"ADD COLUMN {quote_identifier(column_name)} {definition}"
+                )
 
 
 def seed_demo_project(connection: sqlite3.Connection) -> None:
@@ -750,22 +1455,6 @@ def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
     return dict(row)
-
-
-def artifact_summary_from_row(row: sqlite3.Row) -> dict[str, Any]:
-    data = dict(row)
-    return {
-        "id": data["id"],
-        "project_id": data["project_id"],
-        "title": data["title"],
-        "kind": data["kind"],
-        "created_at": data["created_at"],
-        "updated_at": data["updated_at"],
-        "markdown_bytes": int(data.get("markdown_bytes") or 0),
-        "json_bytes": int(data.get("json_bytes") or 0),
-        "markdown_preview": data.get("markdown_preview") or "",
-        "json_schema_version": data.get("json_schema_version") or "",
-    }
 
 
 def main() -> None:

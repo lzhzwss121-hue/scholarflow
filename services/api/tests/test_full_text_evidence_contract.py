@@ -491,7 +491,7 @@ LEGOMem to open-ended environments and tool ecosystems.
             full_text.ssl,
             "create_default_context",
             return_value=context,
-        ) as create_context, patch.object(full_text.urllib.request, "urlopen", return_value=response) as urlopen:
+        ) as create_context, patch.object(full_text, "open_url", return_value=response) as urlopen:
             payload = full_text.download_pdf_bytes(pdf_url)
 
         self.assertEqual(payload, b"%PDF-1.7 fixture")
@@ -1313,7 +1313,7 @@ LEGOMem to open-ended environments and tool ecosystems.
                         "filtered_count": 0,
                     },
                 )
-                with patch.object(main_module, "search_literature", return_value=search_result):
+                with patch("scholarflow_api.services.workflow_runtime.search_literature", return_value=search_result):
                     search_response = main_module.search_project_literature(
                         project.id,
                         LiteratureSearchRequest(query=project.keyword, sources=["arxiv"]),
@@ -1340,9 +1340,8 @@ LEGOMem to open-ended environments and tool ecosystems.
                     error="network timeout",
                 )
 
-                with patch.object(
-                    main_module,
-                    "resolve_open_full_text",
+                with patch(
+                    "scholarflow_api.services.workflow_runtime.resolve_open_full_text",
                     side_effect=[extracted, failed],
                 ) as resolve:
                     success_response = main_module.create_project_paper_card(

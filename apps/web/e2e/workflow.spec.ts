@@ -669,7 +669,22 @@ test("agent execute refreshes timeline artifacts and keeps partial blocked workf
         project_id: project.id,
         session_id: project.active_session_id,
         task: "Run the evidence faithfulness workflow",
-        provider: "local:heuristic-planner",
+        provider: "local:deterministic-workflow-v1",
+        run_kind: "research_workflow",
+        execution_mode: "deterministic_tool_graph",
+        model_call: {
+          provider: "local",
+          model: "deterministic-workflow-v1",
+          purpose: "create_plan",
+          prompt_version: "research-workflow-plan.v1",
+          request_timestamp: "2026-07-02T00:00:00+00:00",
+          latency_ms: 0,
+          response_status: "not_called",
+          fallback_reason: "missing_api_key",
+          requested_provider: "deepseek",
+          requested_model: "deepseek-chat",
+          external_data_sent: false,
+        },
         status: "planned",
         rationale: "Run real tools first.",
         steps: planSteps,
@@ -791,6 +806,9 @@ test("agent execute refreshes timeline artifacts and keeps partial blocked workf
   await expect(agentPanel.getByRole("button", { name: "生成计划", exact: true })).toBeEnabled();
   await agentPanel.getByRole("button", { name: "生成计划", exact: true }).click();
   await expect(page.getByText("Run run_e2e_agent_execute")).toBeVisible();
+  await expect(agentPanel.getByText("模型建议：Local fallback / missing_api_key")).toBeVisible();
+  await expect(agentPanel.getByText("未向外部模型发送数据。")).toBeVisible();
+  await expect(agentPanel).toContainText("确定性工具图");
   await expect(agentPanel.getByRole("button", { name: "确认执行", exact: true })).toBeEnabled();
   await agentPanel.getByRole("button", { name: "确认执行", exact: true }).click();
 
@@ -2605,4 +2623,83 @@ test("experiment planner keeps verified anchors partial until execution details 
   const experimentStep = page.locator(".workflow-step", { hasText: "Experiment Plan" });
   await expect(experimentStep.getByText("partial", { exact: true })).toBeVisible();
   await expect(experimentStep.getByText("科研锚点已核验，执行参数尚未补齐", { exact: true })).toBeVisible();
+});
+
+test("restored durable Direction Review keeps polling after API restart and handles cancellation", async ({ page }) => {
+  const project = {
+    id: "project_e2e_durable_direction",
+    title: "耐久 Direction Review",
+    description: "durable polling compatibility",
+    keyword: "evidence-aware local jobs",
+    field: "Artificial Intelligence",
+    language: "zh-CN",
+    workflow: "survey-to-experiment",
+    stage: "direction-review",
+    active_session_id: "session_e2e_durable_direction",
+    created_at: "2026-07-28T00:00:00+00:00",
+    updated_at: "2026-07-28T00:00:00+00:00",
+  };
+  const runId = "direction_run_e2e_durable";
+  let polls = 0;
+  const runSnapshot = (status: "queued" | "running" | "cancelled") => ({
+    run_id: runId,
+    project_id: project.id,
+    direction: project.keyword,
+    round: 1,
+    status,
+    stage: status === "queued" ? "queued" : status === "running" ? "retrieving" : "cancelled",
+    progress: status === "queued" ? 0 : status === "running" ? 20 : 20,
+    message:
+      status === "queued"
+        ? "API 重启后已从 SQLite 恢复到耐久队列。"
+        : status === "running"
+          ? "独立 worker 已重新领取 lease。"
+          : "Direction Review 已在工具阶段边界取消。",
+    notices: [],
+    result: null,
+    queued_at: project.created_at,
+    started_at: status === "queued" ? "" : project.updated_at,
+    current_tool: status === "running" ? "retrieving" : "",
+    last_heartbeat: project.updated_at,
+    created_at: project.created_at,
+    updated_at: project.updated_at,
+    completed_at: status === "cancelled" ? project.updated_at : null,
+  });
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
+  });
+  await page.route("**/projects", async (route) => {
+    await route.fulfill({ json: [project] });
+  });
+  await page.route(`**/projects/${project.id}/papers`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/timeline`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/paper-cards`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/direction-review-runs/latest`, async (route) => {
+    await route.fulfill({
+      json: runSnapshot(polls === 0 ? "queued" : polls < 3 ? "running" : "cancelled"),
+    });
+  });
+  await page.route(`**/projects/${project.id}/direction-review-runs/${runId}`, async (route) => {
+    polls += 1;
+    await route.fulfill({
+      json: runSnapshot(polls < 3 ? "running" : "cancelled"),
+    });
+  });
+
+  await page.goto("/#direction-review");
+  const progress = page.getByRole("region", { name: "direction review server progress" });
+  await expect(progress).toContainText(/API 重启后已从 SQLite 恢复|独立 worker 已重新领取 lease/);
+  await expect(progress.locator("em")).toHaveText("cancelled", { timeout: 6000 });
+  await expect(progress).toContainText("Direction Review 已在工具阶段边界取消。");
+  await expect(page.getByRole("button", { name: "生成第 1 轮" })).toBeEnabled();
 });

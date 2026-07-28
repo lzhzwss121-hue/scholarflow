@@ -13,6 +13,7 @@ from typing import Any
 
 import certifi
 
+from scholarflow_api.integrations.http import open_url
 from scholarflow_api.rag_retrieval import retrieve_project_chunks, retrieval_terms
 
 
@@ -232,7 +233,7 @@ class OpenRouterRagAnswerGenerator:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(
+            with open_url(
                 request,
                 timeout=self.timeout_seconds,
                 context=ssl.create_default_context(cafile=certifi.where()),
@@ -363,7 +364,11 @@ def answer_project_rag(
     if not unanswered_parts and all(item.get("evidence_level") != "full_text" for item in citations):
         unanswered_parts.append("缺少 PDF 全文，无法核验方法细节、实验设置、消融和失败案例。")
     answer = render_answer_text(supported_claims(claims), language=language)
-    all_full_text = all(item.get("evidence_level") == "full_text" for item in citations)
+    all_full_text = bool(citations) and all(
+        item.get("evidence_level") == "full_text"
+        and bool(item.get("evidence_verified"))
+        for item in citations
+    )
     status = (
         "complete"
         if answer_kind == "grounded_synthesis"
@@ -549,6 +554,20 @@ def verify_claim_support(
 
     binding_errors = citation_binding_errors(evidence, project_id=project_id)
     reasons.extend(binding_errors)
+    unqualified = [
+        str(item.get("citation_id") or "(missing)")
+        for item in evidence
+        if str(item.get("evidence_level") or "") == "supplemental_text"
+        or (
+            str(item.get("evidence_level") or "") == "full_text"
+            and not bool(item.get("evidence_verified"))
+        )
+    ]
+    if unqualified:
+        reasons.append(
+            "引用不是已验证的直接论文证据，不能支持科研论断："
+            + ", ".join(unqualified)
+        )
     if reasons:
         return claim_verification(
             status="insufficient",
@@ -1127,6 +1146,8 @@ def _select_context_citations(
     selected: list[dict[str, Any]] = []
     used = 0
     for hit in hits:
+        if not is_direct_evidence_citation(hit):
+            continue
         text = str(hit.get("text") or "")
         remaining = maximum - used
         if remaining < 200:
@@ -1137,6 +1158,18 @@ def _select_context_citations(
         selected.append(item)
         used += len(str(item.get("text") or ""))
     return selected
+
+
+def is_direct_evidence_citation(hit: dict[str, Any]) -> bool:
+    level = str(hit.get("evidence_level") or "metadata_only")
+    section = str(hit.get("section") or "").strip().lower()
+    if level == "full_text":
+        return (
+            bool(hit.get("evidence_verified"))
+            and hit.get("page_start") is not None
+            and section not in {"", "unknown"}
+        )
+    return level == "abstract_only" and section == "abstract"
 
 
 def weakest_evidence_level(evidence: list[dict[str, Any]]) -> str:
@@ -1157,7 +1190,11 @@ def claim_confidence(evidence: list[dict[str, Any]]) -> str:
     level = weakest_evidence_level(evidence)
     scores = [float(item.get("hybrid_score") or 0.0) for item in evidence]
     minimum_score = min(scores, default=0.0)
-    if level == "full_text" and minimum_score >= 0.45:
+    if (
+        level == "full_text"
+        and all(bool(item.get("evidence_verified")) for item in evidence)
+        and minimum_score >= 0.45
+    ):
         return "high"
     if level in {"full_text", "abstract_only"} and minimum_score >= 0.25:
         return "medium"
