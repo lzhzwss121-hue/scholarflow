@@ -5,6 +5,7 @@ const e2eOutputDir = process.env.PLAYWRIGHT_OUTPUT_DIR ?? "test-results";
 
 export default defineConfig({
   testDir: "./e2e",
+  testIgnore: /real-backend\.spec\.ts/,
   outputDir: e2eOutputDir,
   timeout: 60_000,
   expect: {
