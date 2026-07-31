@@ -1297,7 +1297,10 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                 )
                 with get_connection() as connection:
                     registry = main_module.build_agent_tool_registry(connection)
-                    with patch("scholarflow_api.services.workflow_runtime.search_literature", return_value=incoming):
+                    with patch(
+                        "scholarflow_api.services.agent_tool_service.search_literature",
+                        return_value=incoming,
+                    ):
                         registry.run("literature_search", context)
 
                 titles = {paper.title for paper in main_module.list_project_papers(project.id)}
@@ -1885,7 +1888,10 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                     errors=[],
                 )
 
-                with patch("scholarflow_api.services.workflow_runtime.search_literature", return_value=fake_result), patch.object(
+                with patch(
+                    "scholarflow_api.services.agent_tool_service.search_literature",
+                    return_value=fake_result,
+                ), patch.object(
                     direction_review_module,
                     "search_literature",
                     return_value=fake_result,
@@ -2009,6 +2015,57 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         self.assertEqual(cancelled.status, "cancelled")
         self.assertEqual(job.status, "cancelled")
         self.assertFalse(any(step.status == "running" for step in cancelled.steps))
+
+    def test_repeated_agent_execute_enqueues_one_durable_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(os.environ, {"SCHOLARFLOW_DB_PATH": str(db_path)}):
+                from scholarflow_api import main as main_module
+                from scholarflow_api.database import get_connection, init_db
+                from scholarflow_api.schemas import (
+                    AgentExecuteRequest,
+                    AgentPlanRequest,
+                    ProjectCreate,
+                )
+
+                init_db()
+                project = main_module.create_project(
+                    ProjectCreate(
+                        title="Idempotent Agent Execute",
+                        keyword="durable execute idempotency",
+                    ),
+                )
+                plan = main_module.create_agent_plan(
+                    AgentPlanRequest(
+                        project_id=project.id,
+                        task="Execute this workflow once",
+                    ),
+                )
+                first = main_module.execute_agent_run(
+                    plan.run_id,
+                    AgentExecuteRequest(confirmed=True),
+                )
+                second = main_module.execute_agent_run(
+                    plan.run_id,
+                    AgentExecuteRequest(confirmed=True),
+                )
+                with get_connection() as connection:
+                    job_count = connection.execute(
+                        "SELECT COUNT(*) FROM jobs WHERE id = ?",
+                        (plan.run_id,),
+                    ).fetchone()[0]
+                    execute_event_count = connection.execute(
+                        """
+                        SELECT COUNT(*) FROM tool_events
+                        WHERE session_id = ? AND tool = 'agent.execute'
+                        """,
+                        (plan.session_id,),
+                    ).fetchone()[0]
+
+        self.assertEqual(first.status, "running")
+        self.assertEqual(second.status, "running")
+        self.assertEqual(job_count, 1)
+        self.assertEqual(execute_event_count, 1)
 
 
 if __name__ == "__main__":

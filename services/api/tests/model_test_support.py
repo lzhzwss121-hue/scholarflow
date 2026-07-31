@@ -31,7 +31,7 @@ def offline_model_environment() -> Iterator[OfflineModelHarness]:
         OFFLINE_MODEL_ENVIRONMENT,
         clear=False,
     ), patch(
-        "scholarflow_api.services.workflow_runtime.get_model_provider",
+        "scholarflow_api.services.agent_plan_service.get_model_provider",
         return_value=provider,
     ) as provider_factory, patch(
         "scholarflow_api.agent_core.open_url",

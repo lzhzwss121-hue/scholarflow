@@ -486,18 +486,40 @@ LEGOMem to open-ended environments and tool ecosystems.
         response.headers.get.return_value = str(len(b"%PDF-1.7 fixture"))
         response.read.return_value = b"%PDF-1.7 fixture"
         context = object()
+        opener = MagicMock()
+        opener.open.return_value = response
+        public_dns = [
+            (
+                full_text.socket.AF_INET,
+                full_text.socket.SOCK_STREAM,
+                full_text.socket.IPPROTO_TCP,
+                "",
+                ("151.101.3.42", 443),
+            )
+        ]
 
         with patch.object(full_text.certifi, "where", return_value="/private/tmp/ca-certificates.pem") as certifi_where, patch.object(
             full_text.ssl,
             "create_default_context",
             return_value=context,
-        ) as create_context, patch.object(full_text, "open_url", return_value=response) as urlopen:
+        ) as create_context, patch.object(
+            full_text.socket,
+            "getaddrinfo",
+            return_value=public_dns,
+        ), patch.object(
+            full_text,
+            "build_pdf_opener",
+            return_value=opener,
+        ) as build_opener:
             payload = full_text.download_pdf_bytes(pdf_url)
 
         self.assertEqual(payload, b"%PDF-1.7 fixture")
         certifi_where.assert_called_once_with()
         create_context.assert_called_once_with(cafile="/private/tmp/ca-certificates.pem")
-        self.assertIs(urlopen.call_args.kwargs["context"], context)
+        build_opener.assert_called_once_with(context)
+        opener.open.assert_called_once()
+        self.assertEqual(opener.open.call_args.args[0].full_url, pdf_url)
+        self.assertEqual(opener.open.call_args.kwargs["timeout"], full_text.PDF_TIMEOUT_SECONDS)
 
     def test_trusted_ssl_context_keeps_hostname_and_certificate_verification_enabled(self) -> None:
         context = full_text.trusted_ssl_context()

@@ -7,7 +7,7 @@ import re
 from fastapi import HTTPException
 
 from scholarflow_api.agent_core import ToolContext
-from scholarflow_api.database import get_connection, new_id, row_to_dict, utc_now
+from scholarflow_api.database import get_connection, new_id, row_to_dict
 from scholarflow_api.full_text import normalize_persisted_evidence_qualification
 from scholarflow_api.rag_index import index_paper_abstract
 from scholarflow_api.schemas import (
@@ -17,7 +17,6 @@ from scholarflow_api.schemas import (
     PaperCardCreateRequest,
     PaperMemoryHit,
     ResearchSight,
-    ToolEventStatusLiteral,
 )
 
 def ensure_project_exists(project_id: str) -> None:
@@ -484,56 +483,6 @@ def insert_artifact_row(
         (artifact_id,),
     ).fetchone()
     return dict(artifact)
-
-
-def insert_tool_event(
-    connection,
-    session_id: str,
-    tool: str,
-    status: ToolEventStatusLiteral,
-    summary: str,
-    created_at: str,
-    time_label: str = "Now",
-) -> None:
-    connection.execute(
-        """
-        INSERT INTO tool_events (id, session_id, time_label, tool, status, summary, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (new_id("event"), session_id, time_label, tool, status, summary, created_at),
-    )
-
-
-def fail_agent_run_step(
-    connection,
-    run_dict: dict,
-    run_id: str,
-    plan: dict,
-    step: dict,
-    tool_name: str,
-    error: object,
-) -> None:
-    error_message = error.detail if isinstance(error, HTTPException) else str(error)
-    error_message = error_message or error.__class__.__name__
-    failed_at = utc_now()
-    mark_plan_step_by_id(plan, step.get("id", ""), "failed")
-    connection.execute(
-        """
-        UPDATE agent_runs
-        SET status = ?, plan_json = ?, updated_at = ?
-        WHERE id = ?
-        """,
-        ("failed", json.dumps(plan, ensure_ascii=False, indent=2), failed_at, run_id),
-    )
-    insert_tool_event(
-        connection,
-        run_dict["session_id"],
-        tool_name or "unknown_tool",
-        "failed",
-        error_message[:500],
-        failed_at,
-    )
-    connection.commit()
 
 
 def artifact_ref(artifact: dict) -> dict[str, str]:

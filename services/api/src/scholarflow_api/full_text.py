@@ -4,6 +4,7 @@ import io
 import ipaddress
 import os
 import re
+import socket
 import ssl
 import urllib.error
 import urllib.parse
@@ -15,7 +16,6 @@ from typing import Any
 
 import certifi
 
-from scholarflow_api.integrations.http import open_url
 from scholarflow_api.schemas import EvidenceQualification
 
 
@@ -28,6 +28,7 @@ PDF_MAX_PAGES = int(os.getenv("SCHOLARFLOW_PDF_MAX_PAGES", "80"))
 PDF_MAX_TEXT_CHARS = int(os.getenv("SCHOLARFLOW_PDF_MAX_TEXT_CHARS", "50000"))
 PDF_MIN_TEXT_CHARS = int(os.getenv("SCHOLARFLOW_PDF_MIN_TEXT_CHARS", "1200"))
 PDF_FETCH_WORKERS = max(1, min(6, int(os.getenv("SCHOLARFLOW_PDF_FETCH_WORKERS", "5"))))
+PDF_MAX_REDIRECTS = 5
 PDF_AUTO_FETCH_ENABLED = os.getenv("SCHOLARFLOW_AUTO_FETCH_PDF", "1").strip().lower() not in {
     "0",
     "false",
@@ -41,6 +42,15 @@ VERIFIED_PDF_SOURCE_ORIGINS = frozenset(
         "open_access_pdf",
         "user_uploaded_pdf",
     },
+)
+BLOCKED_METADATA_ADDRESSES = frozenset(
+    {
+        ipaddress.ip_address("169.254.169.254"),
+        ipaddress.ip_address("169.254.170.2"),
+        ipaddress.ip_address("168.63.129.16"),
+        ipaddress.ip_address("100.100.100.200"),
+        ipaddress.ip_address("fd00:ec2::254"),
+    }
 )
 
 
@@ -486,12 +496,12 @@ def download_pdf_bytes(url: str) -> bytes:
         # Use certifi's CA bundle explicitly. Some Python builds on macOS do not
         # discover the system trust store, which otherwise makes valid arXiv
         # certificates look untrusted. SSL verification remains enabled.
-        with open_url(
-            request,
-            timeout=PDF_TIMEOUT_SECONDS,
-            context=trusted_ssl_context(),
-        ) as response:
+        context = trusted_ssl_context()
+        opener = build_pdf_opener(context)
+        with opener.open(request, timeout=PDF_TIMEOUT_SECONDS) as response:
             final_url = response.geturl()
+            # Defense in depth for custom transports. Redirect targets have
+            # already been validated before the opener connects to them.
             validate_public_http_url(final_url)
             content_length = response.headers.get("Content-Length")
             if content_length and int(content_length) > PDF_MAX_BYTES:
@@ -535,6 +545,55 @@ def download_pdf_bytes(url: str) -> bytes:
 def trusted_ssl_context() -> ssl.SSLContext:
     """Create a verifying TLS context from the maintained certifi CA bundle."""
     return ssl.create_default_context(cafile=certifi.where())
+
+
+class PublicPdfRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Validate each redirect target before urllib opens the next connection."""
+
+    def __init__(self, max_redirects: int = PDF_MAX_REDIRECTS) -> None:
+        super().__init__()
+        self.max_redirects = max(0, max_redirects)
+        self.redirect_count = 0
+
+    def redirect_request(
+        self,
+        request: urllib.request.Request,
+        response: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> urllib.request.Request | None:
+        target_url = urllib.parse.urljoin(request.full_url, new_url)
+        validate_public_http_url(target_url)
+        source_scheme = urllib.parse.urlparse(request.full_url).scheme.lower()
+        target_scheme = urllib.parse.urlparse(target_url).scheme.lower()
+        if source_scheme == "https" and target_scheme != "https":
+            raise FullTextFetchError(
+                "download_failed",
+                "拒绝开放 PDF 从 HTTPS 重定向到不安全协议。",
+            )
+        if self.redirect_count >= self.max_redirects:
+            raise FullTextFetchError(
+                "download_failed",
+                f"开放 PDF 重定向次数超过上限 {self.max_redirects}。",
+            )
+        self.redirect_count += 1
+        return super().redirect_request(
+            request,
+            response,
+            code,
+            message,
+            headers,
+            target_url,
+        )
+
+
+def build_pdf_opener(context: ssl.SSLContext) -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=context),
+        PublicPdfRedirectHandler(),
+    )
 
 
 def recovery_hint_for_stage(stage: str) -> str:
@@ -602,18 +661,90 @@ def parse_pdf_bytes(payload: bytes, pdf_url: str = "", source: str = "user_uploa
 
 
 def validate_public_http_url(url: str) -> None:
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = (parsed.hostname or "").rstrip(".").lower()
+        port = parsed.port
+    except ValueError as error:
+        raise FullTextFetchError(
+            "download_failed",
+            "PDF URL 格式无效。",
+        ) from error
+    if parsed.scheme.lower() not in {"http", "https"} or not host:
         raise FullTextFetchError("download_failed", "PDF URL 必须是公开的 http/https 地址。")
-    host = parsed.hostname.lower()
-    if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
+    if parsed.username is not None or parsed.password is not None:
+        raise FullTextFetchError("download_failed", "PDF URL 不得包含用户名或密码。")
+    if port is not None and not 1 <= port <= 65535:
+        raise FullTextFetchError("download_failed", "PDF URL 端口无效。")
+    if host in {"localhost", "localhost.localdomain", "local"} or host.endswith(".local"):
         raise FullTextFetchError("download_failed", "拒绝访问本地 PDF 地址。")
+    if "%" in host:
+        raise FullTextFetchError("download_failed", "拒绝访问带作用域标识的 PDF 地址。")
+
     try:
         address = ipaddress.ip_address(host.strip("[]"))
     except ValueError:
-        return
+        addresses = resolve_hostname_addresses(
+            host,
+            port or (443 if parsed.scheme.lower() == "https" else 80),
+        )
+    else:
+        addresses = (address,)
+
+    for address in addresses:
+        if not is_public_ip_address(address):
+            raise FullTextFetchError("download_failed", "拒绝访问解析到非公网地址的 PDF URL。")
+
+
+def resolve_hostname_addresses(host: str, port: int) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
+    try:
+        records = socket.getaddrinfo(
+            host,
+            port,
+            family=socket.AF_UNSPEC,
+            type=socket.SOCK_STREAM,
+        )
+    except (socket.gaierror, OSError) as error:
+        raise FullTextFetchError(
+            "download_failed",
+            f"无法解析开放 PDF 域名：{host}。",
+        ) from error
+
+    addresses: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
+    for family, _socket_type, _protocol, _canonical_name, socket_address in records:
+        if family not in {socket.AF_INET, socket.AF_INET6} or not socket_address:
+            raise FullTextFetchError("download_failed", "PDF 域名返回了不支持的地址类型。")
+        address_text = str(socket_address[0]).split("%", 1)[0]
+        try:
+            addresses.add(ipaddress.ip_address(address_text))
+        except ValueError as error:
+            raise FullTextFetchError(
+                "download_failed",
+                "PDF 域名返回了无效 IP 地址。",
+            ) from error
+
+    if not addresses:
+        raise FullTextFetchError("download_failed", "PDF 域名没有可用的 A/AAAA 记录。")
+    return tuple(sorted(addresses, key=lambda address: (address.version, int(address))))
+
+
+def is_public_ip_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    if address in BLOCKED_METADATA_ADDRESSES:
+        return False
+    if (
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+        or address.is_unspecified
+    ):
+        return False
     if not address.is_global:
-        raise FullTextFetchError("download_failed", "拒绝访问非公网 PDF 地址。")
+        return False
+    return True
 
 
 def extract_research_text_from_pdf(payload: bytes) -> tuple[str, int]:

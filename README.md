@@ -272,11 +272,17 @@ ScholarFlow 默认绑定 `127.0.0.1`，当前没有用户认证或多租户隔�
 
 - 项目、论文、Paper Card、RAG chunk 和 artifact 主要保存在本地 SQLite。
 - 论文检索会把检索词发送给 arXiv/OpenAlex。
-- 开放 PDF 会从公开 URL 下载并在本地解析。
+- 开放 PDF 只允许从不含凭据的公开 HTTP/HTTPS URL 下载：下载前会解析全部 A/AAAA
+  地址并拒绝任意非公网结果；每次重定向也会在连接下一跳前重新验证，HTTPS 不允许
+  降级到 HTTP，且单次下载最多跟随 5 次重定向。
 - 本地 PDF 原文件不落盘，但提取出的证据文本会写入 SQLite。
 - 只有后端显式启用且存在有效 key 的远程 provider 才会发送相关输入；前端不能选择 provider。
 - 模型调用只保存 provider、model、purpose、prompt version、时间、延迟、状态和 fallback 原因等非敏感审计字段。
 - API key 不写入前端、SQLite、Artifact 或日志。
+
+这些检查用于降低开放 PDF 下载的 SSRF 风险，但不应被描述为“完全消除 SSRF”。
+DNS 校验与底层 socket 建立连接仍是两个时点，攻击者控制权威 DNS 时可能尝试 DNS
+rebinding。生产部署仍应配合出站网络策略，禁止 API 进程访问内网和云元数据服务。
 
 请勿提交 API Key、本地数据库、未公开论文、日志、私人研究笔记或未发表实验结果。更多说明见 [Security Policy](SECURITY.md)。
 

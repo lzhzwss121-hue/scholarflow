@@ -20,24 +20,44 @@ def resolve_handler(job_type: str) -> JobHandler:
 
 
 def handle_direction_review(job: DurableJob, execution: Any) -> dict[str, Any] | None:
-    from scholarflow_api import main
+    from scholarflow_api.services.workflow_runtime import run_direction_review_job
 
-    return main.run_direction_review_job(job, execution)
+    return run_direction_review_job(job, execution)
 
 
 def handle_agent_run(job: DurableJob, execution: Any) -> dict[str, Any] | None:
-    from scholarflow_api import main
+    from scholarflow_api.services.agent_run_service import run_agent_job
 
-    return main.run_agent_job(job, execution)
+    return run_agent_job(job, execution)
 
 
 def persist_terminal_failure(job: DurableJob, error: object) -> None:
-    from scholarflow_api import main
+    if job.job_type == "direction_review":
+        from scholarflow_api.services.workflow_runtime import (
+            persist_direction_review_failure,
+        )
 
-    main.persist_durable_job_failure(job, error)
+        persist_direction_review_failure(job.id, job.project_id, error)
+        return
+    if job.job_type == "agent_run":
+        from scholarflow_api.services.agent_run_service import (
+            persist_agent_job_failure,
+        )
+
+        persist_agent_job_failure(job, error)
 
 
 def persist_terminal_cancellation(job: DurableJob) -> None:
-    from scholarflow_api import main
+    if job.job_type == "direction_review":
+        from scholarflow_api.services.workflow_runtime import (
+            persist_direction_review_job_cancellation,
+        )
 
-    main.persist_durable_job_cancellation(job)
+        persist_direction_review_job_cancellation(job)
+        return
+    if job.job_type == "agent_run":
+        from scholarflow_api.services.agent_run_service import (
+            persist_agent_job_cancellation,
+        )
+
+        persist_agent_job_cancellation(job)

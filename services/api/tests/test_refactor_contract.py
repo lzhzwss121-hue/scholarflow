@@ -138,6 +138,16 @@ class RefactorContractTest(unittest.TestCase):
         self.assertTrue(endpoint_modules)
         self.assertNotIn("scholarflow_api.main", endpoint_modules)
 
+        agent_endpoint_modules = {
+            route.endpoint.__module__
+            for route in walk_routes(app)
+            if getattr(route, "path", "").startswith("/agent/")
+        }
+        self.assertEqual(
+            agent_endpoint_modules,
+            {"scholarflow_api.routers.agents"},
+        )
+
     def test_generated_types_match_current_openapi(self) -> None:
         from scholarflow_api.openapi_types import render_typescript_api_types
         from scholarflow_api.main import app
