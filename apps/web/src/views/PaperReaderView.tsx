@@ -1,9 +1,9 @@
 import type { ComponentProps } from "react";
-import { ProductPaperReaderView as ProductPaperReaderRuntime } from "./shared/ProductViewRuntime";
+import { ProductPaperReaderPanel } from "./PaperReaderPanel";
 
 
 export function ProductPaperReaderView(
-  props: ComponentProps<typeof ProductPaperReaderRuntime>,
+  props: ComponentProps<typeof ProductPaperReaderPanel>,
 ) {
-  return <ProductPaperReaderRuntime {...props} />;
+  return <ProductPaperReaderPanel {...props} />;
 }

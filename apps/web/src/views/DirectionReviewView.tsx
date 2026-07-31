@@ -1,9 +1,9 @@
 import type { ComponentProps } from "react";
-import { DirectionReviewView as DirectionReviewRuntime } from "./shared/ProductViewRuntime";
+import { DirectionReviewPanel } from "./DirectionReviewPanel";
 
 
 export function DirectionReviewView(
-  props: ComponentProps<typeof DirectionReviewRuntime>,
+  props: ComponentProps<typeof DirectionReviewPanel>,
 ) {
-  return <DirectionReviewRuntime {...props} />;
+  return <DirectionReviewPanel {...props} />;
 }

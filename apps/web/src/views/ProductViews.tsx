@@ -2,8 +2,8 @@ export {
   ArtifactPreview,
   ProductTopNav,
   ProjectSidebar,
-  WorkflowShell,
 } from "./shared/ProductViewRuntime";
+export { WorkflowShell } from "./WorkflowShell";
 export { ActiveView } from "./ActiveView";
 export { DirectionReviewView } from "./DirectionReviewView";
 export { ExperimentPlannerView } from "./ExperimentPlannerView";

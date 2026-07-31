@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { navItems, type ViewId } from "./mockData";
 import { ViewErrorBoundary } from "./components/ViewErrorBoundary";
 import { useWorkflowController } from "./lib/workflowService";
+import { useRouteScrollEffects } from "./state/useRouteScrollEffects";
 import { ActiveView, WorkflowShell } from "./views/ProductViews";
 import "./styles.css";
 
@@ -51,9 +52,7 @@ function readRouteFromHash(): AppRoute {
 export function App() {
   const [route, setRoute] = useState<AppRoute>(() => readRouteFromHash());
   const workflowMainRef = useRef<HTMLElement | null>(null);
-  const previousRouteIdentityRef = useRef<string | null>(null);
   const activeView = route.view;
-  const routeIdentity = `${activeView}:${route.paperId}`;
   const { actions, viewModel } = useWorkflowController(activeView, setActiveViewAndHash);
   const activeNavItem = useMemo(
     () => navItems.find((item) => item.id === activeView),
@@ -73,25 +72,13 @@ export function App() {
     };
   }, []);
 
-  useEffect(() => {
-    const previousRouteIdentity = previousRouteIdentityRef.current;
-    previousRouteIdentityRef.current = routeIdentity;
-    if (previousRouteIdentity === routeIdentity) {
-      return;
-    }
-    workflowMainRef.current?.scrollTo({ top: 0, behavior: "auto" });
-  }, [routeIdentity]);
-
   const hasHydratedDirectionReview = Boolean(viewModel.directionReview);
-  useEffect(() => {
-    if (!route.paperId || !hasHydratedDirectionReview) {
-      return;
-    }
-    const frame = window.requestAnimationFrame(() => {
-      document.querySelector<HTMLElement>("#direction-paper-title")?.focus({ preventScroll: true });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [route.paperId, hasHydratedDirectionReview]);
+  useRouteScrollEffects({
+    activeView,
+    hasHydratedDirectionReview,
+    paperId: route.paperId,
+    workflowMainRef,
+  });
 
   function setActiveViewAndHash(view: ViewId) {
     setRoute({ view, paperId: "", from: null });

@@ -828,6 +828,149 @@ test("agent execute refreshes timeline artifacts and keeps partial blocked workf
   await expect(page.locator(".workflow-step", { hasText: "Experiment Plan" }).getByText("complete")).toHaveCount(0);
 });
 
+test("agent polling stops when the workflow controller unmounts", async ({ page }) => {
+  const project = {
+    id: "project_e2e_agent_poll_cleanup",
+    title: "Agent 轮询清理回归",
+    description: "polling cleanup regression",
+    keyword: "durable workflow polling",
+    field: "Artificial Intelligence",
+    language: "zh-CN",
+    workflow: "survey-to-experiment",
+    stage: "workflow-run",
+    active_session_id: "session_e2e_agent_poll_cleanup",
+    created_at: "2026-07-31T00:00:00+00:00",
+    updated_at: "2026-07-31T00:00:00+00:00",
+  };
+  const step = {
+    id: "literature",
+    title: "Literature Search",
+    detail: "Retrieve candidates",
+    tool: "literature_search",
+    status: "queued",
+    metrics: {},
+  };
+  const artifact = {
+    id: "artifact_e2e_agent_poll_cleanup",
+    project_id: project.id,
+    title: "agent_poll_cleanup.md",
+    kind: "markdown",
+    content_markdown: "# Poll cleanup",
+    content_json: JSON.stringify({
+      run_id: "run_e2e_agent_poll_cleanup",
+    }),
+    diff: "+ polling cleanup regression",
+    created_at: project.created_at,
+    updated_at: project.updated_at,
+  };
+  let statusPolls = 0;
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
+  });
+  await page.route("**/projects", async (route) => {
+    await route.fulfill({ json: [project] });
+  });
+  await page.route(`**/projects/${project.id}/papers`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/timeline`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/paper-cards`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/direction-review-runs/latest`, async (route) => {
+    await route.fulfill({ status: 404, json: { detail: "not found" } });
+  });
+  await page.route("**/agent/plan", async (route) => {
+    await route.fulfill({
+      status: 201,
+      json: {
+        run_id: "run_e2e_agent_poll_cleanup",
+        project_id: project.id,
+        session_id: project.active_session_id,
+        task: "Keep the workflow running",
+        provider: "local:deterministic-workflow-v1",
+        run_kind: "research_workflow",
+        execution_mode: "deterministic_tool_graph",
+        model_call: null,
+        status: "planned",
+        rationale: "Exercise polling cleanup.",
+        steps: [step],
+        artifact,
+      },
+    });
+  });
+  await page.route("**/agent/runs/run_e2e_agent_poll_cleanup/execute", async (route) => {
+    await route.fulfill({
+      json: {
+        run_id: "run_e2e_agent_poll_cleanup",
+        status: "running",
+        artifact: null,
+        papers: [],
+        paper_count: 0,
+        summary_metrics: {},
+        run_status_summary: "running: literature_search.",
+        warnings: [],
+        artifact_refs: [],
+        workflow_steps: [],
+        current_tool: "literature_search",
+        queued_at: project.created_at,
+        started_at: project.created_at,
+        completed_at: null,
+        last_heartbeat: project.updated_at,
+        updated_at: project.updated_at,
+        steps: [{ ...step, status: "running" }],
+      },
+    });
+  });
+  await page.route("**/agent/runs/run_e2e_agent_poll_cleanup", async (route) => {
+    statusPolls += 1;
+    await route.fulfill({
+      json: {
+        run_id: "run_e2e_agent_poll_cleanup",
+        status: "running",
+        artifact: null,
+        papers: [],
+        paper_count: 0,
+        summary_metrics: {},
+        run_status_summary: "running: literature_search.",
+        warnings: [],
+        artifact_refs: [],
+        workflow_steps: [],
+        current_tool: "literature_search",
+        queued_at: project.created_at,
+        started_at: project.created_at,
+        completed_at: null,
+        last_heartbeat: project.updated_at,
+        updated_at: project.updated_at,
+        steps: [{ ...step, status: "running" }],
+      },
+    });
+  });
+
+  await page.goto("/#dashboard");
+  const panel = page.locator(".agent-run-panel");
+  await panel.getByRole("button", { name: "生成计划", exact: true }).click();
+  const executeButton = panel.getByRole("button", {
+    name: "确认执行",
+    exact: true,
+  });
+  await expect(executeButton).toBeEnabled();
+  await executeButton.click();
+  await expect.poll(() => statusPolls).toBeGreaterThanOrEqual(2);
+
+  await page.goto("about:blank");
+  await page.waitForTimeout(100);
+  const pollsAfterUnmount = statusPolls;
+  await page.waitForTimeout(1800);
+  expect(statusPolls).toBe(pollsAfterUnmount);
+});
+
 test("agent execute displays completed_with_warnings distinctly", async ({ page }) => {
   const project = {
     id: "project_e2e_agent_warnings",

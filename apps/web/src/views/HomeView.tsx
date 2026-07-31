@@ -81,11 +81,11 @@ import type {
   WorkflowViewModel,
 } from "../types/workflow";
 import {
-  AgentRunPanel,
   formatProjectStage,
   Metric,
   WorkflowGuide,
 } from "./shared/ProductViewRuntime";
+import { AgentRunPanel } from "./AgentRunPanel";
 
 export function ProductHomeView({
   activeProject,

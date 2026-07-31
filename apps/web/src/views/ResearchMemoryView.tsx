@@ -88,13 +88,13 @@ import {
 } from "./shared/formatters";
 import { formatContributionType } from "./shared/decisionFormatters";
 import {
-  buildEvidenceBoundary,
   buildMemoryEvidenceBoundary,
   buildMemoryRewriteSuggestion,
   formatResearchFacet,
   OperationStatusNote,
   ResearchWarningPanel,
 } from "./shared/ProductViewRuntime";
+import { buildEvidenceBoundary } from "./PaperReaderPanel";
 
 export function ResearchMemoryView({
   apiStatus,

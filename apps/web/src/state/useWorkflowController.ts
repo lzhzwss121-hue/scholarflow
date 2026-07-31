@@ -1,7 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
-  ApiAgentPlanResponse,
-  ApiAgentRunStatusResponse,
   ApiArtifact,
   ApiArtifactSummary,
   ApiDirectionReviewResponse,
@@ -15,17 +13,7 @@ import type {
   ApiWorkflowStepState,
 } from "@scholarflow/schemas";
 import { isAbortError, isRetrievalWarning, normalizeApiError } from "../apiClient";
-import {
-  cancelAgentRun,
-  createAgentPlan,
-  executeAgentRun,
-  getAgentRunStatus,
-} from "../services/agentService";
 import { getArtifact, saveArtifact } from "../services/artifactService";
-import {
-  getDirectionReviewRun,
-  startDirectionReviewRun,
-} from "../services/directionService";
 import { searchProjectLiterature } from "../services/literatureService";
 import {
   createProjectPaperCard,
@@ -34,11 +22,7 @@ import {
 import {
   createProject,
   getHealth,
-  getLatestDirectionReviewRun,
   getProjectTimeline,
-  listProjectArtifactSummaries,
-  listProjectPaperCards,
-  listProjectPapers,
   listProjects,
 } from "../services/projectService";
 import { askProjectRag } from "../services/ragService";
@@ -51,7 +35,6 @@ import {
   artifactSummaryFromDetail,
   collectArtifactHydrationWarnings,
   hydrateWorkflowStateFromArtifacts,
-  loadHydrationArtifacts,
   preferPaperCard,
   resolvePaperCardForPaper,
   selectArtifactForView,
@@ -72,37 +55,23 @@ import type {
   WorkflowViewModel,
   RelevanceCoverage,
 } from "../types/workflow";
+import {
+  useRequestCoordinator,
+  type RequestGuard,
+  type RequestScope,
+} from "./useRequestCoordinator";
+import { useAgentRunController } from "./useAgentRunController";
+import {
+  isTerminalDirectionRunStatus,
+  useDirectionReviewController,
+} from "./useDirectionReviewController";
+import {
+  fetchProjectResourceSnapshot,
+  useProjectResources,
+  type ProjectResourceSnapshot,
+} from "./useProjectResources";
 
 const ACTIVE_PROJECT_STORAGE_KEY = "scholarflow.activeProjectId";
-
-type RequestScope =
-  | "workspace"
-  | "resources"
-  | "artifact"
-  | "agent"
-  | "literature"
-  | "direction"
-  | "paper-card"
-  | "memory"
-  | "rag"
-  | "decision";
-
-type RequestGuard = {
-  signal: AbortSignal;
-  isCurrent: () => boolean;
-  isAborted: () => boolean;
-  finish: () => void;
-};
-
-type ProjectResourceSnapshot = {
-  papers?: ApiPaper[];
-  timeline?: Awaited<ReturnType<typeof getProjectTimeline>>;
-  artifactSummaries?: ApiArtifactSummary[];
-  artifacts?: ApiArtifact[];
-  paperCards?: ApiPaperCard[];
-  directionRun?: ApiDirectionReviewRunStatusResponse | null;
-  warnings: string[];
-};
 
 const workflowLabels: Record<ViewId, string> = {
   dashboard: "项目总览",
@@ -135,24 +104,10 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     keyword: "",
     field: "Artificial Intelligence",
   });
-  const [agentTask, setAgentTask] = useState(
-    "请根据我的研究方向，生成一个从文献检索到可验证 gap 的最小科研任务计划。",
-  );
-  const [agentPlan, setAgentPlan] = useState<ApiAgentPlanResponse | null>(null);
-  const [agentBusy, setAgentBusy] = useState(false);
-  const [agentRunStatus, setAgentRunStatus] = useState<ApiAgentRunStatusResponse | null>(null);
-  const [agentRunWarnings, setAgentRunWarnings] = useState<string[]>([]);
   const [literatureQuery, setLiteratureQuery] = useState("");
   const [literatureBusy, setLiteratureBusy] = useState(false);
   const [literatureErrors, setLiteratureErrors] = useState<string[]>([]);
   const [literatureCoverage, setLiteratureCoverage] = useState<RelevanceCoverage>({});
-  const [directionInput, setDirectionInput] = useState("");
-  const [directionRound, setDirectionRound] = useState(1);
-  const [directionBusy, setDirectionBusy] = useState(false);
-  const [directionReview, setDirectionReview] = useState<ApiDirectionReviewResponse | null>(null);
-  const [directionRun, setDirectionRun] = useState<ApiDirectionReviewRunStatusResponse | null>(null);
-  const [directionMessage, setDirectionMessage] = useState("尚未启动 Direction Review 后端任务。");
-  const [selectedDirectionPaperId, setSelectedDirectionPaperId] = useState("");
   const [memoryQuestion, setMemoryQuestion] = useState("这个方向最值得做的一周验证实验是什么？");
   const [memoryTopK, setMemoryTopK] = useState(5);
   const [memoryBusy, setMemoryBusy] = useState(false);
@@ -176,25 +131,110 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
   const [hydrationWarnings, setHydrationWarnings] = useState<string[]>([]);
   const [backendWorkflowSteps, setBackendWorkflowSteps] = useState<ApiWorkflowStepState[]>([]);
 
-  const activeProjectIdRef = useRef<string | null>(null);
-  const requestStateRef = useRef<Record<RequestScope, { id: number; controller: AbortController | null }>>({
-    workspace: { id: 0, controller: null },
-    resources: { id: 0, controller: null },
-    artifact: { id: 0, controller: null },
-    agent: { id: 0, controller: null },
-    literature: { id: 0, controller: null },
-    direction: { id: 0, controller: null },
-    "paper-card": { id: 0, controller: null },
-    memory: { id: 0, controller: null },
-    rag: { id: 0, controller: null },
-    decision: { id: 0, controller: null },
+  const { activeProjectIdRef, beginRequest, cancelRequests } =
+    useRequestCoordinator(activeProject?.id ?? null);
+  const {
+    applyRunSnapshot: applyDirectionRunSnapshot,
+    createDirectionReview: handleCreateDirectionReview,
+    directionBusy,
+    directionInput,
+    directionMessage,
+    directionReview,
+    directionRound,
+    directionRun,
+    hydrateReview: hydrateDirectionReview,
+    reset: resetDirectionReview,
+    selectedDirectionPaperId,
+    setDirectionInput,
+    setDirectionRound,
+    setSelectedDirectionPaperId,
+    startPolling: startDirectionRunPolling,
+    stopPolling: stopDirectionPolling,
+  } = useDirectionReviewController({
+    activeProject,
+    activeProjectIdRef,
+    applyBackendWorkflowSteps,
+    beginDirectionRequest: () => beginRequest("direction"),
+    blockDemoProjectAction,
+    formatApiFailure,
+    isDemoProject,
+    onArtifact: (artifact) => {
+      setLastSavedArtifact(artifact);
+      setProjectArtifacts((items) =>
+        upsertArtifactDetail(items, artifact),
+      );
+      setProjectArtifactSummaries((items) =>
+        upsertArtifactSummary(
+          items,
+          artifactSummaryFromDetail(artifact),
+        ),
+      );
+      setArtifactTab("markdown");
+    },
+    onProjectResources: applyProjectResources,
+    setApiMessage,
   });
-  const agentPollingRef = useRef<number | null>(null);
-  const directionPollingRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    activeProjectIdRef.current = activeProject?.id ?? null;
-  }, [activeProject?.id]);
+  const { loadProjectResources } = useProjectResources({
+    activeProjectIdRef,
+    beginResourceRequest: () => beginRequest("resources"),
+    onLoadError: (error) => {
+      setApiMessage(
+        formatApiFailure(
+          error,
+          "读取项目资源失败，请确认 API 与 SQLite 工作区可用。",
+        ),
+      );
+    },
+    onSnapshot: (projectId, snapshot) => {
+      applyProjectResources(projectId, snapshot);
+      if (
+        snapshot.directionRun &&
+        !isTerminalDirectionRunStatus(snapshot.directionRun.status)
+      ) {
+        startDirectionRunPolling(
+          snapshot.directionRun.run_id,
+          projectId,
+        );
+      }
+    },
+  });
+  const {
+    agentBusy,
+    agentPlan,
+    agentRunStatus,
+    agentRunWarnings,
+    agentTask,
+    cancelRun: handleCancelAgentRun,
+    createPlan: handleCreateAgentPlan,
+    executeRun: handleExecuteAgentRun,
+    reset: resetAgentRun,
+    setAgentTask,
+    stopPolling: stopAgentPolling,
+  } = useAgentRunController({
+    activeProject,
+    activeProjectIdRef,
+    applyBackendWorkflowSteps,
+    beginAgentRequest: () => beginRequest("agent"),
+    blockDemoProjectAction,
+    formatApiFailure,
+    isDemoProject,
+    loadProjectResources: (projectId, guard) =>
+      loadProjectResources(projectId, guard),
+    onArtifact: (artifact) => {
+      setLastSavedArtifact(artifact);
+      setProjectArtifacts((items) =>
+        upsertArtifactDetail(items, artifact),
+      );
+      setProjectArtifactSummaries((items) =>
+        upsertArtifactSummary(
+          items,
+          artifactSummaryFromDetail(artifact),
+        ),
+      );
+    },
+    refreshProjectResources: refreshAgentProjectResources,
+    setApiMessage,
+  });
 
   useEffect(() => {
     const guard = beginRequest("workspace");
@@ -376,30 +416,6 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     }
   }
 
-  async function loadProjectResources(projectId: string, outerGuard?: RequestGuard) {
-    const guard = outerGuard ?? beginRequest("resources");
-    try {
-      const snapshot = await fetchProjectResourceSnapshot(projectId, { signal: guard.signal });
-      if (!guard.isCurrent() || activeProjectIdRef.current !== projectId) {
-        return;
-      }
-
-      applyProjectResources(projectId, snapshot);
-      if (snapshot.directionRun && !isTerminalDirectionRunStatus(snapshot.directionRun.status)) {
-        startDirectionRunPolling(snapshot.directionRun.run_id, projectId);
-      }
-    } catch (error) {
-      if (!guard.isCurrent() || isAbortError(error)) {
-        return;
-      }
-      setApiMessage(formatApiFailure(error, "读取项目资源失败，请确认 API 与 SQLite 工作区可用。"));
-    } finally {
-      if (!outerGuard) {
-        guard.finish();
-      }
-    }
-  }
-
   function applyProjectResources(
     projectId: string,
     snapshot: ProjectResourceSnapshot,
@@ -437,13 +453,10 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       setLiteratureCoverage(restored.literatureCoverage);
     }
     if (restored.directionReview) {
-      setDirectionReview(restored.directionReview);
       // The saved review direction is the identity of the memory scope. Project
       // keywords are only a search default and may differ from the direction
       // that produced the persisted paper memories.
-      if (restored.directionReview.direction.trim()) {
-        setDirectionInput(restored.directionReview.direction);
-      }
+      hydrateDirectionReview(restored.directionReview);
     }
     if (restored.memoryResult) {
       setMemoryResult(restored.memoryResult);
@@ -474,19 +487,10 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
   }
 
   function resetWorkflowState() {
-    stopAgentPolling();
-    stopDirectionPolling();
-    setAgentPlan(null);
-    setAgentRunStatus(null);
-    setAgentRunWarnings([]);
-    setAgentBusy(false);
+    resetAgentRun();
+    resetDirectionReview();
     setLiteratureBusy(false);
     setLiteratureErrors([]);
-    setDirectionReview(null);
-    setDirectionRun(null);
-    setDirectionMessage("尚未启动 Direction Review 后端任务。");
-    setSelectedDirectionPaperId("");
-    setDirectionBusy(false);
     setMemoryResult(null);
     setMemoryBusy(false);
     setMemoryMessage("结构化记忆尚未查询。");
@@ -659,121 +663,6 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       }
     } finally {
       guard.finish();
-    }
-  }
-
-  async function handleCreateAgentPlan() {
-    if (!activeProject) {
-      setApiMessage("没有可运行的项目，请先创建项目或启动 API。");
-      return;
-    }
-    if (isDemoProject(activeProject.id)) {
-      blockDemoProjectAction();
-      return;
-    }
-
-    const projectId = activeProject.id;
-    const guard = beginRequest("agent");
-    setAgentBusy(true);
-    setApiMessage("正在生成 Research Plan...");
-    try {
-      const plan = await createAgentPlan(
-        {
-          project_id: projectId,
-          task: agentTask,
-        },
-        { signal: guard.signal },
-      );
-      if (!guard.isCurrent() || activeProjectIdRef.current !== projectId) {
-        return;
-      }
-      setAgentPlan(plan);
-      setAgentRunStatus(null);
-      setAgentRunWarnings([]);
-      setLastSavedArtifact(plan.artifact);
-      setApiMessage(`Research Plan 已生成，run: ${plan.run_id}`);
-      await loadProjectResources(projectId, guard);
-    } catch (error) {
-      if (!isAbortError(error) && guard.isCurrent()) {
-        setApiMessage(formatApiFailure(error, "生成 Research Plan 失败，请确认 API 与 SQLite 工作区可用。"));
-      }
-    } finally {
-      setAgentBusy(false);
-      guard.finish();
-    }
-  }
-
-  async function handleExecuteAgentRun() {
-    if (!agentPlan) {
-      setApiMessage("请先生成 Research Plan。");
-      return;
-    }
-    if (isDemoProject(agentPlan.project_id) || isDemoProject(activeProject)) {
-      blockDemoProjectAction();
-      return;
-    }
-
-    const guard = beginRequest("agent");
-    setAgentBusy(true);
-    stopAgentPolling();
-    try {
-      const result = await executeAgentRun(agentPlan.run_id, { confirmed: true }, { signal: guard.signal });
-      if (!guard.isCurrent() || activeProjectIdRef.current !== agentPlan.project_id) {
-        return;
-      }
-      applyAgentRunSnapshot(agentPlan.project_id, {
-        run_id: result.run_id,
-        status: result.status,
-        steps: result.steps,
-        summary_metrics: result.summary_metrics,
-        warnings: result.warnings ?? [],
-        artifact_refs: result.artifact_refs ?? [],
-        workflow_steps: result.workflow_steps ?? [],
-        run_status_summary: result.run_status_summary,
-        current_tool: result.current_tool ?? result.steps.find((step) => step.status === "running")?.tool ?? "",
-        paper_count: result.paper_count,
-        artifact: result.artifact,
-        queued_at: result.queued_at,
-        started_at: result.started_at,
-        completed_at: result.completed_at,
-        last_heartbeat: result.last_heartbeat,
-        updated_at: result.updated_at ?? new Date().toISOString(),
-      });
-      await refreshAgentProjectResources(agentPlan.project_id);
-      if (isTerminalAgentRunStatus(result.status)) {
-        setAgentBusy(false);
-      } else {
-        startAgentRunPolling(agentPlan.run_id, agentPlan.project_id);
-      }
-    } catch (error) {
-      if (!isAbortError(error) && guard.isCurrent()) {
-        setApiMessage(formatApiFailure(error, "执行 Research Workflow Run 失败，请查看 API 日志。"));
-        setAgentBusy(false);
-      }
-    } finally {
-      guard.finish();
-    }
-  }
-
-  async function handleCancelAgentRun() {
-    const runId = agentRunStatus?.run_id ?? agentPlan?.run_id;
-    const projectId = agentPlan?.project_id ?? activeProject?.id;
-    if (!runId || !projectId) {
-      return;
-    }
-    try {
-      const status = await cancelAgentRun(runId);
-      applyAgentRunSnapshot(projectId, status);
-      setApiMessage(status.run_status_summary || "已请求取消 Research Workflow Run。");
-      await refreshAgentProjectResources(projectId);
-      if (isTerminalAgentRunStatus(status.status)) {
-        stopAgentPolling();
-        setAgentBusy(false);
-      }
-    } catch (error) {
-      if (!isAbortError(error)) {
-        setApiMessage(formatApiFailure(error, "取消 Research Workflow Run 失败，请查看 API 日志。"));
-      }
     }
   }
 
@@ -967,156 +856,6 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     }
   }
 
-  async function handleCreateDirectionReview() {
-    if (!activeProject) {
-      setApiMessage("没有可写入的后端项目，请先创建或启动 API。");
-      return;
-    }
-    if (isDemoProject(activeProject.id)) {
-      blockDemoProjectAction();
-      return;
-    }
-
-    const projectId = activeProject.id;
-    const guard = beginRequest("direction");
-    setDirectionBusy(true);
-    setDirectionMessage(`正在向后端提交第 ${directionRound} 轮 Direction Review 任务...`);
-    try {
-      const run = await startDirectionReviewRun(
-        projectId,
-        {
-          direction: directionInput,
-          round: directionRound,
-        },
-        { signal: guard.signal },
-      );
-      if (!guard.isCurrent() || activeProjectIdRef.current !== projectId) {
-        return;
-      }
-      setSelectedDirectionPaperId("");
-      applyDirectionRunSnapshot(projectId, run);
-      if (isTerminalDirectionRunStatus(run.status)) {
-        await finalizeDirectionRun(projectId, run);
-      } else {
-        startDirectionRunPolling(run.run_id, projectId);
-      }
-    } catch (error) {
-      if (!isAbortError(error) && guard.isCurrent()) {
-        const normalized = normalizeApiError(error);
-        setDirectionMessage(
-          normalized.kind === "timeout"
-            ? "Direction Review 任务提交超时；请检查后端运行列表后再决定是否重试。"
-            : formatApiFailure(error, "Direction Review 任务启动失败，请检查 API 日志。"),
-        );
-        setDirectionBusy(false);
-      }
-    } finally {
-      guard.finish();
-    }
-  }
-
-  function applyDirectionRunSnapshot(
-    projectId: string,
-    run: ApiDirectionReviewRunStatusResponse | null,
-  ) {
-    if (activeProjectIdRef.current !== projectId) {
-      return;
-    }
-    setDirectionRun(run);
-    if (!run) {
-      setDirectionBusy(false);
-      return;
-    }
-    setDirectionBusy(!isTerminalDirectionRunStatus(run.status));
-    setDirectionMessage(run.message || `Direction Review ${run.status}`);
-    if (run.result) {
-      setDirectionReview(run.result);
-      applyBackendWorkflowSteps(run.result.workflow_steps);
-    }
-  }
-
-  async function finalizeDirectionRun(
-    projectId: string,
-    run: ApiDirectionReviewRunStatusResponse,
-  ) {
-    if (activeProjectIdRef.current !== projectId) {
-      return;
-    }
-    stopDirectionPolling();
-    applyDirectionRunSnapshot(projectId, run);
-    const result = run.result;
-    if (result) {
-      const reviewArtifactRef =
-        result.artifact_refs.find((artifact) => artifact.title.toLowerCase().includes("direction_review")) ??
-        result.artifact_refs[0];
-      if (reviewArtifactRef) {
-        try {
-          const artifact = await getArtifact(reviewArtifactRef.id);
-          if (activeProjectIdRef.current === projectId) {
-            setLastSavedArtifact(artifact);
-            setProjectArtifacts((items) => upsertArtifactDetail(items, artifact));
-            setProjectArtifactSummaries((items) => upsertArtifactSummary(items, artifactSummaryFromDetail(artifact)));
-            setArtifactTab("markdown");
-          }
-        } catch (error) {
-          if (!isAbortError(error) && activeProjectIdRef.current === projectId) {
-            setDirectionMessage(
-              `${run.message} ${formatApiFailure(error, "运行已结束，但 Direction Review artifact 回读失败。")}`,
-            );
-          }
-        }
-      }
-    }
-    try {
-      const snapshot = await fetchProjectResourceSnapshot(projectId);
-      if (activeProjectIdRef.current === projectId) {
-        applyProjectResources(projectId, snapshot);
-      }
-    } catch (error) {
-      if (!isAbortError(error) && activeProjectIdRef.current === projectId) {
-        setDirectionMessage(`${run.message} 项目资源刷新失败，可重新进入项目恢复已保存结果。`);
-      }
-    }
-  }
-
-  function startDirectionRunPolling(runId: string, projectId: string) {
-    stopDirectionPolling();
-    let inFlight = false;
-    const poll = async () => {
-      if (inFlight || activeProjectIdRef.current !== projectId) {
-        return;
-      }
-      inFlight = true;
-      try {
-        const run = await getDirectionReviewRun(projectId, runId);
-        if (activeProjectIdRef.current !== projectId) {
-          return;
-        }
-        applyDirectionRunSnapshot(projectId, run);
-        if (isTerminalDirectionRunStatus(run.status)) {
-          await finalizeDirectionRun(projectId, run);
-        }
-      } catch (error) {
-        if (!isAbortError(error) && activeProjectIdRef.current === projectId) {
-          setDirectionMessage(formatApiFailure(error, "轮询 Direction Review 真实进度失败。"));
-        }
-      } finally {
-        inFlight = false;
-      }
-    };
-    void poll();
-    directionPollingRef.current = window.setInterval(() => {
-      void poll();
-    }, 1200);
-  }
-
-  function stopDirectionPolling() {
-    if (directionPollingRef.current !== null) {
-      window.clearInterval(directionPollingRef.current);
-      directionPollingRef.current = null;
-    }
-  }
-
   async function handleQueryResearchMemory() {
     if (!activeProject) {
       setMemoryMessage("没有可写入的后端项目，请先创建或启动 API。");
@@ -1272,33 +1011,19 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     }
   }
 
-  function beginRequest(scope: RequestScope): RequestGuard {
-    const previous = requestStateRef.current[scope];
-    previous.controller?.abort("superseded");
-    const controller = new AbortController();
-    const requestId = previous.id + 1;
-    requestStateRef.current[scope] = { id: requestId, controller };
-    return {
-      signal: controller.signal,
-      isCurrent: () => requestStateRef.current[scope].id === requestId && !controller.signal.aborted,
-      isAborted: () => controller.signal.aborted,
-      finish: () => {
-        if (requestStateRef.current[scope].id === requestId) {
-          requestStateRef.current[scope].controller = null;
-        }
-      },
-    };
-  }
-
   function cancelLongRequests() {
     stopAgentPolling();
     stopDirectionPolling();
-    (["resources", "literature", "direction", "paper-card", "memory", "rag", "decision", "agent"] as RequestScope[]).forEach(
-      (scope) => {
-        requestStateRef.current[scope].controller?.abort("project-switch");
-        requestStateRef.current[scope].controller = null;
-      },
-    );
+    cancelRequests([
+      "resources",
+      "literature",
+      "direction",
+      "paper-card",
+      "memory",
+      "rag",
+      "decision",
+      "agent",
+    ] satisfies RequestScope[]);
   }
 
   function startProgressMessages(messages: string[], intervalMs = 6500): () => void {
@@ -1333,33 +1058,6 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
     });
   }
 
-  function applyAgentRunSnapshot(projectId: string, status: ApiAgentRunStatusResponse) {
-    if (activeProjectIdRef.current !== projectId) {
-      return;
-    }
-    setAgentRunStatus(status);
-    setAgentRunWarnings(status.warnings ?? []);
-    applyBackendWorkflowSteps(status.workflow_steps);
-    if (status.artifact) {
-      setLastSavedArtifact(status.artifact);
-      setProjectArtifacts((items) => upsertArtifactDetail(items, status.artifact as ApiArtifact));
-      setProjectArtifactSummaries((items) => upsertArtifactSummary(items, artifactSummaryFromDetail(status.artifact as ApiArtifact)));
-    }
-    setAgentPlan((current) => {
-      if (!current || current.run_id !== status.run_id) {
-        return current;
-      }
-      return {
-        ...current,
-        status: status.status,
-        steps: status.steps,
-        artifact: status.artifact ?? current.artifact,
-      };
-    });
-    const statusMessage = status.run_status_summary || `Research Workflow Run ${status.status}`;
-    setApiMessage(status.current_tool && status.status === "running" ? `${statusMessage} 当前工具：${status.current_tool}` : statusMessage);
-  }
-
   async function refreshAgentProjectResources(projectId: string) {
     if (activeProjectIdRef.current !== projectId) {
       return;
@@ -1374,46 +1072,6 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       if (!isAbortError(error)) {
         setApiMessage(formatApiFailure(error, "刷新 Research Workflow Run 进度失败，请查看 API 日志。"));
       }
-    }
-  }
-
-  function startAgentRunPolling(runId: string, projectId: string) {
-    stopAgentPolling();
-    let inFlight = false;
-    const poll = async () => {
-      if (inFlight || activeProjectIdRef.current !== projectId) {
-        return;
-      }
-      inFlight = true;
-      try {
-        const status = await getAgentRunStatus(runId);
-        if (activeProjectIdRef.current !== projectId) {
-          return;
-        }
-        applyAgentRunSnapshot(projectId, status);
-        await refreshAgentProjectResources(projectId);
-        if (isTerminalAgentRunStatus(status.status)) {
-          stopAgentPolling();
-          setAgentBusy(false);
-        }
-      } catch (error) {
-        if (!isAbortError(error)) {
-          setApiMessage(formatApiFailure(error, "轮询 Research Workflow Run 状态失败，请查看 API 日志。"));
-        }
-      } finally {
-        inFlight = false;
-      }
-    };
-    void poll();
-    agentPollingRef.current = window.setInterval(() => {
-      void poll();
-    }, 1500);
-  }
-
-  function stopAgentPolling() {
-    if (agentPollingRef.current !== null) {
-      window.clearInterval(agentPollingRef.current);
-      agentPollingRef.current = null;
     }
   }
 
@@ -1586,58 +1244,6 @@ function formatApiFailure(error: unknown, fallback: string): string {
     return `${fallback} 后端返回 5xx：${normalized.detail}`;
   }
   return normalized.detail ? `${fallback} ${normalized.detail}` : fallback;
-}
-
-async function fetchProjectResourceSnapshot(
-  projectId: string,
-  options?: RequestInit,
-): Promise<ProjectResourceSnapshot> {
-  const [papersResult, timelineResult, artifactSummariesResult, paperCardsResult, directionRunResult] = await Promise.allSettled([
-    listProjectPapers(projectId, options),
-    getProjectTimeline(projectId, options),
-    listProjectArtifactSummaries(projectId, options),
-    listProjectPaperCards(projectId, options),
-    getLatestDirectionReviewRun(projectId, options),
-  ]);
-  const results = [papersResult, timelineResult, artifactSummariesResult, paperCardsResult, directionRunResult];
-  const aborted = results.find((result) => result.status === "rejected" && isAbortError(result.reason));
-  if (aborted?.status === "rejected") {
-    throw aborted.reason;
-  }
-
-  const snapshot: ProjectResourceSnapshot = { warnings: [] };
-  if (papersResult.status === "fulfilled") {
-    snapshot.papers = papersResult.value;
-  } else {
-    snapshot.warnings.push(projectResourceWarning("论文列表", papersResult.reason));
-  }
-  if (timelineResult.status === "fulfilled") {
-    snapshot.timeline = timelineResult.value;
-  } else {
-    snapshot.warnings.push(projectResourceWarning("运行时间线", timelineResult.reason));
-  }
-  if (artifactSummariesResult.status === "fulfilled") {
-    snapshot.artifactSummaries = artifactSummariesResult.value;
-    snapshot.artifacts = await loadHydrationArtifacts(artifactSummariesResult.value, options);
-  } else {
-    snapshot.warnings.push(projectResourceWarning("Artifact 列表", artifactSummariesResult.reason));
-  }
-  if (paperCardsResult.status === "fulfilled") {
-    snapshot.paperCards = paperCardsResult.value;
-  } else {
-    snapshot.warnings.push(projectResourceWarning("Paper Card 列表", paperCardsResult.reason));
-  }
-  if (directionRunResult.status === "fulfilled") {
-    snapshot.directionRun = directionRunResult.value;
-  } else {
-    snapshot.warnings.push(projectResourceWarning("Direction Review 运行状态", directionRunResult.reason));
-  }
-  return snapshot;
-}
-
-function projectResourceWarning(label: string, error: unknown): string {
-  const normalized = normalizeApiError(error);
-  return `${label}读取失败，其他项目数据已保留：${normalized.detail || normalized.message}`;
 }
 
 function emptyArtifactForView(view: ViewId): ArtifactContent {
@@ -1932,14 +1538,6 @@ function mergeWorkflowStatus(localStatus: WorkflowStepStatus, backendStatus: Wor
     error: 6,
   };
   return severity[localStatus] > severity[backendStatus] ? localStatus : backendStatus;
-}
-
-function isTerminalAgentRunStatus(status: string): boolean {
-  return ["completed", "completed_with_warnings", "partial", "failed", "cancelled"].includes(status);
-}
-
-function isTerminalDirectionRunStatus(status: string): boolean {
-  return ["complete", "partial", "blocked", "failed", "cancelled"].includes(status);
 }
 
 function isViewId(value: string): value is ViewId {
