@@ -2703,3 +2703,238 @@ test("restored durable Direction Review keeps polling after API restart and hand
   await expect(progress).toContainText("Direction Review 已在工具阶段边界取消。");
   await expect(page.getByRole("button", { name: "生成第 1 轮" })).toBeEnabled();
 });
+
+test("background hydration preserves scroll while real route changes reset it", async ({ page }) => {
+  const project = {
+    id: "project_e2e_scroll_stability",
+    title: "滚动位置稳定性回归",
+    description: "route identity and hydration scroll regression",
+    keyword: "evidence-aware workflow scroll stability",
+    field: "Artificial Intelligence",
+    language: "zh-CN",
+    workflow: "survey-to-experiment",
+    stage: "direction-review",
+    active_session_id: "session_e2e_scroll_stability",
+    created_at: "2026-07-31T00:00:00+00:00",
+    updated_at: "2026-07-31T00:00:00+00:00",
+  };
+  const papers = Array.from({ length: 10 }, (_, index) => ({
+    id: `paper_e2e_scroll_${index + 1}`,
+    project_id: project.id,
+    title: `Scroll Stability Paper ${index + 1}`,
+    authors: `Researcher ${index + 1}`,
+    abstract: "A structured abstract for testing route-stable background hydration.",
+    year: "2026",
+    type: "Method",
+    venue: "Fixture Conference",
+    source: "fixture",
+    url: `https://example.test/scroll-paper-${index + 1}`,
+    pdf_url: "",
+    relation: "directly relevant to scroll stability",
+    priority: "High",
+    code: "unknown",
+    relevance_score: 1.5,
+    relevance_quality: "strong",
+    matched_terms: ["scroll", "stability"],
+    review_required: false,
+    created_at: project.created_at,
+  }));
+  const sections = Array.from({ length: 12 }, (_, index) => ({
+    id: `section_${index + 1}`,
+    title: `Section ${index + 1}`,
+    content: `Paper Card section ${index + 1} keeps the reader tall enough for a stable scroll assertion.`,
+  }));
+  const readings = papers.map((paper, index) => ({
+    paper,
+    paper_id: paper.id,
+    paper_title: paper.title,
+    abstract_translation: `论文 ${index + 1} 的结构化摘要。`,
+    evidence_level: "abstract_only",
+    evidence_qualification: {
+      level: "abstract_only",
+      verified: false,
+      source_origin: "metadata.abstract",
+      character_count: paper.abstract.length,
+      page_count: 0,
+      section_names: [],
+      reason: "当前只有摘要证据。",
+    },
+    signals: {
+      task: "scroll stability evaluation",
+      method: "background artifact hydration",
+      dataset: "browser fixture",
+      metric: "workflow-main scrollTop",
+      baseline: "route identity",
+      claim: "same-route refresh must preserve scroll",
+      limitation: "fixture browser coverage",
+      prior_work_limitation: "",
+      contribution_type: "evaluation",
+      missing_signals: [],
+      signal_evidence: {},
+    },
+    sections,
+    weakest_assumption: "The browser uses workflow-main as its scroll container.",
+    minimal_reproduction: "Scroll, hydrate, and compare scrollTop.",
+    counterexample: "A new directionReview object resets scrollTop to zero.",
+    follow_up_idea: "Keep route navigation and resource refresh effects separate.",
+    research_sight: {},
+    why_selected: "Provides a tall, repeatable direction-review row.",
+    venue_signal: "Fixture",
+    self_read_priority: index < 3,
+    updated_at: project.updated_at,
+  }));
+  const directionPayload = {
+    schema_version: "direction_review.v2",
+    direction: project.keyword,
+    round: 1,
+    review_status: "complete",
+    target_paper_count: 10,
+    round_read_count: 10,
+    relevant_read_count: 10,
+    low_relevance_count: 0,
+    off_topic_count: 0,
+    total_read_count: 10,
+    relevance_coverage: {
+      candidate_count: 10,
+      returned_count: 10,
+      strong_match_count: 10,
+    },
+    scope: {
+      direction: project.keyword,
+      round: 1,
+      year_range: "2026",
+      included_scope: "Scroll stability fixtures.",
+      excluded_scope: "Unrelated UI behavior.",
+      subtopics: ["scroll stability"],
+      queries: [project.keyword],
+    },
+    baseline_map: {
+      direction: project.keyword,
+      task_definition: "Preserve scroll on same-route resource refresh.",
+      classic_baselines: [],
+      recent_strong_baselines: [],
+      alternative_paradigms: [],
+      common_benchmarks: [],
+      evaluation_risks: [],
+      open_questions: [],
+      action_plan: [],
+      generated_from: papers.map((paper) => paper.id),
+      evidence_summary: "Browser fixture.",
+      curator_notes: "Playwright regression fixture.",
+    },
+    papers: readings,
+    recommended_paper_ids: papers.slice(0, 3).map((paper) => paper.id),
+    direction_summary: "Direction Review fixture for background hydration.",
+    artifact_refs: [],
+    workflow_steps: [],
+    errors: [],
+  };
+  const directionArtifact = {
+    id: "artifact_e2e_scroll_direction",
+    project_id: project.id,
+    title: "direction_review_scroll_stability.md",
+    kind: "markdown",
+    content_markdown: "# Direction Review\n\nScroll stability fixture.",
+    content_json: JSON.stringify(directionPayload),
+    diff: "+ scroll stability fixture",
+    created_at: project.created_at,
+    updated_at: project.updated_at,
+  };
+  const runId = "direction_run_e2e_scroll_stability";
+  let runCompleted = false;
+  let artifactHydrations = 0;
+  const runSnapshot = (complete: boolean) => ({
+    run_id: runId,
+    project_id: project.id,
+    direction: project.keyword,
+    round: 1,
+    status: complete ? "complete" : "running",
+    stage: complete ? "completed" : "reading",
+    progress: complete ? 100 : 70,
+    message: complete ? "Direction Review hydration refreshed." : "Direction Review is still running.",
+    notices: [],
+    result: complete ? directionPayload : null,
+    queued_at: project.created_at,
+    started_at: project.created_at,
+    current_tool: complete ? "" : "reading",
+    last_heartbeat: project.updated_at,
+    created_at: project.created_at,
+    updated_at: project.updated_at,
+    completed_at: complete ? project.updated_at : null,
+  });
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok", service: "scholarflow-api", version: "0.1.0" } });
+  });
+  await page.route("**/projects", async (route) => {
+    await route.fulfill({ json: [project] });
+  });
+  await page.route(`**/projects/${project.id}/papers`, async (route) => {
+    await route.fulfill({ json: papers });
+  });
+  await page.route(`**/projects/${project.id}/timeline`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/paper-cards`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route(`**/projects/${project.id}/artifacts/summary`, async (route) => {
+    await route.fulfill({ json: [artifactSummary(directionArtifact)] });
+  });
+  await page.route(`**/artifacts/${directionArtifact.id}`, async (route) => {
+    artifactHydrations += 1;
+    await route.fulfill({
+      json: {
+        ...directionArtifact,
+        content_json: JSON.stringify({
+          ...directionPayload,
+          hydration_revision: artifactHydrations,
+        }),
+      },
+    });
+  });
+  await page.route(`**/projects/${project.id}/direction-review-runs/latest`, async (route) => {
+    await route.fulfill({ json: runSnapshot(runCompleted) });
+  });
+  await page.route(`**/projects/${project.id}/direction-review-runs/${runId}`, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    runCompleted = true;
+    await route.fulfill({ json: runSnapshot(true) });
+  });
+
+  await page.setViewportSize({ width: 1280, height: 500 });
+  await page.goto("/#direction-review");
+  await expect(page.getByRole("region", { name: "direction paper cards" })).toBeVisible();
+  const main = page.locator(".workflow-main");
+  await expect.poll(() => main.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeGreaterThan(600);
+
+  await main.evaluate((element) => element.scrollTo({ top: 700, behavior: "auto" }));
+  const preservedTop = await main.evaluate((element) => element.scrollTop);
+  expect(preservedTop).toBeGreaterThanOrEqual(600);
+  const hydrationCountBeforeRefresh = artifactHydrations;
+  await expect.poll(() => artifactHydrations, { timeout: 7000 }).toBeGreaterThan(hydrationCountBeforeRefresh);
+  await expect.poll(() => main.evaluate((element) => element.scrollTop)).toBeGreaterThan(preservedTop - 80);
+
+  await page.locator(".workflow-step", { hasText: "Paper Table" }).click();
+  await expect(page).toHaveURL(/#paper-table/);
+  await expect.poll(() => main.evaluate((element) => element.scrollTop)).toBeLessThan(10);
+
+  await page.locator(".workflow-step", { hasText: "Direction Review" }).click();
+  await page
+    .getByRole("region", { name: "direction paper cards" })
+    .getByRole("button", { name: `打开 Paper Card：${papers[0].title}`, exact: true })
+    .click();
+  await expect(page).toHaveURL(new RegExp(`#paper-reader/${papers[0].id}`));
+  await expect(page.getByRole("heading", { name: papers[0].title, exact: true })).toBeFocused();
+  await expect.poll(() => main.evaluate((element) => element.scrollTop)).toBeLessThan(10);
+
+  await expect.poll(() => main.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeGreaterThan(600);
+  await main.evaluate((element) => element.scrollTo({ top: 700, behavior: "auto" }));
+  expect(await main.evaluate((element) => element.scrollTop)).toBeGreaterThanOrEqual(600);
+  await page.getByRole("button", { name: "下一篇论文" }).click();
+  await expect(page).toHaveURL(new RegExp(`#paper-reader/${papers[1].id}`));
+  await expect(page.getByRole("heading", { name: papers[1].title, exact: true })).toBeFocused();
+  await expect.poll(() => main.evaluate((element) => element.scrollTop)).toBeLessThan(10);
+  await page.waitForTimeout(150);
+  expect(await main.evaluate((element) => element.scrollTop)).toBeLessThan(10);
+});

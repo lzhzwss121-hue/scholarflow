@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 EvidenceLevel = Literal[
@@ -923,6 +923,8 @@ class ResearchMemoryQueryResponse(BaseModel):
 
 
 class AgentPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     project_id: str
     task: str = Field(min_length=1, max_length=1000)
 

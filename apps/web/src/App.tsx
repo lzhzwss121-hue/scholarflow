@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { navItems, type ViewId } from "./mockData";
 import { ViewErrorBoundary } from "./components/ViewErrorBoundary";
 import { useWorkflowController } from "./lib/workflowService";
@@ -50,7 +50,10 @@ function readRouteFromHash(): AppRoute {
 
 export function App() {
   const [route, setRoute] = useState<AppRoute>(() => readRouteFromHash());
+  const workflowMainRef = useRef<HTMLElement | null>(null);
+  const previousRouteIdentityRef = useRef<string | null>(null);
   const activeView = route.view;
+  const routeIdentity = `${activeView}:${route.paperId}`;
   const { actions, viewModel } = useWorkflowController(activeView, setActiveViewAndHash);
   const activeNavItem = useMemo(
     () => navItems.find((item) => item.id === activeView),
@@ -71,16 +74,24 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const main = document.querySelector<HTMLElement>(".workflow-main");
-    main?.scrollTo({ top: 0, behavior: "auto" });
-    if (!route.paperId || !viewModel.directionReview) {
+    const previousRouteIdentity = previousRouteIdentityRef.current;
+    previousRouteIdentityRef.current = routeIdentity;
+    if (previousRouteIdentity === routeIdentity) {
+      return;
+    }
+    workflowMainRef.current?.scrollTo({ top: 0, behavior: "auto" });
+  }, [routeIdentity]);
+
+  const hasHydratedDirectionReview = Boolean(viewModel.directionReview);
+  useEffect(() => {
+    if (!route.paperId || !hasHydratedDirectionReview) {
       return;
     }
     const frame = window.requestAnimationFrame(() => {
-      document.querySelector<HTMLElement>("#direction-paper-title")?.focus();
+      document.querySelector<HTMLElement>("#direction-paper-title")?.focus({ preventScroll: true });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [route.paperId, viewModel.directionReview]);
+  }, [route.paperId, hasHydratedDirectionReview]);
 
   function setActiveViewAndHash(view: ViewId) {
     setRoute({ view, paperId: "", from: null });
@@ -129,6 +140,7 @@ export function App() {
         activeView={activeView}
         actions={actions}
         ariaLabel={activeNavItem?.label ?? "ScholarFlow workflow"}
+        mainRef={workflowMainRef}
         onSelectView={setActiveViewAndHash}
         viewModel={viewModel}
       >

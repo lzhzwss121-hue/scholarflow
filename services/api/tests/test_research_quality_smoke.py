@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scholarflow_api import full_text, literature
+from scholarflow_api.agent_core import LocalHeuristicProvider
 from scholarflow_api.baseline_map import build_baseline_map
 from scholarflow_api.direction_review import (
     DirectionPaperReading,
@@ -25,9 +26,20 @@ from scholarflow_api import research_memory as research_memory_module
 from scholarflow_api.research_memory import query_research_memory, score_memory_record
 from scholarflow_api.research_sight import build_research_sight
 from scholarflow_api.text_utils import extract_terms
+from model_test_support import offline_model_environment
 
 
 class ResearchQualitySmokeTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.offline_model_context = offline_model_environment()
+        self.offline_model = self.offline_model_context.__enter__()
+        self.addCleanup(
+            self.offline_model_context.__exit__,
+            None,
+            None,
+            None,
+        )
+
     def test_literature_coverage_distinguishes_eligible_from_returned_limit(self) -> None:
         papers = [
             literature.PaperCandidate(
@@ -1649,11 +1661,17 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                     AgentPlanRequest(
                         project_id=project.id,
                         task="Run a trustworthy VLM research workflow",
-                        provider="local",
                     ),
                 )
 
         tools = [step.tool for step in plan.steps]
+        self.assertTrue(plan.provider.startswith("local:"))
+        self.assertIsInstance(
+            self.offline_model.provider,
+            LocalHeuristicProvider,
+        )
+        self.offline_model.provider_factory.assert_called_once()
+        self.offline_model.external_request.assert_not_called()
         for required_tool in [
             "literature_search",
             "direction_review",
@@ -1664,6 +1682,51 @@ class ResearchQualitySmokeTest(unittest.TestCase):
         ]:
             self.assertIn(required_tool, tools)
         self.assertNotIn("search_mock_papers", tools)
+
+    def test_agent_plan_stays_offline_under_hostile_provider_environment(self) -> None:
+        hostile_environment = {
+            "SCHOLARFLOW_MODEL_PROVIDER": "openrouter",
+            "OPENROUTER_API_KEY": "fake-openrouter-key",
+            "OPENROUTER_BASE_URL": "https://provider.invalid",
+            "DEEPSEEK_API_KEY": "fake-deepseek-key",
+            "DEEPSEEK_BASE_URL": "https://provider.invalid",
+        }
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmpdir:
+            db_path = Path(tmpdir) / "scholarflow.sqlite3"
+            with patch.dict(
+                os.environ,
+                {
+                    **hostile_environment,
+                    "SCHOLARFLOW_DB_PATH": str(db_path),
+                },
+                clear=False,
+            ):
+                from scholarflow_api.database import init_db
+                try:
+                    from scholarflow_api import main as main_module
+                except ModuleNotFoundError as error:
+                    if error.name == "fastapi":
+                        self.skipTest("FastAPI is not installed in the current Python environment.")
+                    raise
+                from scholarflow_api.schemas import AgentPlanRequest, ProjectCreate
+
+                init_db()
+                project = main_module.create_project(
+                    ProjectCreate(
+                        title="Offline Agent Plan",
+                        keyword="provider isolation",
+                    ),
+                )
+                plan = main_module.create_agent_plan(
+                    AgentPlanRequest(
+                        project_id=project.id,
+                        task="Remain deterministic under hostile host configuration",
+                    ),
+                )
+
+        self.assertTrue(plan.provider.startswith("local:"))
+        self.offline_model.provider_factory.assert_called_once()
+        self.offline_model.external_request.assert_not_called()
 
     def test_new_user_project_starts_with_empty_paper_table(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1735,7 +1798,6 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                         AgentPlanRequest(
                             project_id="local-bootstrap",
                             task="Run real research workflow on demo",
-                            provider="local",
                         ),
                     )
 
@@ -1832,7 +1894,6 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                         AgentPlanRequest(
                             project_id=project.id,
                             task="Run an evidence faithfulness benchmark workflow",
-                            provider="local",
                         ),
                     )
                     result = main_module.execute_agent_run(plan.run_id, AgentExecuteRequest(confirmed=True))
@@ -1901,7 +1962,6 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                     AgentPlanRequest(
                         project_id=project.id,
                         task="Run then cancel a trustworthy VLM workflow",
-                        provider="local",
                     ),
                 )
                 status = main_module.cancel_agent_run(plan.run_id)
@@ -1936,7 +1996,6 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                     AgentPlanRequest(
                         project_id=project.id,
                         task="Queue then cancel",
-                        provider="local",
                     ),
                 )
                 started = main_module.execute_agent_run(

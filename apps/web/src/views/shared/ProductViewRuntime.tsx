@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, type Ref, useEffect, useState } from "react";
 import {
   AlertTriangle,
   ArrowRight,
@@ -121,6 +121,7 @@ export function WorkflowShell({
   actions,
   ariaLabel,
   children,
+  mainRef,
   onSelectView,
   viewModel,
 }: {
@@ -128,6 +129,7 @@ export function WorkflowShell({
   actions: WorkflowActions;
   ariaLabel: string;
   children: ReactNode;
+  mainRef: Ref<HTMLElement>;
   onSelectView: (view: ViewId) => void;
   viewModel: WorkflowViewModel;
 }) {
@@ -273,7 +275,7 @@ export function WorkflowShell({
         </footer>
       </aside>
 
-      <main className="workflow-main" aria-label={ariaLabel}>
+      <main className="workflow-main" aria-label={ariaLabel} ref={mainRef}>
         <header className="workflow-header">
           <div className="workflow-header-copy">
             {!sidebarOpen ? (

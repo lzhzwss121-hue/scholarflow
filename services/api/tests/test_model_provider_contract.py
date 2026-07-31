@@ -13,6 +13,8 @@ import time
 import unittest
 from unittest.mock import patch
 
+from pydantic import ValidationError
+
 from scholarflow_api.agent_core import (
     DeepSeekProvider,
     LocalHeuristicProvider,
@@ -348,15 +350,20 @@ class ModelProviderContractTests(unittest.TestCase):
         self.assertNotIn(secret, output.getvalue())
         self.assertEqual(tuple(audit), ("deepseek", "deepseek", "success", 1))
 
-    def test_local_provider_contract_is_complete(self) -> None:
+    def test_agent_plan_request_rejects_provider_override(self) -> None:
         from scholarflow_api.schemas import AgentPlanRequest
 
-        request = AgentPlanRequest(
-            project_id="project-provider",
-            task="Plan locally",
-            provider="deepseek",
-        )
-        self.assertNotIn("provider", request.model_dump())
+        with self.assertRaises(ValidationError) as context:
+            AgentPlanRequest(
+                project_id="project-provider",
+                task="Plan locally",
+                provider="deepseek",
+            )
+
+        self.assertIn("provider", str(context.exception))
+        self.assertIn("Extra inputs are not permitted", str(context.exception))
+
+    def test_local_provider_contract_is_complete(self) -> None:
         provider = LocalHeuristicProvider()
         plan = provider.create_plan("Local plan", self.project)
         synthesis = provider.synthesize_answer(
