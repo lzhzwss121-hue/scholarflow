@@ -5,7 +5,10 @@ import json
 from fastapi import HTTPException
 
 from scholarflow_api.agent_core import (
+    BOUNDED_AGENT_LABEL,
+    bounded_agent_budgets_from_env,
     get_model_provider,
+    provider_supports_bounded_actions,
     render_plan_markdown,
     validate_workflow_plan,
 )
@@ -54,6 +57,52 @@ def create_agent_plan(payload: AgentPlanRequest) -> AgentPlanResponse:
         draft = provider.create_plan(payload.task, project)
         plan = draft.to_dict()
         validate_workflow_plan(plan)
+        budgets = bounded_agent_budgets_from_env()
+        execution_mode = (
+            "bounded_observe_reason_act"
+            if provider_supports_bounded_actions(provider)
+            and draft.model_call is not None
+            and draft.model_call.response_status == "success"
+            else "deterministic_tool_graph"
+        )
+        initial_model_calls = (
+            1
+            if draft.model_call is not None
+            and draft.model_call.external_data_sent
+            else 0
+        )
+        initial_cost = (
+            float(draft.model_call.estimated_cost_usd or 0.0)
+            if draft.model_call is not None
+            else 0.0
+        )
+        plan["agent_label"] = BOUNDED_AGENT_LABEL
+        plan["execution_mode"] = execution_mode
+        plan["bounded_agent"] = {
+            "version": "bounded-research-agent.v1",
+            "budgets": budgets.to_dict(),
+            "steps_executed": 0,
+            "replans": 0,
+            "model_calls": initial_model_calls,
+            "estimated_cost_usd": initial_cost,
+            "runtime_seconds_used": 0.0,
+            "consecutive_failures": 0,
+            "trace": [],
+            "last_observation": {
+                "type": "plan_confirmed",
+                "summary": "User confirmation is required before any tool executes.",
+            },
+            "fallback_reason": (
+                ""
+                if execution_mode == "bounded_observe_reason_act"
+                else (
+                    draft.model_call.fallback_reason
+                    if draft.model_call is not None
+                    else "provider_has_no_tool_call"
+                )
+            ),
+        }
+        plan["user_confirmed"] = False
         plan["queued_at"] = now
         plan["started_at"] = ""
         plan["completed_at"] = None
@@ -74,7 +123,7 @@ def create_agent_plan(payload: AgentPlanRequest) -> AgentPlanResponse:
                 ensure_ascii=False,
                 indent=2,
             ),
-            diff="+ Created Research Workflow Run plan artifact",
+            diff="+ Created Bounded Research Agent plan artifact",
             now=now,
         )
         insert_agent_run(
@@ -104,7 +153,7 @@ def create_agent_plan(payload: AgentPlanRequest) -> AgentPlanResponse:
             session_id,
             "agent.create_plan",
             "done",
-            "已生成 Research Workflow Run 计划，并等待用户确认执行。",
+            "已生成 Bounded Research Agent 计划，并等待用户确认执行。",
             now,
         )
         for step in plan["steps"]:
@@ -131,6 +180,7 @@ def create_agent_plan(payload: AgentPlanRequest) -> AgentPlanResponse:
         session_id=session_id,
         task=payload.task,
         provider=draft.provider,
+        execution_mode=execution_mode,
         model_call=model_call,
         status="planned",
         rationale=plan["rationale"],

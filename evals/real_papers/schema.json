@@ -1,0 +1,268 @@
+{
+  "$defs": {
+    "AcceptableCitation": {
+      "additionalProperties": false,
+      "properties": {
+        "citation_id": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Citation Id",
+          "type": "string"
+        },
+        "locator": {
+          "$ref": "#/$defs/EvidenceLocator"
+        },
+        "page": {
+          "minimum": 1,
+          "title": "Page",
+          "type": "integer"
+        },
+        "paper_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Paper Id",
+          "type": "string"
+        },
+        "section": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Section",
+          "type": "string"
+        }
+      },
+      "required": [
+        "citation_id",
+        "paper_id",
+        "page",
+        "section",
+        "locator"
+      ],
+      "title": "AcceptableCitation",
+      "type": "object"
+    },
+    "EvidenceLocator": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "paragraph",
+            "table",
+            "figure"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "title": "EvidenceLocator",
+      "type": "object"
+    },
+    "RealPaperEvaluationCase": {
+      "additionalProperties": false,
+      "properties": {
+        "acceptable_citations": {
+          "items": {
+            "$ref": "#/$defs/AcceptableCitation"
+          },
+          "title": "Acceptable Citations",
+          "type": "array"
+        },
+        "adjudication_status": {
+          "enum": [
+            "unreviewed",
+            "pending",
+            "adjudicated"
+          ],
+          "title": "Adjudication Status",
+          "type": "string"
+        },
+        "annotator": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Annotator",
+          "type": "string"
+        },
+        "answerable": {
+          "title": "Answerable",
+          "type": "boolean"
+        },
+        "case_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Case Id",
+          "type": "string"
+        },
+        "contradiction_claims": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Contradiction Claims",
+          "type": "array"
+        },
+        "contradiction_notes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Contradiction Notes",
+          "type": "array"
+        },
+        "domain": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Domain",
+          "type": "string"
+        },
+        "evidence_level": {
+          "enum": [
+            "metadata_only",
+            "abstract_only",
+            "supplemental_text",
+            "full_text"
+          ],
+          "title": "Evidence Level",
+          "type": "string"
+        },
+        "gold_claim": {
+          "maxLength": 5000,
+          "title": "Gold Claim",
+          "type": "string"
+        },
+        "label_origin": {
+          "enum": [
+            "human_annotation",
+            "imported_bibliographic_fixture"
+          ],
+          "title": "Label Origin",
+          "type": "string"
+        },
+        "locator": {
+          "$ref": "#/$defs/EvidenceLocator"
+        },
+        "page": {
+          "minimum": 1,
+          "title": "Page",
+          "type": "integer"
+        },
+        "paper_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Paper Id",
+          "type": "string"
+        },
+        "project_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Project Id",
+          "type": "string"
+        },
+        "question": {
+          "maxLength": 3000,
+          "minLength": 1,
+          "title": "Question",
+          "type": "string"
+        },
+        "section": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Section",
+          "type": "string"
+        },
+        "source": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "version": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id",
+        "project_id",
+        "domain",
+        "paper_id",
+        "title",
+        "source",
+        "version",
+        "question",
+        "answerable",
+        "gold_claim",
+        "evidence_level",
+        "page",
+        "section",
+        "locator",
+        "acceptable_citations",
+        "contradiction_notes",
+        "annotator",
+        "label_origin",
+        "adjudication_status"
+      ],
+      "title": "RealPaperEvaluationCase",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/RealPaperEvaluationCase"
+      },
+      "minItems": 1,
+      "title": "Cases",
+      "type": "array"
+    },
+    "dataset_id": {
+      "maxLength": 300,
+      "minLength": 1,
+      "title": "Dataset Id",
+      "type": "string"
+    },
+    "description": {
+      "maxLength": 3000,
+      "minLength": 1,
+      "title": "Description",
+      "type": "string"
+    },
+    "evaluation_tier": {
+      "enum": [
+        "real_paper_unreviewed",
+        "expert_labelled"
+      ],
+      "title": "Evaluation Tier",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "real_paper_eval.v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "dataset_id",
+    "evaluation_tier",
+    "description",
+    "cases"
+  ],
+  "title": "RealPaperDataset",
+  "type": "object"
+}

@@ -95,6 +95,9 @@ export function useAgentRunController({
       }
       return {
         ...current,
+        agent_label: status.agent_label ?? current.agent_label,
+        execution_mode: status.execution_mode ?? current.execution_mode,
+        model_call: status.model_call ?? current.model_call,
         status: status.status,
         steps: status.steps,
         artifact: status.artifact ?? current.artifact,
@@ -102,7 +105,7 @@ export function useAgentRunController({
     });
     const statusMessage =
       status.run_status_summary ||
-      `Research Workflow Run ${status.status}`;
+      `Bounded Research Agent ${status.status}`;
     setApiMessage(
       status.current_tool && status.status === "running"
         ? `${statusMessage} 当前工具：${status.current_tool}`
@@ -134,7 +137,7 @@ export function useAgentRunController({
           setApiMessage(
             formatApiFailure(
               error,
-              "轮询 Research Workflow Run 状态失败，请查看 API 日志。",
+              "轮询 Bounded Research Agent 状态失败，请查看 API 日志。",
             ),
           );
         }
@@ -227,6 +230,9 @@ export function useAgentRunController({
       }
       applySnapshot(agentPlan.project_id, {
         run_id: result.run_id,
+        agent_label: result.agent_label,
+        execution_mode: result.execution_mode,
+        model_call: result.model_call,
         status: result.status,
         steps: result.steps,
         summary_metrics: result.summary_metrics,
@@ -257,7 +263,7 @@ export function useAgentRunController({
         setApiMessage(
           formatApiFailure(
             error,
-            "执行 Research Workflow Run 失败，请查看 API 日志。",
+            "执行 Bounded Research Agent 失败，请查看 API 日志。",
           ),
         );
         setAgentBusy(false);
@@ -278,7 +284,7 @@ export function useAgentRunController({
       applySnapshot(projectId, status);
       setApiMessage(
         status.run_status_summary ||
-          "已请求取消 Research Workflow Run。",
+          "已请求取消 Bounded Research Agent。",
       );
       await refreshProjectResources(projectId);
       if (isTerminalAgentRunStatus(status.status)) {
@@ -290,7 +296,7 @@ export function useAgentRunController({
         setApiMessage(
           formatApiFailure(
             error,
-            "取消 Research Workflow Run 失败，请查看 API 日志。",
+            "取消 Bounded Research Agent 失败，请查看 API 日志。",
           ),
         );
       }

@@ -7,15 +7,73 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scholarflow_api.rag_benchmark import (
+    CONSTRUCTED_FIXTURE_DISCLAIMER,
     PROJECT_ID,
     benchmark_cases,
+    build_evaluation_report,
     evidence_documents,
+    render_evaluation_markdown,
     run_benchmark,
     seed_benchmark,
 )
+from scholarflow_api.real_paper_evaluation import load_real_paper_dataset
 
 
 class RagBenchmarkContractTest(unittest.TestCase):
+    def test_report_keeps_constructed_real_expert_and_live_sections_separate(self) -> None:
+        constructed = {
+            "benchmark_version": "evidence_hybrid_rag.v1",
+            "case_count": 135,
+            "metrics": {"recall_at_5": 1.0},
+        }
+        report = build_evaluation_report(
+            constructed,
+            real_dataset_path=Path("evals/real_papers/cases.unreviewed.json"),
+            real_predictions_path=None,
+        )
+
+        self.assertEqual(
+            set(report["sections"]),
+            {
+                "constructed_fixture",
+                "real_paper_unreviewed",
+                "expert_labelled",
+                "live_external_smoke",
+            },
+        )
+        self.assertEqual(report["sections"]["constructed_fixture"]["status"], "complete")
+        self.assertEqual(report["sections"]["real_paper_unreviewed"]["status"], "blocked")
+        self.assertEqual(report["sections"]["expert_labelled"]["status"], "blocked")
+        self.assertEqual(report["sections"]["live_external_smoke"]["status"], "not_run")
+        self.assertFalse(report["sections"]["live_external_smoke"]["fixture_fallback_used"])
+        self.assertIn("不得描述为真实论文", CONSTRUCTED_FIXTURE_DISCLAIMER)
+        markdown = render_evaluation_markdown(report)
+        self.assertIn("constructed_fixture", markdown)
+        self.assertIn("real_paper_unreviewed", markdown)
+        self.assertIn("expert_labelled", markdown)
+        self.assertIn("live_external_smoke", markdown)
+        self.assertIn("不代表真实科研准确率", markdown)
+
+    def test_repository_real_paper_records_are_valid_but_explicitly_unreviewed(self) -> None:
+        dataset = load_real_paper_dataset(
+            Path("evals/real_papers/cases.unreviewed.json")
+        )
+        self.assertEqual(dataset.evaluation_tier, "real_paper_unreviewed")
+        self.assertTrue(all(case.adjudication_status == "unreviewed" for case in dataset.cases))
+        self.assertTrue(
+            all(
+                case.page and case.section and case.locator.value
+                for case in dataset.cases
+            )
+        )
+        self.assertTrue(
+            all(
+                case.acceptable_citations
+                for case in dataset.cases
+                if case.answerable
+            )
+        )
+
     def test_fixed_offline_benchmark_has_required_scope_and_traps(self) -> None:
         cases = benchmark_cases()
         answerable = [case for case in cases if not case.should_refuse]

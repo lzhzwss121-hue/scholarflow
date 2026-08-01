@@ -4,7 +4,7 @@
 
 ScholarFlow 将“输入研究方向”推进为一条可持续的研究流程：检索论文、阅读证据、建立项目记忆、分析研究空白，并生成可核验的实验计划。它不是论文搜索框，也不会把摘要包装成全文结论。
 
-默认入口称为 **Research Workflow Run**：用户确认后，系统按固定、可恢复的工具图执行。它不是无限自治 Agent。可选模型只负责查询扩展、阅读计划建议、候选论断草稿与解释表达；证据等级、引用完整性、状态机、拒答和 Experiment readiness 始终由确定性代码决定。
+默认入口称为 **Bounded Research Agent**：用户确认后，具备 tool-call 能力的 provider 在预算和 ToolRegistry allowlist 内执行 Observe → Reason → Act；本地 provider 或模型调用失败时回退到固定、可恢复的确定性工具图。它不是无限自治 Agent。证据等级、引用完整性、状态机、拒答和 Experiment readiness 始终由确定性代码决定。
 
 ![ScholarFlow 工作台](docs/assets/scholarflow-dashboard.png)
 
@@ -175,6 +175,35 @@ ScholarFlow 提供两条互不覆盖的查询通道：
 
 默认召回和回答均在本地运行：SQLite FTS5/BM25 负责词法召回，本地 lexical hash 只作为词面通道，回答只摘录命中证据。Lexical hash 不是语义 embedding。需要更强的语义检索或综合回答时，可以在后端环境变量中显式启用远程 provider；启用后，选中的文本或查询会发送给第三方服务。
 
+### RAG 评测证据边界
+
+`npm run eval:rag` 保留固定的 135-case 构造型 regression contract（105 个可回答问题、30 个应拒答问题）。该数据只检查检索、citation、拒答、矛盾和证据等级代码回归；即使指标为 `1.0`，也不代表真实论文问答准确率、科研结论真实或专家 gold 表现。
+
+离线报告将以下证据层级完全分栏：
+
+- `constructed_fixture`：固定构造回归数据。
+- `real_paper_unreviewed`：真实论文和可人工定位页码/章节/段落/表格/图，但尚未经过专家裁决。
+- `expert_labelled`：仅接受全部由人类标注并 adjudicated 的数据；模型生成答案不能成为 gold label。
+- `live_external_smoke`：只检查当前 arXiv 等外部连接，必须独立运行和报告。
+
+真实论文 schema、未审核样例和标注规则见 [`evals/real_papers/`](evals/real_papers/README.md)。离线评测会生成机器可读 JSON 与人工可读 Markdown：
+
+```bash
+SCHOLARFLOW_DB_PATH=/private/tmp/scholarflow-rag-eval.sqlite3 \
+SCHOLARFLOW_REAL_EVAL_PREDICTIONS=evals/real_papers/predictions.schema-fixture.json \
+npm run eval:rag
+```
+
+其中 prediction fixture 有意保留一个错误的 BERT 表格主张，用于证明 evaluator 会降低 answer precision、记录 unsupported claim 和 contradiction escape；它不是系统真实表现，也不是专家 gold。
+
+Live external smoke 使用独立命令：
+
+```bash
+npm run eval:rag:live -- --report-dir /private/tmp/scholarflow-rag-live-smoke
+```
+
+外部请求失败时报告保持 `partial`/`blocked`，不会自动替换为 fixture 后仍声称 live 成功。
+
 ## Gap Board 与 Experiment Plan
 
 Gap Board 根据跨论文证据区分：
@@ -222,7 +251,12 @@ examples/workflows/     公开示例
 | 变量 | 默认值 | 作用 |
 | --- | --- | --- |
 | `OPENALEX_API_KEY` | 空 | 提高 OpenAlex 可用额度 |
-| `SCHOLARFLOW_MODEL_PROVIDER` | `local` | Workflow 建议 provider：`local`、`openrouter` 或 `deepseek` |
+| `SCHOLARFLOW_MODEL_PROVIDER` | `local` | Plan/action provider：`local`、`openrouter` 或 `deepseek` |
+| `SCHOLARFLOW_AGENT_MAX_STEPS` | `8` | Bounded Research Agent 的最大工具步数 |
+| `SCHOLARFLOW_AGENT_MAX_REPLANS` | `2` | 失败后允许的最大受限重规划次数 |
+| `SCHOLARFLOW_AGENT_MAX_RUNTIME_SECONDS` | `900` | 单次执行累计运行时间上限 |
+| `SCHOLARFLOW_AGENT_MAX_MODEL_CALLS` | `8` | 包含计划与逐轮决策的模型调用上限 |
+| `SCHOLARFLOW_AGENT_MAX_COST_USD` | 空 | 可选费用上限；provider 未报告费用时不伪造估算 |
 | `OPENROUTER_API_KEY` | 空 | 可选的 OpenRouter Workflow/RAG 服务 |
 | `DEEPSEEK_API_KEY` | 空 | 可选的 DeepSeek Workflow 建议服务 |
 | `SCHOLARFLOW_DB_PATH` | `services/api/.data/scholarflow.sqlite3` | 手动启动模式的数据库路径 |
@@ -323,7 +357,7 @@ curl -fsS http://127.0.0.1:8000/health
 <details>
 <summary>没有 API Key 能否运行？</summary>
 
-可以。默认 Research Workflow Run 使用本地确定性工具图；如果后端选择了 OpenRouter/DeepSeek 但没有 key，UI 会明确显示 local fallback。论文检索仍需要连接 arXiv/OpenAlex。
+可以。默认 Bounded Research Agent 在 local provider 下使用确定性工具图 fallback；如果后端选择了 OpenRouter/DeepSeek 但没有 key，UI 会明确显示 local fallback。论文检索仍需要连接 arXiv/OpenAlex。
 
 </details>
 

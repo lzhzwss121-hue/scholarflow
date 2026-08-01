@@ -975,6 +975,13 @@ class ModelCallAuditRecord(BaseModel):
     requested_provider: str = ""
     requested_model: str = ""
     external_data_sent: bool = False
+    estimated_cost_usd: float | None = None
+
+
+AgentExecutionModeLiteral = Literal[
+    "bounded_observe_reason_act",
+    "deterministic_tool_graph",
+]
 
 
 class AgentRun(BaseModel):
@@ -999,7 +1006,8 @@ class AgentPlanResponse(BaseModel):
     task: str
     provider: str
     run_kind: Literal["research_workflow"] = "research_workflow"
-    execution_mode: Literal["deterministic_tool_graph"] = "deterministic_tool_graph"
+    agent_label: Literal["Bounded Research Agent"] = "Bounded Research Agent"
+    execution_mode: AgentExecutionModeLiteral = "bounded_observe_reason_act"
     model_call: ModelCallAuditRecord
     status: AgentRunStatusLiteral
     rationale: str
@@ -1010,7 +1018,8 @@ class AgentPlanResponse(BaseModel):
 class AgentExecuteResponse(BaseModel):
     run_id: str
     run_kind: Literal["research_workflow"] = "research_workflow"
-    execution_mode: Literal["deterministic_tool_graph"] = "deterministic_tool_graph"
+    agent_label: Literal["Bounded Research Agent"] = "Bounded Research Agent"
+    execution_mode: AgentExecutionModeLiteral = "bounded_observe_reason_act"
     model_call: ModelCallAuditRecord | None = None
     status: AgentRunStatusLiteral
     artifact: Artifact | None = None
@@ -1033,7 +1042,8 @@ class AgentExecuteResponse(BaseModel):
 class AgentRunStatusResponse(BaseModel):
     run_id: str
     run_kind: Literal["research_workflow"] = "research_workflow"
-    execution_mode: Literal["deterministic_tool_graph"] = "deterministic_tool_graph"
+    agent_label: Literal["Bounded Research Agent"] = "Bounded Research Agent"
+    execution_mode: AgentExecutionModeLiteral = "bounded_observe_reason_act"
     model_call: ModelCallAuditRecord | None = None
     status: AgentRunStatusLiteral
     steps: list[AgentPlanStep]

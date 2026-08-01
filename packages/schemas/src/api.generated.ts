@@ -9,7 +9,8 @@ export interface components {
     "AgentExecuteResponse": {
         "run_id": string;
         "run_kind"?: "research_workflow";
-        "execution_mode"?: "deterministic_tool_graph";
+        "agent_label"?: "Bounded Research Agent";
+        "execution_mode"?: "bounded_observe_reason_act" | "deterministic_tool_graph";
         "model_call"?: components["schemas"]["ModelCallAuditRecord"] | null;
         "status": "planned" | "running" | "completed" | "completed_with_warnings" | "partial" | "failed" | "cancelled";
         "artifact"?: components["schemas"]["Artifact"] | null;
@@ -43,7 +44,8 @@ export interface components {
         "task": string;
         "provider": string;
         "run_kind"?: "research_workflow";
-        "execution_mode"?: "deterministic_tool_graph";
+        "agent_label"?: "Bounded Research Agent";
+        "execution_mode"?: "bounded_observe_reason_act" | "deterministic_tool_graph";
         "model_call": components["schemas"]["ModelCallAuditRecord"];
         "status": "planned" | "running" | "completed" | "completed_with_warnings" | "partial" | "failed" | "cancelled";
         "rationale": string;
@@ -63,7 +65,8 @@ export interface components {
     "AgentRunStatusResponse": {
         "run_id": string;
         "run_kind"?: "research_workflow";
-        "execution_mode"?: "deterministic_tool_graph";
+        "agent_label"?: "Bounded Research Agent";
+        "execution_mode"?: "bounded_observe_reason_act" | "deterministic_tool_graph";
         "model_call"?: components["schemas"]["ModelCallAuditRecord"] | null;
         "status": "planned" | "running" | "completed" | "completed_with_warnings" | "partial" | "failed" | "cancelled";
         "steps": Array<components["schemas"]["AgentPlanStep"]>;
@@ -370,6 +373,7 @@ export interface components {
         "requested_provider"?: string;
         "requested_model"?: string;
         "external_data_sent"?: boolean;
+        "estimated_cost_usd"?: number | null;
       };
     "Paper": {
         "id": string;

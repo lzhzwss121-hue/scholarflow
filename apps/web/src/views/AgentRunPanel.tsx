@@ -59,7 +59,7 @@ export function AgentRunPanel({
     <section className="agent-run-panel" aria-label="research workflow run">
       <div className="agent-run-header">
         <div>
-          <p className="section-kicker">Research Workflow Run</p>
+          <p className="section-kicker">Bounded Research Agent</p>
           <h2>{agentPlan ? `Run ${agentPlan.run_id}` : "Research Workflow Task"}</h2>
         </div>
         <div className="agent-run-badges">
@@ -103,7 +103,7 @@ export function AgentRunPanel({
           <p>{agentPlan.rationale}</p>
           <div className="agent-run-progress" aria-label="model provider status">
             <strong>
-              模型建议：
+              模型 provider：
               {!agentPlan.model_call
                 ? "Legacy record / 未保存模型审计"
                 : agentPlan.model_call.response_status === "success"
@@ -113,7 +113,9 @@ export function AgentRunPanel({
                   : `${agentPlan.model_call.provider} / ${agentPlan.model_call.model}`}
             </strong>
             <span>
-              执行模式：确定性工具图。模型不能修改工具、证据等级、拒答、科研状态或 Experiment readiness。
+              {(agentRunStatus?.execution_mode ?? agentPlan.execution_mode) === "bounded_observe_reason_act"
+                ? "执行模式：受限 Observe → Reason → Act。模型只能选择当前 allowlist 工具；确定性代码控制证据、拒答、科研状态和 Experiment readiness。"
+                : "执行模式：确定性工具图 fallback。模型不能修改工具、证据等级、拒答、科研状态或 Experiment readiness。"}
             </span>
             <span>
               {agentPlan.model_call?.external_data_sent
@@ -123,7 +125,7 @@ export function AgentRunPanel({
           </div>
           {agentRunStatus ? (
             <div className="agent-run-progress" aria-label="agent run progress">
-              <strong>{agentRunStatus.run_status_summary || `Research Workflow Run ${agentRunStatus.status}`}</strong>
+              <strong>{agentRunStatus.run_status_summary || `Bounded Research Agent ${agentRunStatus.status}`}</strong>
               <span aria-live="polite" data-testid="agent-run-current-tool">
                 {agentRunStatus.status === "running"
                   ? `Timeline、artifacts 和 workflow steps 正在刷新${agentRunStatus.current_tool ? `；当前工具：${agentRunStatus.current_tool}` : ""}`

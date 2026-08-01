@@ -71,7 +71,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="ScholarFlow API",
     version=__version__,
-    description="Backend API and persistence layer for ScholarFlow Research Workflow Runs.",
+    description="Backend API and persistence layer for ScholarFlow Bounded Research Agent runs.",
     lifespan=lifespan,
 )
 app.add_middleware(

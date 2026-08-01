@@ -37,8 +37,8 @@ Local durable services:
   start 会分别检查并启动 API、Web 与 SQLite worker。
   status 同时核对 PID、HTTP 健康与 worker heartbeat。
 
-Research Workflow Run:
-  默认执行确定性工具图，不是无限自治 Agent。
+Bounded Research Agent:
+  支持有预算的 Observe → Reason → Act；local provider 回退确定性工具图，不是无限自治 Agent。
   模型 provider 只从 API 进程环境变量读取；缺少 key 时明确使用 local fallback。`);
 }
 

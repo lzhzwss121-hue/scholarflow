@@ -806,7 +806,7 @@ test("agent execute refreshes timeline artifacts and keeps partial blocked workf
   await expect(agentPanel.getByRole("button", { name: "生成计划", exact: true })).toBeEnabled();
   await agentPanel.getByRole("button", { name: "生成计划", exact: true }).click();
   await expect(page.getByText("Run run_e2e_agent_execute")).toBeVisible();
-  await expect(agentPanel.getByText("模型建议：Local fallback / missing_api_key")).toBeVisible();
+  await expect(agentPanel.getByText("模型 provider：Local fallback / missing_api_key")).toBeVisible();
   await expect(agentPanel.getByText("未向外部模型发送数据。")).toBeVisible();
   await expect(agentPanel).toContainText("确定性工具图");
   await expect(agentPanel.getByRole("button", { name: "确认执行", exact: true })).toBeEnabled();

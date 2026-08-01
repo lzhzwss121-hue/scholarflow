@@ -1070,7 +1070,7 @@ export function useWorkflowController(activeView: ViewId, onSelectView: (view: V
       applyProjectResources(projectId, snapshot);
     } catch (error) {
       if (!isAbortError(error)) {
-        setApiMessage(formatApiFailure(error, "刷新 Research Workflow Run 进度失败，请查看 API 日志。"));
+        setApiMessage(formatApiFailure(error, "刷新 Bounded Research Agent 进度失败，请查看 API 日志。"));
       }
     }
   }

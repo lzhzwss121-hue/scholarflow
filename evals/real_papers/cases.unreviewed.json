@@ -1,0 +1,163 @@
+{
+  "schema_version": "real_paper_eval.v1",
+  "dataset_id": "scholarflow-real-papers-unreviewed-v1",
+  "evaluation_tier": "real_paper_unreviewed",
+  "description": "Public-paper locator records for evaluation-framework validation. These records were checked by a repository maintainer, not adjudicated by domain experts, and must not be reported as scientific gold labels.",
+  "cases": [
+    {
+      "case_id": "attention-wmt-en-de-table2",
+      "project_id": "real-paper-eval-transformers",
+      "domain": "machine-translation",
+      "paper_id": "arxiv-1706.03762",
+      "title": "Attention Is All You Need",
+      "source": "https://arxiv.org/abs/1706.03762",
+      "version": "1706.03762v7",
+      "question": "What BLEU score does Transformer (big) report for WMT 2014 English-to-German?",
+      "answerable": true,
+      "gold_claim": "Transformer (big) achieves 28.4 BLEU on WMT 2014 English-to-German.",
+      "evidence_level": "full_text",
+      "page": 8,
+      "section": "6 Results / 6.1 Machine Translation",
+      "locator": {
+        "kind": "table",
+        "value": "Table 2, Transformer (big), EN-DE BLEU column"
+      },
+      "acceptable_citations": [
+        {
+          "citation_id": "arxiv-1706.03762:results:p.8:table-2-transformer-big-en-de",
+          "paper_id": "arxiv-1706.03762",
+          "page": 8,
+          "section": "6 Results / 6.1 Machine Translation",
+          "locator": {
+            "kind": "table",
+            "value": "Table 2, Transformer (big), EN-DE BLEU column"
+          }
+        }
+      ],
+      "contradiction_notes": [
+        "28.4 is the EN-DE BLEU value; 41.8 is the EN-FR value in the same row.",
+        "The score is BLEU, not a percentage or percentage-point improvement."
+      ],
+      "contradiction_claims": [
+        "Transformer (big) achieves 41.8 BLEU on WMT 2014 English-to-German.",
+        "Transformer (big) improves English-to-German BLEU by 28.4 percentage points."
+      ],
+      "annotator": "repository-maintainer-unreviewed",
+      "label_origin": "imported_bibliographic_fixture",
+      "adjudication_status": "unreviewed"
+    },
+    {
+      "case_id": "clip-imagenet-zero-shot-abstract",
+      "project_id": "real-paper-eval-vision-language",
+      "domain": "vision-language",
+      "paper_id": "arxiv-2103.00020",
+      "title": "Learning Transferable Visual Models From Natural Language Supervision",
+      "source": "https://arxiv.org/abs/2103.00020",
+      "version": "2103.00020v1",
+      "question": "What does the CLIP abstract claim about zero-shot ImageNet and ResNet-50?",
+      "answerable": true,
+      "gold_claim": "CLIP matches the accuracy of the original ResNet-50 on ImageNet zero-shot without using any of the 1.28 million training examples it was trained on.",
+      "evidence_level": "full_text",
+      "page": 1,
+      "section": "Abstract",
+      "locator": {
+        "kind": "paragraph",
+        "value": "Abstract paragraph ending with the zero-shot ImageNet comparison"
+      },
+      "acceptable_citations": [
+        {
+          "citation_id": "arxiv-2103.00020:abstract:p.1:imagenet-resnet50",
+          "paper_id": "arxiv-2103.00020",
+          "page": 1,
+          "section": "Abstract",
+          "locator": {
+            "kind": "paragraph",
+            "value": "Abstract paragraph ending with the zero-shot ImageNet comparison"
+          }
+        }
+      ],
+      "contradiction_notes": [
+        "The abstract says matches, not exceeds, the original ResNet-50 accuracy.",
+        "The claim is specific to zero-shot ImageNet and does not cover every downstream dataset."
+      ],
+      "contradiction_claims": [
+        "CLIP exceeds ResNet-50 on every downstream dataset.",
+        "CLIP uses all 1.28 million ImageNet training examples."
+      ],
+      "annotator": "repository-maintainer-unreviewed",
+      "label_origin": "imported_bibliographic_fixture",
+      "adjudication_status": "unreviewed"
+    },
+    {
+      "case_id": "bert-glue-table1-average",
+      "project_id": "real-paper-eval-language-models",
+      "domain": "natural-language-processing",
+      "paper_id": "arxiv-1810.04805",
+      "title": "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding",
+      "source": "https://arxiv.org/abs/1810.04805",
+      "version": "1810.04805v2",
+      "question": "What average is reported for BERTLARGE in Table 1 when WNLI is excluded?",
+      "answerable": true,
+      "gold_claim": "Table 1 reports a BERTLARGE average of 82.1 when WNLI is excluded.",
+      "evidence_level": "full_text",
+      "page": 6,
+      "section": "4.4 GLUE",
+      "locator": {
+        "kind": "table",
+        "value": "Table 1, BERTLARGE row, Average column"
+      },
+      "acceptable_citations": [
+        {
+          "citation_id": "arxiv-1810.04805:glue:p.6:table-1-bertlarge-average",
+          "paper_id": "arxiv-1810.04805",
+          "page": 6,
+          "section": "4.4 GLUE",
+          "locator": {
+            "kind": "table",
+            "value": "Table 1, BERTLARGE row, Average column"
+          }
+        }
+      ],
+      "contradiction_notes": [
+        "Table 1 reports 82.1 in its Average column; the nearby prose separately mentions an official GLUE leaderboard score of 80.5.",
+        "The table caption says WNLI is excluded from its Average column."
+      ],
+      "contradiction_claims": [
+        "Table 1 reports a BERTLARGE average of 80.5 when WNLI is excluded."
+      ],
+      "annotator": "repository-maintainer-unreviewed",
+      "label_origin": "imported_bibliographic_fixture",
+      "adjudication_status": "unreviewed"
+    },
+    {
+      "case_id": "clip-universal-causality-refusal",
+      "project_id": "real-paper-eval-vision-language",
+      "domain": "vision-language",
+      "paper_id": "arxiv-2103.00020",
+      "title": "Learning Transferable Visual Models From Natural Language Supervision",
+      "source": "https://arxiv.org/abs/2103.00020",
+      "version": "2103.00020v1",
+      "question": "Does the paper prove that natural-language supervision causes higher accuracy on every downstream dataset?",
+      "answerable": false,
+      "gold_claim": "",
+      "evidence_level": "full_text",
+      "page": 1,
+      "section": "Abstract",
+      "locator": {
+        "kind": "paragraph",
+        "value": "Abstract sentences describing transfer as often competitive on most tasks"
+      },
+      "acceptable_citations": [],
+      "contradiction_notes": [
+        "The abstract says the model transfers non-trivially to most tasks and is often competitive; it does not claim superiority on every dataset.",
+        "The paper reports evaluations and does not establish the universal causal statement in the question."
+      ],
+      "contradiction_claims": [
+        "Natural-language supervision causes higher accuracy on every downstream dataset."
+      ],
+      "annotator": "repository-maintainer-unreviewed",
+      "label_origin": "imported_bibliographic_fixture",
+      "adjudication_status": "unreviewed"
+    }
+  ]
+}

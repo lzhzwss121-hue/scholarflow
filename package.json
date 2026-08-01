@@ -22,6 +22,7 @@
     "test:e2e": "npm --workspace @scholarflow/web run test:e2e",
     "test:cli": "npm --workspace @scholarflow/cli run test",
     "eval:rag": "PYTHONPATH=services/api/src .venv/bin/python -m scholarflow_api.rag_benchmark",
+    "eval:rag:live": "PYTHONPATH=services/api/src .venv/bin/python -m scholarflow_api.rag_live_smoke",
     "health:api": "PYTHONPATH=services/api/src python3 -m scholarflow_api.healthcheck",
     "version:cli": "npm --workspace @scholarflow/cli run start -- --version"
   },

@@ -1,0 +1,130 @@
+{
+  "schema_version": "real_paper_predictions.v1",
+  "prediction_set_id": "schema-fixture-with-one-known-error",
+  "system_version": "evaluation-framework-fixture-v1",
+  "prediction_source": "offline_test_fixture",
+  "cases": [
+    {
+      "case_id": "attention-wmt-en-de-table2",
+      "project_id": "real-paper-eval-transformers",
+      "refused": false,
+      "retrieved_citations": [
+        {
+          "citation_id": "arxiv-1706.03762:results:p.8:table-2-transformer-big-en-de",
+          "project_id": "real-paper-eval-transformers",
+          "paper_id": "arxiv-1706.03762",
+          "page": 8,
+          "section": "6 Results / 6.1 Machine Translation",
+          "locator": {"kind": "table", "value": "Table 2, Transformer (big), EN-DE BLEU column"},
+          "evidence_level": "full_text",
+          "evidence_verified": true
+        }
+      ],
+      "used_citations": [
+        {
+          "citation_id": "arxiv-1706.03762:results:p.8:table-2-transformer-big-en-de",
+          "project_id": "real-paper-eval-transformers",
+          "paper_id": "arxiv-1706.03762",
+          "page": 8,
+          "section": "6 Results / 6.1 Machine Translation",
+          "locator": {"kind": "table", "value": "Table 2, Transformer (big), EN-DE BLEU column"},
+          "evidence_level": "full_text",
+          "evidence_verified": true
+        }
+      ],
+      "claims": [
+        {
+          "statement": "Transformer (big) achieves 28.4 BLEU on WMT 2014 English-to-German.",
+          "status": "supported",
+          "method": "exact_quote",
+          "citation_ids": ["arxiv-1706.03762:results:p.8:table-2-transformer-big-en-de"],
+          "evidence_level": "full_text"
+        }
+      ]
+    },
+    {
+      "case_id": "clip-imagenet-zero-shot-abstract",
+      "project_id": "real-paper-eval-vision-language",
+      "refused": false,
+      "retrieved_citations": [
+        {
+          "citation_id": "arxiv-2103.00020:abstract:p.1:imagenet-resnet50",
+          "project_id": "real-paper-eval-vision-language",
+          "paper_id": "arxiv-2103.00020",
+          "page": 1,
+          "section": "Abstract",
+          "locator": {"kind": "paragraph", "value": "Abstract paragraph ending with the zero-shot ImageNet comparison"},
+          "evidence_level": "full_text",
+          "evidence_verified": true
+        }
+      ],
+      "used_citations": [
+        {
+          "citation_id": "arxiv-2103.00020:abstract:p.1:imagenet-resnet50",
+          "project_id": "real-paper-eval-vision-language",
+          "paper_id": "arxiv-2103.00020",
+          "page": 1,
+          "section": "Abstract",
+          "locator": {"kind": "paragraph", "value": "Abstract paragraph ending with the zero-shot ImageNet comparison"},
+          "evidence_level": "full_text",
+          "evidence_verified": true
+        }
+      ],
+      "claims": [
+        {
+          "statement": "CLIP matches the accuracy of the original ResNet-50 on ImageNet zero-shot without using any of the 1.28 million training examples it was trained on.",
+          "status": "supported",
+          "method": "exact_quote",
+          "citation_ids": ["arxiv-2103.00020:abstract:p.1:imagenet-resnet50"],
+          "evidence_level": "full_text"
+        }
+      ]
+    },
+    {
+      "case_id": "bert-glue-table1-average",
+      "project_id": "real-paper-eval-language-models",
+      "refused": false,
+      "retrieved_citations": [
+        {
+          "citation_id": "arxiv-1810.04805:glue:p.6:table-1-bertlarge-average",
+          "project_id": "real-paper-eval-language-models",
+          "paper_id": "arxiv-1810.04805",
+          "page": 6,
+          "section": "4.4 GLUE",
+          "locator": {"kind": "table", "value": "Table 1, BERTLARGE row, Average column"},
+          "evidence_level": "full_text",
+          "evidence_verified": true
+        }
+      ],
+      "used_citations": [
+        {
+          "citation_id": "arxiv-1810.04805:glue:p.6:table-1-bertlarge-average",
+          "project_id": "real-paper-eval-language-models",
+          "paper_id": "arxiv-1810.04805",
+          "page": 6,
+          "section": "4.4 GLUE",
+          "locator": {"kind": "table", "value": "Table 1, BERTLARGE row, Average column"},
+          "evidence_level": "full_text",
+          "evidence_verified": true
+        }
+      ],
+      "claims": [
+        {
+          "statement": "Table 1 reports a BERTLARGE average of 80.5 when WNLI is excluded.",
+          "status": "supported",
+          "method": "numeric_lexical",
+          "citation_ids": ["arxiv-1810.04805:glue:p.6:table-1-bertlarge-average"],
+          "evidence_level": "full_text"
+        }
+      ]
+    },
+    {
+      "case_id": "clip-universal-causality-refusal",
+      "project_id": "real-paper-eval-vision-language",
+      "refused": true,
+      "retrieved_citations": [],
+      "used_citations": [],
+      "claims": []
+    }
+  ]
+}

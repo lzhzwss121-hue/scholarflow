@@ -70,7 +70,7 @@ def build_agent_tool_registry(connection: Any) -> ToolRegistry:
     def create_plan_tool(context: ToolContext) -> ToolResult:
         return ToolResult(
             tool="create_plan",
-            status="done",
+            status="success",
             summary="Research Plan 已存在，继续等待或执行后续工具。",
         )
 
@@ -108,7 +108,7 @@ def build_agent_tool_registry(connection: Any) -> ToolRegistry:
         )
         return ToolResult(
             tool="literature_search",
-            status="done",
+            status="success",
             summary=(
                 f"已检索真实论文候选 {len(result.papers)} 篇；"
                 f"{result.relevance_coverage.get('candidate_count', len(result.papers))} candidates / "
@@ -341,7 +341,7 @@ def build_agent_tool_registry(connection: Any) -> ToolRegistry:
         artifacts.append(memory_artifact)
         return ToolResult(
             tool="direction_review",
-            status="done",
+            status="success",
             summary=(
                 f"{bundle.review_status}：第 {round_index} 轮生成 "
                 f"{len(readings)} 张 Paper Card；"
@@ -407,7 +407,7 @@ def build_agent_tool_registry(connection: Any) -> ToolRegistry:
         )
         return ToolResult(
             tool="research_memory_query",
-            status="done",
+            status="success",
             summary=(
                 "已从 Paper Memory Bank 检索 "
                 f"{len(answer.hits)} 篇相关论文记忆。"
@@ -423,6 +423,7 @@ def build_agent_tool_registry(connection: Any) -> ToolRegistry:
                 "hit_count": len(answer.hits),
                 "memory_hit_count": len(answer.hits),
                 "total_memories": answer.total_memories,
+                "reliability_status": answer.reliability_status,
                 "warnings": answer.warnings,
             },
         )
@@ -487,7 +488,7 @@ def build_agent_tool_registry(connection: Any) -> ToolRegistry:
         ]
         return ToolResult(
             tool="research_decision",
-            status="done",
+            status="success",
             summary=(
                 f"{bundle.decision_status}：已生成 {len(bundle.gaps)} 个 "
                 "gap、idea validation 和 experiment plan。"
@@ -520,7 +521,7 @@ def build_agent_tool_registry(connection: Any) -> ToolRegistry:
         papers = build_mock_papers(context.task, context.project)
         return ToolResult(
             tool="search_mock_papers",
-            status="done",
+            status="success",
             summary=f"已生成 {len(papers)} 条 mock paper candidates。",
             summary_metrics={
                 "paper_count": len(papers),
@@ -572,7 +573,7 @@ def build_agent_tool_registry(connection: Any) -> ToolRegistry:
         )
         return ToolResult(
             tool="save_artifact",
-            status="done",
+            status="success",
             summary=(
                 "已保存 agent run artifact: "
                 f"{artifact['title']}。"
@@ -590,9 +591,9 @@ def build_agent_tool_registry(connection: Any) -> ToolRegistry:
     def update_timeline_tool(context: ToolContext) -> ToolResult:
         return ToolResult(
             tool="update_timeline",
-            status="done",
+            status="success",
             summary=(
-                "已完成本次 Research Workflow Run，"
+                "已完成本次 Bounded Research Agent，"
                 "并同步 session timeline。"
             ),
             summary_metrics={

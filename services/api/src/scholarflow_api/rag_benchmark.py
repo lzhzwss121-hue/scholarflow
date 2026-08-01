@@ -11,10 +11,20 @@ from scholarflow_api.database import get_connection, init_db, utc_now
 from scholarflow_api.rag_answer import verify_claim_support
 from scholarflow_api.rag_index import replace_paper_chunks
 from scholarflow_api.rag_retrieval import retrieve_project_chunks
+from scholarflow_api.real_paper_evaluation import (
+    evaluate_real_paper_predictions,
+    load_real_paper_dataset,
+    load_real_paper_predictions,
+)
 
 
 BENCHMARK_VERSION = "evidence_hybrid_rag.v1"
 PROJECT_ID = "rag-offline-eval"
+REPORT_SCHEMA_VERSION = "scholarflow_rag_evaluation.v2"
+CONSTRUCTED_FIXTURE_DISCLAIMER = (
+    "固定 135-case 构造数据只用于回归检索、引用、拒答、矛盾和证据等级代码；"
+    "其指标不得描述为真实论文、真实科研结论或专家标注准确率。"
+)
 
 
 @dataclass(frozen=True)
@@ -424,9 +434,177 @@ def _ratio(numerator: float, denominator: int) -> float:
     return round(float(numerator) / denominator, 6) if denominator else 0.0
 
 
+def build_evaluation_report(
+    constructed_result: dict[str, Any],
+    *,
+    real_dataset_path: Path | None,
+    real_predictions_path: Path | None,
+) -> dict[str, Any]:
+    real_unreviewed: dict[str, Any] = {
+        "evaluation_tier": "real_paper_unreviewed",
+        "status": "blocked",
+        "metrics": None,
+        "reason": "没有提供真实论文 dataset。",
+        "interpretation": (
+            "未经专家裁决的数据不代表真实科研准确率，也不得与构造 benchmark 合并。"
+        ),
+    }
+    expert_labelled: dict[str, Any] = {
+        "evaluation_tier": "expert_labelled",
+        "status": "blocked",
+        "metrics": None,
+        "reason": "当前仓库没有经过领域专家独立裁决的完整数据集。",
+        "interpretation": "不得从 real_paper_unreviewed 或模型输出自动生成专家 gold。",
+    }
+
+    if real_dataset_path is not None:
+        dataset = load_real_paper_dataset(real_dataset_path)
+        if real_predictions_path is None:
+            target = (
+                expert_labelled
+                if dataset.evaluation_tier == "expert_labelled"
+                else real_unreviewed
+            )
+            target.update(
+                {
+                    "status": "blocked",
+                    "dataset_id": dataset.dataset_id,
+                    "case_count": len(dataset.cases),
+                    "reason": "真实论文 schema 已验证，但没有提供离线系统 predictions。",
+                }
+            )
+        else:
+            predictions = load_real_paper_predictions(real_predictions_path)
+            evaluated = evaluate_real_paper_predictions(dataset, predictions)
+            evaluated["status"] = "complete"
+            if dataset.evaluation_tier == "expert_labelled":
+                expert_labelled = evaluated
+            else:
+                real_unreviewed = evaluated
+
+    return {
+        "report_schema_version": REPORT_SCHEMA_VERSION,
+        "generated_at": utc_now(),
+        "sections": {
+            "constructed_fixture": {
+                "evaluation_tier": "constructed_fixture",
+                "status": "complete",
+                "interpretation": CONSTRUCTED_FIXTURE_DISCLAIMER,
+                "metrics": constructed_result["metrics"],
+                "result": constructed_result,
+            },
+            "real_paper_unreviewed": real_unreviewed,
+            "expert_labelled": expert_labelled,
+            "live_external_smoke": {
+                "evaluation_tier": "live_external_smoke",
+                "status": "not_run",
+                "metrics": None,
+                "reason": (
+                    "离线 benchmark 不运行 arXiv/OpenAlex/PDF 网络检查；"
+                    "live smoke 必须由独立命令和独立报告执行。"
+                ),
+                "fixture_fallback_used": False,
+            },
+        },
+    }
+
+
+def render_evaluation_markdown(report: dict[str, Any]) -> str:
+    sections = report["sections"]
+    constructed = sections["constructed_fixture"]
+    constructed_result = constructed["result"]
+    lines = [
+        "# ScholarFlow RAG Evaluation Report",
+        "",
+        f"- Report schema: `{report['report_schema_version']}`",
+        f"- Generated at: `{report['generated_at']}`",
+        "",
+        "## constructed_fixture",
+        "",
+        f"Status: `{constructed['status']}`; cases: {constructed_result['case_count']}",
+        "",
+        "> " + constructed["interpretation"],
+        "",
+        "| Metric | Value |",
+        "| --- | ---: |",
+    ]
+    for key, value in constructed_result["metrics"].items():
+        lines.append(f"| `{key}` | {value} |")
+
+    for section_name in (
+        "real_paper_unreviewed",
+        "expert_labelled",
+        "live_external_smoke",
+    ):
+        section = sections[section_name]
+        lines.extend(
+            [
+                "",
+                f"## {section_name}",
+                "",
+                f"Status: `{section.get('status', 'unknown')}`",
+                "",
+                str(section.get("interpretation") or section.get("reason") or ""),
+            ]
+        )
+        metrics = section.get("metrics")
+        if isinstance(metrics, dict):
+            lines.extend(["", "| Metric | Value |", "| --- | ---: |"])
+            for key, value in metrics.items():
+                lines.append(f"| `{key}` | {value} |")
+        if section_name == "real_paper_unreviewed" and section.get("status") == "complete":
+            lines.extend(
+                [
+                    "",
+                    "> 这些真实论文记录仍是 unreviewed，只验证评测框架；不代表真实科研准确率。",
+                ]
+            )
+        if section_name == "live_external_smoke":
+            lines.extend(
+                [
+                    "",
+                    "Live external smoke 未使用 fixture 替代；网络失败应在独立报告中保持 partial/blocked。",
+                ]
+            )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_evaluation_report(report: dict[str, Any], output_dir: Path) -> dict[str, Path]:
+    resolved = output_dir.resolve()
+    if not str(resolved).startswith("/private/tmp/"):
+        raise ValueError("RAG evaluation reports must be written under /private/tmp")
+    resolved.mkdir(parents=True, exist_ok=True)
+    json_path = resolved / "rag-evaluation.json"
+    markdown_path = resolved / "rag-evaluation.md"
+    json_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    markdown_path.write_text(render_evaluation_markdown(report), encoding="utf-8")
+    return {"json": json_path, "markdown": markdown_path}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run ScholarFlow's fixed offline RAG benchmark.")
     parser.add_argument("--output", type=Path)
+    repository_root = Path(__file__).resolve().parents[4]
+    parser.add_argument(
+        "--real-dataset",
+        type=Path,
+        default=Path(
+            os.environ.get(
+                "SCHOLARFLOW_REAL_EVAL_DATASET",
+                repository_root / "evals/real_papers/cases.unreviewed.json",
+            )
+        ),
+    )
+    prediction_env = os.environ.get("SCHOLARFLOW_REAL_EVAL_PREDICTIONS", "").strip()
+    parser.add_argument(
+        "--real-predictions",
+        type=Path,
+        default=Path(prediction_env) if prediction_env else None,
+    )
+    parser.add_argument("--report-dir", type=Path)
     args = parser.parse_args()
     db_path = Path(os.environ.get("SCHOLARFLOW_DB_PATH", ""))
     if not db_path.is_absolute() or not str(db_path).startswith("/private/tmp/"):
@@ -437,6 +615,13 @@ def main() -> None:
     with get_connection() as connection:
         seed_benchmark(connection)
         result = run_benchmark(connection)
+    report = build_evaluation_report(
+        result,
+        real_dataset_path=args.real_dataset,
+        real_predictions_path=args.real_predictions,
+    )
+    report_dir = args.report_dir or db_path.parent / f"{db_path.stem}-reports"
+    report_paths = write_evaluation_report(report, report_dir)
     rendered = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
     if args.output:
         output = args.output.resolve()
@@ -454,6 +639,18 @@ def main() -> None:
                 "metrics": result["metrics"],
                 "counts": result["counts"],
                 "output": str(args.output.resolve()) if args.output else "",
+                "evaluation_sections": {
+                    key: {
+                        "status": value.get("status"),
+                        "evaluation_tier": value.get("evaluation_tier"),
+                        "metrics": value.get("metrics"),
+                        "interpretation": value.get("interpretation", ""),
+                        "reason": value.get("reason", ""),
+                    }
+                    for key, value in report["sections"].items()
+                },
+                "report_json": str(report_paths["json"]),
+                "report_markdown": str(report_paths["markdown"]),
             },
             ensure_ascii=False,
             indent=2,

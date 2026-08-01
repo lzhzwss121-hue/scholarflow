@@ -191,6 +191,57 @@ class ModelProviderContractTests(unittest.TestCase):
         self.assertEqual(review.status, "insufficient")
         self.assertEqual(review.audit.purpose, "validate_claim_optional")
 
+    def test_deepseek_and_openrouter_bounded_action_contract_uses_local_mock(self) -> None:
+        action_payload = {
+            "action": "tool",
+            "tool": "literature_search",
+            "arguments": {},
+            "reasoning_summary": "Observe the literature result before deciding again.",
+            "replan": False,
+        }
+        for provider_name in ("deepseek", "openrouter"):
+            with self.subTest(provider=provider_name), mock_model_server(
+                raw_body=completion(action_payload, f"{provider_name}-model")
+            ) as (base_url, records):
+                prefix = "DEEPSEEK" if provider_name == "deepseek" else "OPENROUTER"
+                with patch.dict(
+                    os.environ,
+                    {
+                        f"{prefix}_API_KEY": f"{provider_name}-secret",
+                        f"{prefix}_BASE_URL": base_url,
+                        f"{prefix}_MODEL": f"{provider_name}-model",
+                    },
+                ):
+                    provider = (
+                        DeepSeekProvider()
+                        if provider_name == "deepseek"
+                        else OpenRouterProvider()
+                    )
+                    decision = provider.choose_next_action(
+                        {"last_tool_result": None},
+                        [
+                            {
+                                "name": "literature_search",
+                                "description": "Search literature",
+                            }
+                        ],
+                        {
+                            "steps": 7,
+                            "replans": 2,
+                            "runtime_seconds": 600,
+                            "model_calls": 7,
+                            "cost_usd": None,
+                        },
+                    )
+
+                self.assertEqual(len(records), 1)
+                self.assertEqual(decision.action, "tool")
+                self.assertEqual(decision.tool, "literature_search")
+                self.assertEqual(decision.arguments, {})
+                self.assertEqual(decision.audit.provider, provider_name)
+                self.assertEqual(decision.audit.purpose, "choose_next_action")
+                self.assertTrue(decision.audit.external_data_sent)
+
     def test_missing_key_is_visible_local_fallback(self) -> None:
         with patch.dict(
             os.environ,
@@ -371,9 +422,19 @@ class ModelProviderContractTests(unittest.TestCase):
             [{"text": "Direct extractive evidence."}],
         )
         review = provider.validate_claim_optional("Claim", [])
+        action = provider.choose_next_action(
+            {"last_tool_result": None},
+            [{"name": "literature_search", "description": "Search"}],
+            {"steps": 1},
+        )
         self.assertTrue(plan.provider.startswith("local:"))
         self.assertEqual(synthesis.answer, "Direct extractive evidence.")
         self.assertEqual(review.status, "not_checked")
+        self.assertEqual(action.action, "fallback")
+        self.assertEqual(
+            action.audit.fallback_reason,
+            "local_provider_has_no_tool_call",
+        )
 
 
 if __name__ == "__main__":

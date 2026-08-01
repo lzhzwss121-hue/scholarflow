@@ -4,7 +4,7 @@ This document describes the target architecture and the current v0.1.0 public pr
 
 ## Product Shape
 
-ScholarFlow is a local-first, evidence-aware research workflow system. Its default execution unit is a **Research Workflow Run**, not an autonomous Agent:
+ScholarFlow is a local-first, evidence-aware research workflow system. Its default execution unit is a **Bounded Research Agent**, not an autonomous Agent:
 
 - The user gives a research goal.
 - ScholarFlow creates a bounded plan before execution.
@@ -55,7 +55,7 @@ Current v0.1.0 entry points:
 
 - `apps/web`: React research workspace with API-aware project, timeline, paper, and artifact state.
 - `apps/cli`: Node CLI with workspace initialization and Web/API service management.
-- `services/api`: FastAPI app with SQLite persistence, a deterministic and durable research workflow runner, literature retrieval adapters, direction-level paper review, paper memory retrieval, single-paper card generation, and research decision generation.
+- `services/api`: FastAPI app with SQLite persistence, a bounded and durable research runner with deterministic fallback, literature retrieval adapters, direction-level paper review, paper memory retrieval, single-paper card generation, and research decision generation.
 - `packages/schemas`: generated API DTOs plus cross-end domain and legacy-hydration compatibility types.
 - `.github`: CI, Issue templates, and pull request template for open-source contribution.
 - `examples/workflows`: public-safe example artifacts.
@@ -73,7 +73,7 @@ Planned layout:
 
 The current implementation persists projects, papers, artifacts, sessions, tool events, durable jobs, workflow runs, paper cards, paper memories, source chunks, RAG evaluations, and model-call audits. It retrieves candidates from arXiv/OpenAlex, downloads eligible open PDFs, verifies parsed PDF evidence, generates 12-section Deep Paper Cards, builds project-scoped FTS5/BM25 plus optional semantic retrieval, and turns qualified evidence into Gap Board, Idea Validation, and Experiment Plan artifacts. It does not run training jobs or treat user-pasted text as verified PDF evidence.
 
-The UI is Chinese-first. Technical terms such as Artifact, Timeline, Gap, Claim, Baseline, and Ablation can remain in English when useful. “Agent” is reserved for a future bounded dynamic mode and is not used to market the current fixed workflow.
+The UI is Chinese-first. Technical terms such as Artifact, Timeline, Gap, Claim, Baseline, and Ablation can remain in English when useful. “Agent” refers only to the current budgeted, allowlisted Bounded Research Agent; the product does not describe it as autonomous scientific reasoning.
 
 The frontend boundary is organized around `state/useWorkflowController.ts`, domain API modules under `services/`, an `ActiveView` composition layer, and page modules. The legacy `workflowService.ts` and `ProductViews.tsx` paths remain as compatibility barrels. AbortController cancellation, project-switch stale-response guards, partial resource loading, and conservative artifact hydration stay in the controller/hydration boundary rather than page components.
 
@@ -85,7 +85,7 @@ Planned responsibilities:
 
 - Project and artifact CRUD.
 - Session and timeline storage.
-- Research Workflow Run lifecycle.
+- Bounded Research Agent lifecycle.
 - Model provider routing.
 - Paper retrieval adapters.
 - Workspace configuration.
@@ -104,7 +104,7 @@ Current tables:
 - `paper_chunks` and `paper_chunks_fts`
 - `rag_evaluations`
 - `sessions`
-- `agent_runs` (legacy-compatible storage name for Research Workflow Runs)
+- `agent_runs` (legacy-compatible storage name for Bounded Research Agent runs)
 - `jobs` and `worker_heartbeats`
 - `model_call_audits`
 - `tool_events`
@@ -116,7 +116,7 @@ Current API capabilities:
 - Save artifacts, page through lightweight summaries, and fetch complete Markdown/JSON only from the artifact detail endpoint. The deprecated project artifact-list path also returns summaries and never embeds large bodies.
 - Read project sessions.
 - Read session and project timelines.
-- Generate and execute bounded Research Workflow Run plans.
+- Generate and execute Bounded Research Agent plans.
 - Retrieve and persist ranked paper tables from arXiv/OpenAlex.
 - Generate and persist single-paper Deep Paper Cards with PaperSignals through `POST /projects/{project_id}/paper-cards`.
 - Generate direction reviews through `POST /projects/{project_id}/direction-reviews`, with 10 papers per round and three rounds maximum.
@@ -151,23 +151,25 @@ Default local workspace:
 
 The CLI launches API, Web UI, and the durable SQLite worker. It sets `SCHOLARFLOW_DB_PATH=<workspace>/cache/scholarflow.sqlite3` for the backend and `VITE_SCHOLARFLOW_API_BASE_URL` for the Web UI. Service logs are written to the workspace `logs/` directory. Provider configuration remains backend-only and is inherited by API/worker processes; it is never written into workspace configuration.
 
-## Research Workflow Core
+## Bounded Research Agent Core
 
 Current behavior:
 
-- Research Workflow Run: the API executes a fixed, allowlisted tool graph after explicit user confirmation.
-- Planning: a model may suggest focus, rationale, and wording for existing steps, but cannot add, remove, reorder, or rename tools.
+- Bounded Research Agent: after explicit user confirmation, a capable provider chooses one next action from the current ToolRegistry allowlist and receives the structured ToolResult as its next observation.
+- Budgets: `max_steps`, `max_replans`, `max_runtime_seconds`, `max_model_calls`, and an optional cost ceiling stop the loop safely.
+- Deterministic fallback: the fixed tool graph remains available when the local provider cannot emit tool calls or an external provider fails.
+- Planning: the model may choose among eligible tools, but cannot add unregistered tools or modify evidence, citation, locator, refusal, workflow-state, or Experiment-readiness fields.
 - Tool Registry: every callable research capability has an explicit schema and execution contract.
 - Permission Gates: external data transfer and execution confirmation are explicit.
 - Timeline: every important action becomes a visible event.
 - Memory: user preferences and project decisions are reusable across sessions.
 
-The model does not own evidence qualification, citation integrity, state transitions, refusal behavior, or Experiment readiness. ScholarFlow does not implement an unlimited autonomous loop.
+Each turn persists a compact observation, reasoning summary, selected tool, empty deterministic arguments, ToolResult, and checkpoint in the run plan and final artifact. The durable worker resumes from the newest fenced checkpoint. The model does not own evidence qualification, citation integrity, state transitions, refusal behavior, or Experiment readiness. ScholarFlow does not implement an unlimited autonomous loop.
 
 Current model-provider implementation:
 
 - `ModelProvider` abstraction.
-- Unified `create_plan`, `synthesize_answer`, and `validate_claim_optional` interface.
+- Unified `create_plan`, `choose_next_action`, `synthesize_answer`, and `validate_claim_optional` interface.
 - Local deterministic provider as the default.
 - OpenRouter and DeepSeek as optional OpenAI-compatible HTTP providers configured only by backend environment variables.
 - `ToolRegistry`.
@@ -184,10 +186,13 @@ When a selected remote provider has a key, ScholarFlow calls its real chat-compl
 Configuration comes only from the API process environment:
 
 - `SCHOLARFLOW_MODEL_PROVIDER=local|openrouter|deepseek`
+- `SCHOLARFLOW_AGENT_MAX_STEPS`, `SCHOLARFLOW_AGENT_MAX_REPLANS`
+- `SCHOLARFLOW_AGENT_MAX_RUNTIME_SECONDS`, `SCHOLARFLOW_AGENT_MAX_MODEL_CALLS`
+- `SCHOLARFLOW_AGENT_MAX_COST_USD` (optional; enforced only from provider-reported cost)
 - `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `OPENROUTER_BASE_URL`
 - `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`, `DEEPSEEK_BASE_URL`
 
-The browser cannot select or override the provider. Remote model output is schema-validated and treated as advisory. Deterministic code reconstructs the canonical tool graph, so prompt-injection text cannot grant tools or write scientific state.
+The browser cannot select or override the provider. Remote model output is schema-validated and treated as advisory. Deterministic code owns the canonical tool set, computes the per-turn eligible allowlist, validates every selected action, and alone writes scientific state, so prompt-injection text cannot grant tools or promote evidence.
 
 ## Research Tools
 
@@ -235,9 +240,9 @@ Planned entities:
 - EvidenceSnippet / EvidencePack: metadata, abstract, and paper-card snippets that ground a critique, plus confidence and missing evidence.
 - PaperMemory: searchable compressed record created from a direction-review paper card.
 - DirectionMemory: cumulative summary over up to 30 paper memories for one research direction.
-- Session: one Research Workflow Run or related interaction sequence.
+- Session: one Bounded Research Agent run or related interaction sequence.
 - ToolEvent: one visible tool call or system action.
-- AgentRun: legacy-compatible API/storage name for one plan-and-confirm Research Workflow Run.
+- AgentRun: legacy-compatible API/storage name for one plan-confirm-execute Bounded Research Agent run.
 - ExperimentPlan: proposed reproduction or ablation plan.
 
 ## Evidence And Integrity

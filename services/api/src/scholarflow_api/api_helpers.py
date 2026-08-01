@@ -500,6 +500,8 @@ def summarize_literature_output(data: dict | None) -> dict[str, object]:
         "paper_count": data.get("paper_count", 0),
         "artifact_id": data.get("artifact_id", ""),
         "errors_count": len(data.get("errors", [])),
+        "errors": [str(item) for item in data.get("errors", []) or []][:20],
+        "relevance_coverage": data.get("relevance_coverage", {}),
         "demo_mode": bool(data.get("demo_mode", False)),
     }
 
@@ -513,6 +515,10 @@ def summarize_direction_output(data: dict | None) -> dict[str, object]:
         "artifact_count": len(data.get("artifacts", [])),
         "recommended_paper_ids": data.get("recommended_paper_ids", []),
         "errors_count": len(data.get("errors", [])),
+        "review_status": data.get("review_status", ""),
+        "relevant_read_count": data.get("relevant_read_count", 0),
+        "low_relevance_count": data.get("low_relevance_count", 0),
+        "off_topic_count": data.get("off_topic_count", 0),
     }
 
 
@@ -523,6 +529,7 @@ def summarize_memory_output(data: dict | None) -> dict[str, object]:
         "total_memories": data.get("total_memories", 0),
         "artifact_id": data.get("artifact_id", ""),
         "warnings": data.get("warnings", []),
+        "reliability_status": data.get("reliability_status", ""),
     }
 
 
@@ -532,6 +539,8 @@ def summarize_decision_output(data: dict | None) -> dict[str, object]:
         "gap_count": data.get("gap_count", 0),
         "artifact_id": data.get("artifact_id", ""),
         "experiment_status": data.get("experiment_status", ""),
+        "decision_status": data.get("decision_status", ""),
+        "evidence_quality": data.get("evidence_quality", {}),
         "anchor_paper_title": data.get("anchor_paper_title", ""),
         "experiment_claim": data.get("experiment_claim", ""),
     }

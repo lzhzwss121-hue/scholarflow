@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from fastapi import HTTPException
 
-from scholarflow_api.agent_core import ToolContext, validate_workflow_plan
+from scholarflow_api.agent_core import (
+    AgentActionDecision,
+    AgentBudgets,
+    BOUNDED_AGENT_LABEL,
+    ToolContext,
+    ToolResult,
+    find_forbidden_model_fields,
+    get_model_provider,
+    qualify_tool_result,
+    sanitize_agent_payload,
+    validate_workflow_plan,
+)
 from scholarflow_api.api_helpers import (
     artifact_ref,
     build_warning_summary_metrics,
@@ -24,6 +36,7 @@ from scholarflow_api.literature import LOW_RECALL_THRESHOLD
 from scholarflow_api.repositories.agent_run_repository import (
     agent_cancellation_requested,
     fetch_agent_run,
+    insert_model_call_audit,
     mark_agent_run_running,
     request_agent_cancellation,
     update_agent_plan,
@@ -537,11 +550,11 @@ def persist_agent_run_progress(
         )
     elif status == "failed":
         summary_text = (
-            "failed: Research Workflow Run stopped with an error."
+            "failed: Bounded Research Agent stopped with an error."
         )
     elif status == "cancelled":
         summary_text = (
-            "cancelled: Research Workflow Run stopped by user request."
+            "cancelled: Bounded Research Agent stopped by user request."
         )
     else:
         summary_text = str(run_summary["summary"])
@@ -593,7 +606,7 @@ def fetch_agent_run_dict(connection: Any, run_id: str) -> dict:
     if run is None:
         raise HTTPException(
             status_code=404,
-            detail="Research Workflow Run not found",
+            detail="Bounded Research Agent run not found",
         )
     return run
 
@@ -642,6 +655,10 @@ def agent_status_response_from_run(
     )
     return AgentRunStatusResponse(
         run_id=str(run_dict["id"]),
+        agent_label=BOUNDED_AGENT_LABEL,
+        execution_mode=str(
+            plan.get("execution_mode") or "deterministic_tool_graph"
+        ),  # type: ignore[arg-type]
         model_call=(
             plan.get("model_call")
             if isinstance(plan.get("model_call"), dict)
@@ -718,6 +735,8 @@ def execute_response_from_status(
 ) -> AgentExecuteResponse:
     return AgentExecuteResponse(
         run_id=status.run_id,
+        agent_label=status.agent_label,
+        execution_mode=status.execution_mode,
         model_call=status.model_call,
         status=status.status,
         artifact=status.artifact,
@@ -808,7 +827,7 @@ def run_agent_loop_background(run_id: str) -> None:
                     plan,
                     "failed",
                     warnings=[
-                        f"Research Workflow Run failed: {error}"
+                        f"Bounded Research Agent run failed: {error}"
                     ],
                     run_status_summary=f"failed: {error}",
                 )
@@ -825,7 +844,873 @@ def run_agent_loop_background(run_id: str) -> None:
             return
 
 
-def run_agent_loop(run_id: str, execution: Any = None) -> dict:
+def _bounded_state(plan: dict[str, Any]) -> dict[str, Any]:
+    state = plan.get("bounded_agent")
+    if not isinstance(state, dict):
+        state = {}
+        plan["bounded_agent"] = state
+    state.setdefault("version", "bounded-research-agent.v1")
+    state.setdefault("budgets", AgentBudgets().to_dict())
+    state.setdefault("steps_executed", 0)
+    state.setdefault("replans", 0)
+    state.setdefault("model_calls", 0)
+    state.setdefault("estimated_cost_usd", 0.0)
+    state.setdefault("runtime_seconds_used", 0.0)
+    state.setdefault("consecutive_failures", 0)
+    state.setdefault("trace", [])
+    state.setdefault("last_observation", {"type": "run_started"})
+    state.setdefault("fallback_reason", "")
+    state.setdefault("needs_replan", False)
+    return state
+
+
+def _agent_budgets(state: dict[str, Any]) -> AgentBudgets:
+    payload = state.get("budgets") if isinstance(state.get("budgets"), dict) else {}
+    max_cost = payload.get("max_cost_usd")
+    return AgentBudgets(
+        max_steps=max(1, int(payload.get("max_steps") or 8)),
+        max_replans=max(0, int(payload.get("max_replans") or 0)),
+        max_runtime_seconds=max(1, int(payload.get("max_runtime_seconds") or 900)),
+        max_model_calls=max(1, int(payload.get("max_model_calls") or 8)),
+        max_cost_usd=(
+            float(max_cost)
+            if isinstance(max_cost, (int, float)) and float(max_cost) > 0
+            else None
+        ),
+    )
+
+
+def restore_bounded_checkpoint(
+    plan: dict[str, Any],
+    durable_checkpoint: dict[str, Any] | None,
+) -> None:
+    if not isinstance(durable_checkpoint, dict):
+        return
+    checkpoint_plan = (
+        durable_checkpoint.get("plan")
+        if isinstance(durable_checkpoint.get("plan"), dict)
+        else {}
+    )
+    checkpoint_state = (
+        durable_checkpoint.get("bounded_agent")
+        if isinstance(durable_checkpoint.get("bounded_agent"), dict)
+        else checkpoint_plan.get("bounded_agent")
+        if isinstance(checkpoint_plan.get("bounded_agent"), dict)
+        else None
+    )
+    if checkpoint_state is None:
+        return
+    current = _bounded_state(plan)
+    checkpoint_progress = (
+        int(checkpoint_state.get("steps_executed") or 0),
+        len(checkpoint_state.get("trace") or []),
+    )
+    current_progress = (
+        int(current.get("steps_executed") or 0),
+        len(current.get("trace") or []),
+    )
+    if checkpoint_progress <= current_progress:
+        return
+    plan["bounded_agent"] = sanitize_agent_payload(checkpoint_state)
+    for key in (
+        "steps",
+        "tool_outputs",
+        "papers",
+        "artifact_refs",
+        "summary_metrics",
+        "workflow_steps",
+        "warnings",
+        "current_tool",
+    ):
+        if key in checkpoint_plan:
+            plan[key] = checkpoint_plan[key]
+
+
+def _restored_tool_outputs(plan: dict[str, Any]) -> dict[str, Any]:
+    step_by_tool = {
+        str(step.get("tool") or ""): step
+        for step in plan.get("steps", []) or []
+        if isinstance(step, dict)
+    }
+    if not isinstance(plan.get("tool_outputs"), dict):
+        return {}
+    restored: dict[str, Any] = {}
+    for key, value in plan["tool_outputs"].items():
+        if not isinstance(value, dict) or not value:
+            continue
+        step = step_by_tool.get(str(key), {})
+        step_status = str(step.get("status") or "done")
+        metrics = step.get("metrics") if isinstance(step.get("metrics"), dict) else {}
+        is_retry_observation = (
+            str(metrics.get("tool_result_status") or "") == "retryable_error"
+        )
+        if step_status in {"done", "partial", "blocked", "failed"} or is_retry_observation:
+            restored[str(key)] = value
+    return restored
+
+
+def _build_agent_context(
+    connection: Any,
+    run_dict: dict[str, Any],
+    project: dict[str, Any],
+    plan: dict[str, Any],
+) -> ToolContext:
+    papers = [
+        item for item in plan.get("papers", [])
+        if isinstance(item, dict)
+    ] if isinstance(plan.get("papers"), list) else []
+    outputs = _restored_tool_outputs(plan)
+    artifacts: list[dict[str, Any]] = []
+    for ref in plan.get("artifact_refs", []) or []:
+        if not isinstance(ref, dict) or not ref.get("id"):
+            continue
+        artifact = fetch_artifact_dict(connection, str(ref["id"]))
+        if artifact is not None:
+            artifacts.append(artifact)
+    context = ToolContext(
+        run_id=str(run_dict["id"]),
+        project=project,
+        task=str(run_dict["task"]),
+        plan=plan,
+        papers=papers,
+        artifacts=artifacts,
+        outputs=outputs,
+    )
+    saved = outputs.get("save_artifact")
+    if isinstance(saved, dict) and saved.get("artifact_id"):
+        context.artifact_id = str(saved["artifact_id"])
+    elif artifacts:
+        run_artifacts = [
+            item for item in artifacts
+            if str(item.get("title") or "").startswith("agent_run_")
+        ]
+        if run_artifacts:
+            context.artifact_id = str(run_artifacts[-1].get("id") or "") or None
+    return context
+
+
+def _step_for_tool(plan: dict[str, Any], tool_name: str) -> dict[str, Any] | None:
+    return next(
+        (
+            step for step in plan.get("steps", []) or []
+            if isinstance(step, dict) and str(step.get("tool") or "") == tool_name
+        ),
+        None,
+    )
+
+
+def _eligible_agent_tools(
+    plan: dict[str, Any],
+    context: ToolContext,
+    registry: Any,
+) -> list[str]:
+    outputs = context.outputs
+    has_papers = bool(context.papers)
+    has_research_output = any(
+        tool in outputs
+        for tool in (
+            "literature_search",
+            "direction_review",
+            "research_memory_query",
+            "research_decision",
+        )
+    )
+    eligible: list[str] = []
+    for step in plan.get("steps", []) or []:
+        if not isinstance(step, dict) or step.get("status") != "queued":
+            continue
+        tool = str(step.get("tool") or "")
+        if tool == "create_plan" or not registry.has(tool):
+            continue
+        if tool == "literature_search":
+            eligible.append(tool)
+        elif tool == "direction_review" and (
+            has_papers or "literature_search" in outputs
+        ):
+            eligible.append(tool)
+        elif tool == "research_memory_query" and (
+            has_papers
+            or "literature_search" in outputs
+            or "direction_review" in outputs
+        ):
+            eligible.append(tool)
+        elif tool == "research_decision" and (
+            "direction_review" in outputs
+            or "research_memory_query" in outputs
+        ):
+            eligible.append(tool)
+        elif tool == "save_artifact" and has_research_output:
+            eligible.append(tool)
+        elif tool == "update_timeline" and context.artifact_id:
+            eligible.append(tool)
+    return eligible
+
+
+def _remaining_budgets(
+    state: dict[str, Any],
+    budgets: AgentBudgets,
+    elapsed_seconds: float,
+) -> dict[str, Any]:
+    cost = float(state.get("estimated_cost_usd") or 0.0)
+    return {
+        "steps": max(0, budgets.max_steps - int(state.get("steps_executed") or 0)),
+        "replans": max(0, budgets.max_replans - int(state.get("replans") or 0)),
+        "runtime_seconds": max(0.0, budgets.max_runtime_seconds - elapsed_seconds),
+        "model_calls": max(0, budgets.max_model_calls - int(state.get("model_calls") or 0)),
+        "cost_usd": (
+            max(0.0, budgets.max_cost_usd - cost)
+            if budgets.max_cost_usd is not None
+            else None
+        ),
+    }
+
+
+def _agent_observation(
+    state: dict[str, Any],
+    context: ToolContext,
+) -> dict[str, Any]:
+    return {
+        "research_task": context.task[:1000],
+        "project_context": {
+            "title": str(context.project.get("title") or "")[:300],
+            "keyword": str(context.project.get("keyword") or "")[:500],
+            "field": str(context.project.get("field") or "")[:200],
+        },
+        "last_tool_result": sanitize_agent_payload(state.get("last_observation")),
+        "completed_or_attempted_tools": sorted(context.outputs),
+        "paper_count": len(context.papers),
+        "artifact_created": bool(context.artifact_id),
+        "consecutive_failures": int(state.get("consecutive_failures") or 0),
+    }
+
+
+def _validate_runtime_decision(
+    decision: AgentActionDecision,
+    eligible_tools: set[str],
+) -> None:
+    forbidden = find_forbidden_model_fields(decision.arguments)
+    if forbidden:
+        raise ValueError(
+            "agent_action_forbidden_control_fields: " + ", ".join(sorted(forbidden))
+        )
+    if decision.arguments:
+        raise ValueError("agent_action_arguments_not_allowed")
+    if decision.action == "tool" and decision.tool not in eligible_tools:
+        raise ValueError(
+            f"agent_action_tool_not_allowed: {decision.tool or '<empty>'}"
+        )
+    if decision.action not in {"tool", "finish", "fallback"}:
+        raise ValueError("agent_action_invalid")
+
+
+def _append_agent_trace(
+    state: dict[str, Any],
+    *,
+    observation: dict[str, Any],
+    decision: AgentActionDecision | None,
+    result: dict[str, Any],
+) -> None:
+    trace = state.get("trace")
+    if not isinstance(trace, list):
+        trace = []
+        state["trace"] = trace
+    trace.append(
+        {
+            "index": len(trace) + 1,
+            "recorded_at": utc_now(),
+            "observation": sanitize_agent_payload(observation),
+            "reasoning_summary": (
+                decision.reasoning_summary[:1000] if decision is not None else ""
+            ),
+            "selected_tool": decision.tool if decision is not None else "",
+            "arguments": sanitize_agent_payload(
+                decision.arguments if decision is not None else {}
+            ),
+            "action": decision.action if decision is not None else "rejected",
+            "result": sanitize_agent_payload(result),
+            "checkpoint": {
+                "steps_executed": int(state.get("steps_executed") or 0),
+                "replans": int(state.get("replans") or 0),
+                "model_calls": int(state.get("model_calls") or 0),
+            },
+        }
+    )
+    if len(trace) > 100:
+        del trace[:-100]
+
+
+def _apply_tool_result(
+    context: ToolContext,
+    plan: dict[str, Any],
+    result: ToolResult,
+) -> dict[str, Any]:
+    context.outputs[result.tool] = result.data
+    metrics = result.summary_metrics or infer_tool_summary_metrics(result.data)
+    metrics = {**metrics, "tool_result_status": result.status}
+    context.summary_metrics[result.tool] = metrics
+    papers = result.data.get("papers")
+    if isinstance(papers, list) and papers:
+        context.papers = [item for item in papers if isinstance(item, dict)]
+        plan["papers"] = context.papers
+    artifact = result.data.get("artifact")
+    if isinstance(artifact, dict):
+        context.artifacts.append(artifact)
+    artifacts = result.data.get("artifacts")
+    if isinstance(artifacts, list):
+        context.artifacts.extend(item for item in artifacts if isinstance(item, dict))
+    if result.data.get("artifact_id"):
+        context.artifact_id = str(result.data["artifact_id"])
+    step_status = {
+        "success": "done",
+        "partial": "partial",
+        "blocked": "blocked",
+        "retryable_error": "queued",
+        "fatal_error": "failed",
+    }[str(result.status)]
+    step = _step_for_tool(plan, result.tool)
+    if step is not None:
+        mark_plan_step_by_id(plan, str(step.get("id") or ""), step_status, metrics)
+    return metrics
+
+
+def _bounded_checkpoint(
+    execution: Any,
+    plan: dict[str, Any],
+    state: dict[str, Any],
+    tool_name: str,
+    progress: int,
+) -> None:
+    if execution is None:
+        return
+    execution.checkpoint(
+        tool_name,
+        progress,
+        {
+            "execution_mode": "bounded_observe_reason_act",
+            "bounded_agent": state,
+            "plan": plan,
+        },
+    )
+
+
+def _has_reliable_agent_evidence(context: ToolContext) -> bool:
+    memory = context.outputs.get("research_memory_query")
+    if isinstance(memory, dict):
+        if str(memory.get("reliability_status") or "") == "no_reliable_hit":
+            return False
+        if int(memory.get("hit_count") or memory.get("memory_hit_count") or 0) > 0:
+            return True
+    direction = context.outputs.get("direction_review")
+    if isinstance(direction, dict) and int(direction.get("relevant_read_count") or 0) > 0:
+        return True
+    return False
+
+
+def _mark_remaining_steps(plan: dict[str, Any], status: str) -> None:
+    for step in plan.get("steps", []) or []:
+        if isinstance(step, dict) and step.get("status") in {"queued", "running"}:
+            step["status"] = status
+
+
+def _persist_bounded_trace_artifact(
+    connection: Any,
+    context: ToolContext,
+    plan: dict[str, Any],
+) -> None:
+    if not context.artifact_id:
+        return
+    row = connection.execute(
+        "SELECT content_json FROM artifacts WHERE id = ? AND project_id = ?",
+        (context.artifact_id, context.project["id"]),
+    ).fetchone()
+    if row is None:
+        return
+    try:
+        payload = json.loads(str(row["content_json"] or "{}"))
+    except json.JSONDecodeError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload["agent_label"] = BOUNDED_AGENT_LABEL
+    payload["execution_mode"] = str(
+        plan.get("execution_mode") or "bounded_observe_reason_act"
+    )
+    payload["bounded_agent"] = sanitize_agent_payload(_bounded_state(plan))
+    connection.execute(
+        "UPDATE artifacts SET content_json = ?, updated_at = ? WHERE id = ?",
+        (
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            utc_now(),
+            context.artifact_id,
+        ),
+    )
+
+
+def _stop_bounded_agent(
+    connection: Any,
+    run_dict: dict[str, Any],
+    plan: dict[str, Any],
+    context: ToolContext,
+    state: dict[str, Any],
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    _mark_remaining_steps(plan, "blocked")
+    state["stop_reason"] = reason
+    state["last_observation"] = {
+        "type": "safe_stop",
+        "status": "blocked",
+        "summary": reason,
+    }
+    _persist_bounded_trace_artifact(connection, context, plan)
+    persist_agent_run_progress(
+        connection,
+        str(run_dict["id"]),
+        plan,
+        "partial",
+        outputs=context.outputs,
+        papers=context.papers,
+        artifacts=context.artifacts,
+        warnings=[reason],
+        run_status_summary=f"blocked: {reason}",
+    )
+    insert_tool_event(
+        connection,
+        str(run_dict["session_id"]),
+        "bounded_agent.stop",
+        "blocked",
+        reason[:500],
+        utc_now(),
+    )
+    connection.commit()
+    return {"run_id": str(run_dict["id"]), "status": "partial", "reason": reason}
+
+
+def _finalize_bounded_agent(
+    connection: Any,
+    run_dict: dict[str, Any],
+    project: dict[str, Any],
+    plan: dict[str, Any],
+    context: ToolContext,
+) -> dict[str, Any]:
+    _mark_remaining_steps(plan, "blocked")
+    if context.artifact_id is None and context.artifacts:
+        context.artifact_id = str(context.artifacts[-1].get("id") or "") or None
+    if context.artifact_id is None:
+        return _stop_bounded_agent(
+            connection,
+            run_dict,
+            plan,
+            context,
+            _bounded_state(plan),
+            reason="no result artifact was produced before the bounded stop",
+        )
+    _persist_bounded_trace_artifact(connection, context, plan)
+    run_summary = agent_run_summary(
+        plan,
+        context.outputs,
+        len(context.papers),
+        context.artifacts,
+    )
+    final_status = str(run_summary["status"])
+    if any(
+        isinstance(step, dict) and step.get("status") in {"partial", "blocked", "failed"}
+        for step in plan.get("steps", []) or []
+    ):
+        final_status = "partial"
+    if not _has_reliable_agent_evidence(context):
+        final_status = "partial"
+        run_summary["summary"] = "no_reliable_hit: no reliable paper evidence was established."
+    persist_agent_run_progress(
+        connection,
+        str(run_dict["id"]),
+        plan,
+        final_status,
+        outputs=context.outputs,
+        papers=context.papers,
+        artifacts=context.artifacts,
+        result_artifact_id=context.artifact_id,
+        run_status_summary=str(run_summary["summary"]),
+    )
+    insert_tool_event(
+        connection,
+        str(run_dict["session_id"]),
+        "bounded_agent.complete",
+        "done" if final_status == "completed" else "partial",
+        str(run_summary["summary"]),
+        utc_now(),
+    )
+    update_project_stage(
+        connection,
+        project_id=str(run_dict["project_id"]),
+        stage="workflow-run",
+        updated_at=utc_now(),
+    )
+    connection.commit()
+    return {
+        "run_id": str(run_dict["id"]),
+        "status": final_status,
+        "artifact_id": context.artifact_id,
+    }
+
+
+def run_bounded_agent_loop(
+    run_id: str,
+    execution: Any = None,
+    durable_checkpoint: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    with get_connection() as connection:
+        run_dict = fetch_agent_run_dict(connection, run_id)
+        project = fetch_project_dict(connection, str(run_dict["project_id"]))
+        ensure_real_project_for_agent(project)
+        plan = parse_agent_plan(str(run_dict["plan_json"]))
+        if not plan.get("user_confirmed"):
+            return _stop_bounded_agent(
+                connection,
+                run_dict,
+                plan,
+                _build_agent_context(connection, run_dict, project, plan),
+                _bounded_state(plan),
+                reason="user confirmation is required before external or tool actions",
+            )
+        restore_bounded_checkpoint(plan, durable_checkpoint)
+        state = _bounded_state(plan)
+        budgets = _agent_budgets(state)
+        prior_runtime_seconds = float(state.get("runtime_seconds_used") or 0.0)
+        context = _build_agent_context(connection, run_dict, project, plan)
+        registry = build_agent_tool_registry(connection)
+        validate_workflow_plan(plan, registered_tools=registry.names())
+        for step in plan.get("steps", []) or []:
+            if isinstance(step, dict) and step.get("status") == "running":
+                step["status"] = "queued"
+
+        while True:
+            if execution is not None:
+                execution.raise_if_cancelled()
+            if agent_cancellation_requested(connection, run_id):
+                mark_queued_agent_steps_cancelled(plan)
+                persist_agent_run_progress(
+                    connection,
+                    run_id,
+                    plan,
+                    "cancelled",
+                    outputs=context.outputs,
+                    papers=context.papers,
+                    artifacts=context.artifacts,
+                    warnings=["Bounded Research Agent cancelled by user request."],
+                    run_status_summary="cancelled: stopped at a tool boundary.",
+                )
+                return {"run_id": run_id, "status": "cancelled"}
+
+            elapsed = prior_runtime_seconds + (time.monotonic() - started)
+            state["runtime_seconds_used"] = round(elapsed, 3)
+            if elapsed >= budgets.max_runtime_seconds:
+                return _stop_bounded_agent(
+                    connection, run_dict, plan, context, state,
+                    reason="max_runtime_seconds budget reached",
+                )
+            if int(state.get("steps_executed") or 0) >= budgets.max_steps:
+                return _stop_bounded_agent(
+                    connection, run_dict, plan, context, state,
+                    reason="max_steps budget reached",
+                )
+            if int(state.get("model_calls") or 0) >= budgets.max_model_calls:
+                return _stop_bounded_agent(
+                    connection, run_dict, plan, context, state,
+                    reason="max_model_calls budget reached",
+                )
+            current_cost = float(state.get("estimated_cost_usd") or 0.0)
+            if budgets.max_cost_usd is not None and current_cost >= budgets.max_cost_usd:
+                return _stop_bounded_agent(
+                    connection, run_dict, plan, context, state,
+                    reason="optional model cost budget reached",
+                )
+            if int(state.get("consecutive_failures") or 0) >= 3:
+                return _stop_bounded_agent(
+                    connection, run_dict, plan, context, state,
+                    reason="consecutive tool failure limit reached",
+                )
+
+            eligible = _eligible_agent_tools(plan, context, registry)
+            if not eligible:
+                if context.artifact_id:
+                    return _finalize_bounded_agent(
+                        connection, run_dict, project, plan, context
+                    )
+                return _stop_bounded_agent(
+                    connection, run_dict, plan, context, state,
+                    reason=(
+                        "no_reliable_hit: no eligible evidence-producing tool remains"
+                    ),
+                )
+
+            observation = _agent_observation(state, context)
+            descriptions = {
+                item["name"]: item["description"]
+                for item in registry.describe()
+                if item.get("name") in eligible
+            }
+            allowed = [
+                {"name": name, "description": descriptions.get(name, "")}
+                for name in eligible
+            ]
+            provider = get_model_provider()
+            state["model_calls"] = int(state.get("model_calls") or 0) + 1
+            try:
+                decision = provider.choose_next_action(
+                    observation,
+                    allowed,
+                    _remaining_budgets(state, budgets, elapsed),
+                )
+                _validate_runtime_decision(decision, set(eligible))
+            except Exception as error:
+                rejection = {
+                    "status": "fatal_error",
+                    "summary": f"model action rejected: {error}",
+                }
+                _append_agent_trace(
+                    state,
+                    observation=observation,
+                    decision=None,
+                    result=rejection,
+                )
+                state["fallback_reason"] = "invalid_or_unregistered_model_action"
+                plan["execution_mode"] = "deterministic_tool_graph"
+                persist_agent_run_progress(
+                    connection,
+                    run_id,
+                    plan,
+                    "running",
+                    outputs=context.outputs,
+                    papers=context.papers,
+                    artifacts=context.artifacts,
+                    warnings=[rejection["summary"]],
+                    run_status_summary="fallback: rejected model action.",
+                )
+                _bounded_checkpoint(execution, plan, state, "fallback", 10)
+                return {"run_id": run_id, "status": "running", "fallback": True}
+
+            if decision.audit is not None:
+                audit = decision.audit.to_dict()
+                insert_model_call_audit(
+                    connection,
+                    project_id=str(run_dict["project_id"]),
+                    run_id=run_id,
+                    audit=audit,
+                )
+                state["estimated_cost_usd"] = round(
+                    float(state.get("estimated_cost_usd") or 0.0)
+                    + float(decision.audit.estimated_cost_usd or 0.0),
+                    8,
+                )
+
+            if state.get("needs_replan") or decision.replan:
+                if int(state.get("replans") or 0) >= budgets.max_replans:
+                    _append_agent_trace(
+                        state,
+                        observation=observation,
+                        decision=decision,
+                        result={
+                            "status": "blocked",
+                            "summary": "max_replans budget reached",
+                        },
+                    )
+                    return _stop_bounded_agent(
+                        connection, run_dict, plan, context, state,
+                        reason="max_replans budget reached",
+                    )
+                state["replans"] = int(state.get("replans") or 0) + 1
+                state["needs_replan"] = False
+
+            if decision.action == "fallback":
+                state["fallback_reason"] = (
+                    decision.audit.fallback_reason
+                    if decision.audit is not None
+                    else "provider_requested_fallback"
+                )
+                _append_agent_trace(
+                    state,
+                    observation=observation,
+                    decision=decision,
+                    result={"status": "partial", "summary": "deterministic fallback"},
+                )
+                plan["execution_mode"] = "deterministic_tool_graph"
+                persist_agent_run_progress(
+                    connection,
+                    run_id,
+                    plan,
+                    "running",
+                    outputs=context.outputs,
+                    papers=context.papers,
+                    artifacts=context.artifacts,
+                    warnings=["Bounded action provider unavailable; deterministic fallback used."],
+                    run_status_summary="running: deterministic fallback.",
+                )
+                _bounded_checkpoint(execution, plan, state, "fallback", 10)
+                return {"run_id": run_id, "status": "running", "fallback": True}
+
+            if decision.action == "finish":
+                if context.artifact_id is None:
+                    blocked_result = {
+                        "status": "blocked",
+                        "summary": "finish rejected until save_artifact creates a result",
+                    }
+                    state["last_observation"] = blocked_result
+                    _append_agent_trace(
+                        state,
+                        observation=observation,
+                        decision=decision,
+                        result=blocked_result,
+                    )
+                    persist_agent_run_progress(
+                        connection,
+                        run_id,
+                        plan,
+                        "running",
+                        outputs=context.outputs,
+                        papers=context.papers,
+                        artifacts=context.artifacts,
+                        warnings=[blocked_result["summary"]],
+                    )
+                    continue
+                return _finalize_bounded_agent(
+                    connection, run_dict, project, plan, context
+                )
+
+            tool_name = decision.tool
+            step = _step_for_tool(plan, tool_name)
+            if step is None:
+                raise RuntimeError(f"Missing plan step for allowlisted tool {tool_name}")
+            mark_plan_step_by_id(plan, str(step.get("id") or ""), "running")
+            insert_tool_event(
+                connection,
+                str(run_dict["session_id"]),
+                tool_name,
+                "running",
+                f"Bounded Research Agent selected {tool_name}.",
+                utc_now(),
+            )
+            persist_agent_run_progress(
+                connection,
+                run_id,
+                plan,
+                "running",
+                outputs=context.outputs,
+                papers=context.papers,
+                artifacts=context.artifacts,
+            )
+            _bounded_checkpoint(
+                execution,
+                plan,
+                state,
+                tool_name,
+                min(90, 10 + int(state.get("steps_executed") or 0) * 10),
+            )
+            try:
+                result = qualify_tool_result(registry.run(tool_name, context))
+            except (ValueError, KeyError, PermissionError, HTTPException) as error:
+                result = ToolResult(
+                    tool=tool_name,
+                    status="fatal_error",
+                    summary=str(error) or error.__class__.__name__,
+                    data={"errors": [str(error)]},
+                )
+            except Exception as error:  # A recoverable tool failure is model-visible.
+                result = ToolResult(
+                    tool=tool_name,
+                    status="retryable_error",
+                    summary=str(error) or error.__class__.__name__,
+                    data={"errors": [str(error)]},
+                )
+
+            state["steps_executed"] = int(state.get("steps_executed") or 0) + 1
+            _apply_tool_result(context, plan, result)
+            result_observation = result.to_observation()
+            state["last_observation"] = result_observation
+            if result.status in {"retryable_error", "fatal_error"}:
+                state["consecutive_failures"] = int(
+                    state.get("consecutive_failures") or 0
+                ) + 1
+                state["needs_replan"] = result.status == "retryable_error"
+            else:
+                state["consecutive_failures"] = 0
+                state["needs_replan"] = False
+            _append_agent_trace(
+                state,
+                observation=observation,
+                decision=decision,
+                result=result_observation,
+            )
+            event_status = {
+                "success": "done",
+                "partial": "partial",
+                "blocked": "blocked",
+                "retryable_error": "partial",
+                "fatal_error": "failed",
+            }[str(result.status)]
+            insert_tool_event(
+                connection,
+                str(run_dict["session_id"]),
+                tool_name,
+                event_status,  # type: ignore[arg-type]
+                result.summary[:500],
+                utc_now(),
+            )
+            persist_agent_run_progress(
+                connection,
+                run_id,
+                plan,
+                "running",
+                outputs=context.outputs,
+                papers=context.papers,
+                artifacts=context.artifacts,
+                warnings=(
+                    [f"{tool_name}: {result.status}: {result.summary}"]
+                    if result.status != "success"
+                    else []
+                ),
+            )
+            _bounded_checkpoint(
+                execution,
+                plan,
+                state,
+                tool_name,
+                min(95, 15 + int(state.get("steps_executed") or 0) * 10),
+            )
+            if tool_name == "update_timeline" and result.status == "success":
+                return _finalize_bounded_agent(
+                    connection, run_dict, project, plan, context
+                )
+            if result.status == "fatal_error":
+                return _stop_bounded_agent(
+                    connection, run_dict, plan, context, state,
+                    reason=f"fatal tool error in {tool_name}: {result.summary}",
+                )
+
+
+def run_agent_loop(
+    run_id: str,
+    execution: Any = None,
+    durable_checkpoint: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    with get_connection() as connection:
+        run_dict = fetch_agent_run_dict(connection, run_id)
+        plan = parse_agent_plan(str(run_dict.get("plan_json") or "{}"))
+        execution_mode = str(plan.get("execution_mode") or "deterministic_tool_graph")
+    if execution_mode == "bounded_observe_reason_act":
+        outcome = run_bounded_agent_loop(
+            run_id,
+            execution=execution,
+            durable_checkpoint=durable_checkpoint,
+        )
+        if outcome.get("fallback"):
+            return run_deterministic_agent_loop(run_id, execution=execution)
+        return outcome
+    return run_deterministic_agent_loop(run_id, execution=execution)
+
+
+def run_deterministic_agent_loop(run_id: str, execution: Any = None) -> dict:
     with get_connection() as connection:
         run_dict = fetch_agent_run_dict(connection, run_id)
         project = fetch_project_dict(
@@ -843,11 +1728,7 @@ def run_agent_loop(run_id: str, execution: Any = None) -> dict:
             if isinstance(plan.get("papers"), list)
             else []
         )
-        restored_outputs = (
-            dict(plan["tool_outputs"])
-            if isinstance(plan.get("tool_outputs"), dict)
-            else {}
-        )
+        restored_outputs = _restored_tool_outputs(plan)
         restored_artifacts = []
         for ref in plan.get("artifact_refs", []) or []:
             if not isinstance(ref, dict) or not ref.get("id"):
@@ -887,7 +1768,13 @@ def run_agent_loop(run_id: str, execution: Any = None) -> dict:
             if not isinstance(step, dict):
                 continue
             tool_name = str(step.get("tool", ""))
-            if step.get("status") == "done":
+            if step.get("status") in {
+                "done",
+                "partial",
+                "blocked",
+                "failed",
+                "cancelled",
+            }:
                 continue
             if tool_name == "create_plan":
                 step["status"] = "done"
@@ -912,7 +1799,7 @@ def run_agent_loop(run_id: str, execution: Any = None) -> dict:
                     papers=context.papers,
                     artifacts=context.artifacts,
                     warnings=[
-                        "Research Workflow Run cancelled "
+                        "Bounded Research Agent run cancelled "
                         "by user request."
                     ],
                     run_status_summary=(
@@ -926,7 +1813,7 @@ def run_agent_loop(run_id: str, execution: Any = None) -> dict:
                     "agent.cancel",
                     "cancelled",
                     (
-                        "用户已取消 Research Workflow Run，"
+                        "用户已取消 Bounded Research Agent run，"
                         "后续 tool step 已停止。"
                     ),
                     cancelled_at,
@@ -1118,7 +2005,7 @@ def run_agent_loop(run_id: str, execution: Any = None) -> dict:
                 papers=context.papers,
                 artifacts=context.artifacts,
                 warnings=[
-                    "Research Workflow Run completed "
+                    "Bounded Research Agent run completed "
                     "without a result artifact."
                 ],
                 run_status_summary=(
@@ -1179,7 +2066,11 @@ def run_agent_job(
     job: DurableJob,
     execution: Any,
 ) -> dict:
-    return run_agent_loop(job.id, execution=execution)
+    return run_agent_loop(
+        job.id,
+        execution=execution,
+        durable_checkpoint=job.checkpoint,
+    )
 
 
 def persist_agent_job_failure(
@@ -1204,7 +2095,7 @@ def persist_agent_job_failure(
             plan,
             "failed",
             warnings=[
-                "Research Workflow Run exhausted retries: "
+                "Bounded Research Agent run exhausted retries: "
                 f"{error}"
             ],
             run_status_summary=(
@@ -1235,7 +2126,7 @@ def persist_agent_job_cancellation(job: DurableJob) -> None:
             plan,
             "cancelled",
             warnings=[
-                "Research Workflow Run cancelled "
+                "Bounded Research Agent run cancelled "
                 "by durable worker request."
             ],
             run_status_summary=(
@@ -1273,7 +2164,7 @@ def cancel_agent_run(run_id: str) -> AgentRunStatusResponse:
                 plan,
                 "cancelled",
                 warnings=[
-                    "Research Workflow Run cancelled before execution."
+                    "Bounded Research Agent run cancelled before execution."
                 ],
                 run_status_summary=(
                     "cancelled: stopped before execution."
@@ -1312,10 +2203,10 @@ def cancel_agent_run(run_id: str) -> AgentRunStatusResponse:
             "agent.cancel",
             "running" if status == "running" else "cancelled",
             (
-                "已请求取消 Research Workflow Run；"
+                "已请求取消 Bounded Research Agent run；"
                 "当前 tool 结束后会停止后续步骤。"
                 if status == "running"
-                else "已取消尚未开始执行的 Research Workflow Run。"
+                else "已取消尚未开始执行的 Bounded Research Agent run。"
             ),
             cancelled_at,
         )
@@ -1342,7 +2233,7 @@ def execute_agent_run(
         raise HTTPException(
             status_code=400,
             detail=(
-                "Research Workflow Run execution "
+                "Bounded Research Agent run execution "
                 "requires confirmation"
             ),
         )
@@ -1367,6 +2258,7 @@ def execute_agent_run(
             )
 
         plan = parse_agent_plan(run_dict["plan_json"])
+        plan["user_confirmed"] = True
         mark_agent_run_running(
             connection,
             run_id=run_id,
@@ -1378,7 +2270,7 @@ def execute_agent_run(
             "agent.execute",
             "running",
             (
-                "Research Workflow Run 已启动；前端将通过轮询刷新 "
+                "Bounded Research Agent 已启动；前端将通过轮询刷新 "
                 "tool timeline、artifact 和 workflow steps。"
             ),
             now,

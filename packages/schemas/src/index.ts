@@ -671,6 +671,7 @@ export interface ApiModelCallAudit {
     requested_provider: string;
     requested_model: string;
     external_data_sent: boolean;
+    estimated_cost_usd?: number | null;
 }
 export interface ApiAgentPlanResponse {
     run_id: string;
@@ -679,7 +680,8 @@ export interface ApiAgentPlanResponse {
     task: string;
     provider: string;
     run_kind: "research_workflow";
-    execution_mode: "deterministic_tool_graph";
+    agent_label: "Bounded Research Agent";
+    execution_mode: "bounded_observe_reason_act" | "deterministic_tool_graph";
     model_call?: ApiModelCallAudit;
     status: ApiAgentRunStatus;
     rationale: string;
@@ -689,7 +691,8 @@ export interface ApiAgentPlanResponse {
 export interface ApiAgentExecuteResponse {
     run_id: string;
     run_kind?: "research_workflow";
-    execution_mode?: "deterministic_tool_graph";
+    agent_label?: "Bounded Research Agent";
+    execution_mode?: "bounded_observe_reason_act" | "deterministic_tool_graph";
     model_call?: ApiModelCallAudit | null;
     status: ApiAgentRunStatus;
     artifact?: ApiArtifact | null;
@@ -711,7 +714,8 @@ export interface ApiAgentExecuteResponse {
 export interface ApiAgentRunStatusResponse {
     run_id: string;
     run_kind?: "research_workflow";
-    execution_mode?: "deterministic_tool_graph";
+    agent_label?: "Bounded Research Agent";
+    execution_mode?: "bounded_observe_reason_act" | "deterministic_tool_graph";
     model_call?: ApiModelCallAudit | null;
     status: ApiAgentRunStatus;
     steps: ApiAgentPlanStep[];
