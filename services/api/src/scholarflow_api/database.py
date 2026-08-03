@@ -13,7 +13,7 @@ from uuid import uuid4
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / ".data" / "scholarflow.sqlite3"
 SQLITE_BUSY_TIMEOUT_MS = 5000
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 
 class DatabaseInitializationError(RuntimeError):
@@ -122,6 +122,7 @@ def apply_schema_migration(connection: sqlite3.Connection, version: int) -> None
         2: "durable_local_jobs",
         3: "evidence_hybrid_rag_fts5",
         4: "model_provider_audit_contract",
+        5: "versioned_agent_plan_revisions",
     }
     connection.execute("PRAGMA foreign_keys = OFF")
     try:
@@ -140,6 +141,8 @@ def apply_schema_migration(connection: sqlite3.Connection, version: int) -> None
             initialize_schema_v3(connection)
         elif version == 4:
             initialize_schema_v4(connection)
+        elif version == 5:
+            initialize_schema_v5(connection)
         else:
             raise DatabaseMigrationError(f"Unknown SQLite schema migration: {version}.")
 
@@ -701,6 +704,49 @@ def initialize_schema_v4(connection: sqlite3.Connection) -> None:
     )
 
 
+def initialize_schema_v5(connection: sqlite3.Connection) -> None:
+    connection.execute("BEGIN IMMEDIATE")
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS plan_revisions (
+            id TEXT PRIMARY KEY,
+            parent_revision_id TEXT,
+            run_id TEXT NOT NULL,
+            trigger TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            source_tool_result_id TEXT,
+            previous_remaining_steps_json TEXT NOT NULL DEFAULT '[]',
+            revised_remaining_steps_json TEXT NOT NULL DEFAULT '[]',
+            skipped_steps_json TEXT NOT NULL DEFAULT '[]',
+            reordered_steps_json TEXT NOT NULL DEFAULT '[]',
+            retry_steps_json TEXT NOT NULL DEFAULT '[]',
+            plan_diff_json TEXT NOT NULL DEFAULT '{}',
+            validation_result_json TEXT NOT NULL DEFAULT '{}',
+            model_request_id TEXT,
+            deterministic_fallback_reason TEXT NOT NULL DEFAULT '',
+            idempotency_key TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (parent_revision_id) REFERENCES plan_revisions(id) ON DELETE SET NULL,
+            FOREIGN KEY (run_id) REFERENCES agent_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_tool_result_id) REFERENCES tool_events(id) ON DELETE SET NULL,
+            FOREIGN KEY (model_request_id) REFERENCES model_call_audits(id) ON DELETE SET NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_plan_revisions_run
+        ON plan_revisions(run_id, created_at)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_plan_revisions_parent
+        ON plan_revisions(parent_revision_id)
+        """
+    )
+
+
 FOREIGN_KEY_CONTRACTS: dict[str, frozenset[tuple[str, str, str, str]]] = {
     "projects": frozenset(
         {("active_session_id", "sessions", "id", "SET NULL")}
@@ -763,12 +809,20 @@ FOREIGN_KEY_CONTRACTS: dict[str, frozenset[tuple[str, str, str, str]]] = {
             ("run_id", "agent_runs", "id", "SET NULL"),
         }
     ),
+    "plan_revisions": frozenset(
+        {
+            ("parent_revision_id", "plan_revisions", "id", "SET NULL"),
+            ("run_id", "agent_runs", "id", "CASCADE"),
+            ("source_tool_result_id", "tool_events", "id", "SET NULL"),
+            ("model_request_id", "model_call_audits", "id", "SET NULL"),
+        }
+    ),
 }
 
 V1_FOREIGN_KEY_CONTRACTS = {
     table_name: contract
     for table_name, contract in FOREIGN_KEY_CONTRACTS.items()
-    if table_name not in {"jobs", "model_call_audits"}
+    if table_name not in {"jobs", "model_call_audits", "plan_revisions"}
 }
 
 
@@ -999,6 +1053,37 @@ def validate_schema_contracts(connection: sqlite3.Connection) -> None:
         raise DatabaseInitializationError(
             "SQLite schema contract mismatch: model_call_audits columns are missing: "
             + ", ".join(missing_audit_columns)
+        )
+    required_revision_columns = {
+        "id",
+        "parent_revision_id",
+        "run_id",
+        "trigger",
+        "reason",
+        "source_tool_result_id",
+        "previous_remaining_steps_json",
+        "revised_remaining_steps_json",
+        "skipped_steps_json",
+        "reordered_steps_json",
+        "retry_steps_json",
+        "plan_diff_json",
+        "validation_result_json",
+        "model_request_id",
+        "deterministic_fallback_reason",
+        "idempotency_key",
+        "created_at",
+    }
+    actual_revision_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(plan_revisions)").fetchall()
+    }
+    missing_revision_columns = sorted(
+        required_revision_columns - actual_revision_columns
+    )
+    if missing_revision_columns:
+        raise DatabaseInitializationError(
+            "SQLite schema contract mismatch: plan_revisions columns are missing: "
+            + ", ".join(missing_revision_columns)
         )
 
 

@@ -14,7 +14,8 @@ def insert_tool_event(
     summary: str,
     created_at: str,
     time_label: str = "Now",
-) -> None:
+) -> str:
+    event_id = new_id("event")
     connection.execute(
         """
         INSERT INTO tool_events (
@@ -23,7 +24,7 @@ def insert_tool_event(
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            new_id("event"),
+            event_id,
             session_id,
             time_label,
             tool,
@@ -32,3 +33,4 @@ def insert_tool_event(
             created_at,
         ),
     )
+    return event_id

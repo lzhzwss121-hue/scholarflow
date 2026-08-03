@@ -242,6 +242,47 @@ class ModelProviderContractTests(unittest.TestCase):
                 self.assertEqual(decision.audit.purpose, "choose_next_action")
                 self.assertTrue(decision.audit.external_data_sent)
 
+    def test_external_plan_revision_is_only_a_schema_checked_candidate(self) -> None:
+        revision_payload = {
+            "reason": "Retry search after consulting memory.",
+            "revised_remaining_step_ids": ["memory", "search", "save"],
+            "skipped_step_ids": [],
+            "retry_step_ids": ["search"],
+        }
+        with mock_model_server(
+            raw_body=completion(revision_payload, "deepseek-chat")
+        ) as (base_url, records), patch.dict(
+            os.environ,
+            {
+                "DEEPSEEK_API_KEY": "provider-secret",
+                "DEEPSEEK_BASE_URL": base_url,
+            },
+        ):
+            candidate = DeepSeekProvider().propose_plan_revision(
+                {"last_tool_result": {"tool": "literature_search", "status": "retryable_error"}},
+                [
+                    {"id": "search", "tool": "literature_search", "status": "queued"},
+                    {"id": "memory", "tool": "research_memory_query", "status": "queued"},
+                    {"id": "save", "tool": "save_artifact", "status": "queued"},
+                ],
+                [
+                    {"name": "literature_search", "description": "Search"},
+                    {"name": "research_memory_query", "description": "Memory"},
+                    {"name": "save_artifact", "description": "Save"},
+                ],
+                {"steps": 4, "replans": 1, "model_calls": 4},
+            )
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(
+            candidate.revised_remaining_step_ids,
+            ["memory", "search", "save"],
+        )
+        self.assertEqual(candidate.retry_step_ids, ["search"])
+        self.assertEqual(candidate.audit.purpose, "propose_plan_revision")
+        self.assertEqual(candidate.audit.provider, "deepseek")
+        self.assertTrue(candidate.audit.external_data_sent)
+
     def test_missing_key_is_visible_local_fallback(self) -> None:
         with patch.dict(
             os.environ,

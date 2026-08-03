@@ -79,10 +79,16 @@ def create_agent_plan(payload: AgentPlanRequest) -> AgentPlanResponse:
         plan["agent_label"] = BOUNDED_AGENT_LABEL
         plan["execution_mode"] = execution_mode
         plan["bounded_agent"] = {
-            "version": "bounded-research-agent.v1",
+            "version": "bounded-research-agent.v2",
             "budgets": budgets.to_dict(),
             "steps_executed": 0,
             "replans": 0,
+            # Deprecated compatibility alias: new code records immutable
+            # PlanRevision versions and counts every revision attempt.
+            "plan_revision_count": 0,
+            "active_revision_id": "",
+            "revision_fingerprints": [],
+            "retired_steps": [],
             "model_calls": initial_model_calls,
             "estimated_cost_usd": initial_cost,
             "runtime_seconds_used": 0.0,

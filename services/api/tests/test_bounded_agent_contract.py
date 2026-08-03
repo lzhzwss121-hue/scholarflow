@@ -320,8 +320,87 @@ class BoundedAgentContractTest(unittest.TestCase):
                     "SELECT plan_json FROM agent_runs WHERE id = ?", (plan.run_id,)
                 ).fetchone()["plan_json"]
             )
+            revision_row = connection.execute(
+                "SELECT * FROM plan_revisions WHERE run_id = ?",
+                (plan.run_id,),
+            ).fetchone()
         self.assertEqual(stored["bounded_agent"]["replans"], 1)
+        self.assertEqual(stored["bounded_agent"]["plan_revision_count"], 1)
+        self.assertIsNotNone(revision_row)
+        previous_order = [
+            step["id"]
+            for step in json.loads(revision_row["previous_remaining_steps_json"])
+        ]
+        revised_order = [
+            step["id"]
+            for step in json.loads(revision_row["revised_remaining_steps_json"])
+        ]
+        self.assertNotEqual(previous_order, revised_order)
+        self.assertEqual(
+            json.loads(revision_row["validation_result_json"])["status"],
+            "accepted",
+        )
+        self.assertTrue(revision_row["source_tool_result_id"])
+        self.assertEqual(
+            revision_row["deterministic_fallback_reason"],
+            "provider_has_no_plan_revision",
+        )
+        self.assertEqual(
+            stored["bounded_agent"]["active_revision_id"],
+            revision_row["id"],
+        )
         self.assertEqual(stored["bounded_agent"]["stop_reason"], "max_steps budget reached")
+
+    def test_plan_revision_limit_stops_honestly_after_repeated_retryable_errors(self) -> None:
+        calls: list[str] = []
+
+        def chooser(_observation, _allowed, _budgets):
+            return AgentActionDecision(
+                "tool",
+                "literature_search",
+                reasoning_summary="retry only within the revision budget",
+            )
+
+        provider = ScriptedProvider(chooser)
+        with patch.dict(
+            os.environ,
+            {
+                "SCHOLARFLOW_AGENT_MAX_STEPS": "6",
+                "SCHOLARFLOW_AGENT_MAX_REPLANS": "1",
+                "SCHOLARFLOW_AGENT_MAX_MODEL_CALLS": "12",
+            },
+        ), patch(
+            "scholarflow_api.services.agent_plan_service.get_model_provider",
+            return_value=provider,
+        ):
+            from scholarflow_api.services.agent_plan_service import create_agent_plan
+
+            response = create_agent_plan(
+                AgentPlanRequest(
+                    project_id=self.project.id,
+                    task="Stop after the bounded revision budget.",
+                )
+            )
+        with patch(
+            "scholarflow_api.services.agent_run_service.get_model_provider",
+            return_value=provider,
+        ), patch(
+            "scholarflow_api.services.agent_run_service.build_agent_tool_registry",
+            side_effect=self._registry_builder(calls, literature_raises=True),
+        ):
+            from scholarflow_api.services.agent_run_service import execute_agent_run, run_agent_loop
+
+            execute_agent_run(response.run_id, AgentExecuteRequest(confirmed=True))
+            result = run_agent_loop(response.run_id, execution=FakeExecution())
+
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["reason"], "max_plan_revisions budget reached")
+        with get_connection() as connection:
+            revision_count = connection.execute(
+                "SELECT COUNT(*) FROM plan_revisions WHERE run_id = ?",
+                (response.run_id,),
+            ).fetchone()[0]
+        self.assertEqual(revision_count, 1)
 
     def test_unregistered_tool_and_evidence_tampering_are_rejected(self) -> None:
         base = {

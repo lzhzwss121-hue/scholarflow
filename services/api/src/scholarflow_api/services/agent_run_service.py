@@ -12,6 +12,7 @@ from scholarflow_api.agent_core import (
     BOUNDED_AGENT_LABEL,
     ToolContext,
     ToolResult,
+    PlanRevisionCandidate,
     find_forbidden_model_fields,
     get_model_provider,
     qualify_tool_result,
@@ -43,6 +44,9 @@ from scholarflow_api.repositories.agent_run_repository import (
     update_agent_run_progress,
     update_project_stage,
 )
+from scholarflow_api.repositories.plan_revision_repository import (
+    insert_plan_revision,
+)
 from scholarflow_api.repositories.tool_event_repository import insert_tool_event
 from scholarflow_api.schemas import (
     AgentExecuteRequest,
@@ -57,6 +61,12 @@ from scholarflow_api.services.agent_plan_service import (
 )
 from scholarflow_api.services.agent_tool_service import (
     build_agent_tool_registry,
+)
+from scholarflow_api.services.plan_revision_service import (
+    apply_accepted_plan_revision,
+    build_plan_revision,
+    deterministic_revision_candidate,
+    remaining_plan_steps,
 )
 
 
@@ -849,10 +859,17 @@ def _bounded_state(plan: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(state, dict):
         state = {}
         plan["bounded_agent"] = state
-    state.setdefault("version", "bounded-research-agent.v1")
+    state.setdefault("version", "bounded-research-agent.v2")
     state.setdefault("budgets", AgentBudgets().to_dict())
     state.setdefault("steps_executed", 0)
     state.setdefault("replans", 0)
+    # `replans` is a deprecated compatibility alias. Every accepted or rejected
+    # versioned revision attempt increments both counters.
+    state.setdefault("plan_revision_count", int(state.get("replans") or 0))
+    state.setdefault("active_revision_id", "")
+    state.setdefault("revision_fingerprints", [])
+    state.setdefault("revision_history", [])
+    state.setdefault("retired_steps", [])
     state.setdefault("model_calls", 0)
     state.setdefault("estimated_cost_usd", 0.0)
     state.setdefault("runtime_seconds_used", 0.0)
@@ -903,10 +920,16 @@ def restore_bounded_checkpoint(
     current = _bounded_state(plan)
     checkpoint_progress = (
         int(checkpoint_state.get("steps_executed") or 0),
+        int(
+            checkpoint_state.get("plan_revision_count")
+            or checkpoint_state.get("replans")
+            or 0
+        ),
         len(checkpoint_state.get("trace") or []),
     )
     current_progress = (
         int(current.get("steps_executed") or 0),
+        int(current.get("plan_revision_count") or current.get("replans") or 0),
         len(current.get("trace") or []),
     )
     if checkpoint_progress <= current_progress:
@@ -1193,6 +1216,176 @@ def _bounded_checkpoint(
     )
 
 
+def _attempt_plan_revision(
+    *,
+    connection: Any,
+    execution: Any,
+    run_dict: dict[str, Any],
+    plan: dict[str, Any],
+    state: dict[str, Any],
+    context: ToolContext,
+    registry: Any,
+    provider: Any,
+    budgets: AgentBudgets,
+    observation: dict[str, Any],
+    elapsed: float,
+    trigger: str,
+    preferred_tool: str = "",
+) -> Any:
+    previous = remaining_plan_steps(plan)
+    source_observation = state.get("last_observation")
+    source_tool = (
+        str(source_observation.get("tool") or "")
+        if isinstance(source_observation, dict)
+        else ""
+    )
+    source_tool_result_id = str(state.get("last_tool_result_id") or "") or None
+    fallback_reason = ""
+    candidate: PlanRevisionCandidate | None = None
+    proposal = getattr(provider, "propose_plan_revision", None)
+    can_call_model = (
+        callable(proposal)
+        and int(state.get("model_calls") or 0) < budgets.max_model_calls
+    )
+    if can_call_model:
+        state["model_calls"] = int(state.get("model_calls") or 0) + 1
+        try:
+            candidate = proposal(
+                observation,
+                previous,
+                registry.describe(),
+                _remaining_budgets(state, budgets, elapsed),
+            )
+            if not isinstance(candidate, PlanRevisionCandidate):
+                raise ValueError("plan_revision_candidate_invalid")
+        except Exception as error:
+            fallback_reason = f"invalid_plan_revision_candidate:{error}"
+    else:
+        fallback_reason = (
+            "max_model_calls_budget_reached"
+            if callable(proposal)
+            else "provider_has_no_plan_revision"
+        )
+
+    model_request_id: str | None = None
+    if candidate is not None and candidate.audit is not None:
+        model_request_id = insert_model_call_audit(
+            connection,
+            project_id=str(run_dict["project_id"]),
+            run_id=str(run_dict["id"]),
+            audit=candidate.audit.to_dict(),
+        )
+        state["estimated_cost_usd"] = round(
+            float(state.get("estimated_cost_usd") or 0.0)
+            + float(candidate.audit.estimated_cost_usd or 0.0),
+            8,
+        )
+        fallback_reason = candidate.deterministic_fallback_reason or fallback_reason
+
+    if candidate is None or candidate.deterministic_fallback_reason:
+        fallback_reason = fallback_reason or "deterministic_revision_policy"
+        candidate = deterministic_revision_candidate(
+            previous,
+            reason=(
+                f"Revise remaining steps after {trigger}; deterministic policy "
+                "preserves completed history and research-state gates."
+            ),
+            preferred_tool=preferred_tool,
+            source_tool=source_tool,
+            fallback_reason=fallback_reason,
+        )
+
+    previous_fingerprints = {
+        str(value)
+        for value in state.get("revision_fingerprints", [])
+        if isinstance(value, str)
+    }
+    revision = build_plan_revision(
+        run_id=str(run_dict["id"]),
+        plan=plan,
+        candidate=candidate,
+        trigger=trigger,
+        source_tool_result_id=source_tool_result_id,
+        model_request_id=model_request_id,
+        registered_tools=registry.names(),
+        budgets=budgets,
+        revision_attempts=int(
+            state.get("plan_revision_count") or state.get("replans") or 0
+        ),
+        previous_fingerprints=previous_fingerprints,
+    )
+    stored_revision = insert_plan_revision(connection, revision)
+    history = state.get("revision_history")
+    if not isinstance(history, list):
+        history = []
+        state["revision_history"] = history
+    already_recorded = any(
+        isinstance(item, dict)
+        and str(item.get("revision_id") or "") == stored_revision.revision_id
+        for item in history
+    )
+    if not already_recorded:
+        count = int(state.get("plan_revision_count") or state.get("replans") or 0) + 1
+        state["plan_revision_count"] = count
+        state["replans"] = count
+        history.append(
+            {
+                "revision_id": stored_revision.revision_id,
+                "parent_revision_id": stored_revision.parent_revision_id,
+                "trigger": stored_revision.trigger,
+                "reason": stored_revision.reason,
+                "created_at": stored_revision.created_at,
+                "validation_result": stored_revision.validation_result,
+                "plan_diff": stored_revision.plan_diff,
+            }
+        )
+    apply_accepted_plan_revision(plan, stored_revision)
+    state["needs_replan"] = False
+    state["needs_plan_revision"] = False
+    validation_status = str(
+        stored_revision.validation_result.get("status") or "rejected"
+    )
+    insert_tool_event(
+        connection,
+        str(run_dict["session_id"]),
+        "agent.plan_revision",
+        "done" if validation_status == "accepted" else "partial",
+        (
+            f"PlanRevision {stored_revision.revision_id} {validation_status}: "
+            f"{stored_revision.reason}"
+        )[:500],
+        utc_now(),
+    )
+    persist_agent_run_progress(
+        connection,
+        str(run_dict["id"]),
+        plan,
+        "running",
+        outputs=context.outputs,
+        papers=context.papers,
+        artifacts=context.artifacts,
+        warnings=(
+            []
+            if validation_status == "accepted"
+            else [
+                "Plan revision rejected: "
+                + ", ".join(stored_revision.validation_result.get("reasons") or [])
+            ]
+        ),
+        run_status_summary=(
+            f"running: plan revision {validation_status}."
+        ),
+    )
+    _bounded_checkpoint(
+        execution,
+        plan,
+        state,
+        "plan_revision",
+        min(90, 10 + int(state.get("steps_executed") or 0) * 10),
+    )
+    return stored_revision
+
+
 def _has_reliable_agent_evidence(context: ToolContext) -> bool:
     memory = context.outputs.get("research_memory_query")
     if isinstance(memory, dict):
@@ -1415,7 +1608,11 @@ def run_bounded_agent_loop(
                     connection, run_dict, plan, context, state,
                     reason="max_steps budget reached",
                 )
-            if int(state.get("model_calls") or 0) >= budgets.max_model_calls:
+            if (
+                int(state.get("model_calls") or 0) >= budgets.max_model_calls
+                and not state.get("needs_plan_revision")
+                and not state.get("needs_replan")
+            ):
                 return _stop_bounded_agent(
                     connection, run_dict, plan, context, state,
                     reason="max_model_calls budget reached",
@@ -1446,6 +1643,54 @@ def run_bounded_agent_loop(
                 )
 
             observation = _agent_observation(state, context)
+            provider = get_model_provider()
+            revision_handled = False
+            if state.get("needs_plan_revision") or state.get("needs_replan"):
+                if int(
+                    state.get("plan_revision_count")
+                    or state.get("replans")
+                    or 0
+                ) >= budgets.max_replans:
+                    _append_agent_trace(
+                        state,
+                        observation=observation,
+                        decision=None,
+                        result={
+                            "status": "blocked",
+                            "summary": "max_plan_revisions budget reached",
+                        },
+                    )
+                    return _stop_bounded_agent(
+                        connection, run_dict, plan, context, state,
+                        reason="max_plan_revisions budget reached",
+                    )
+                _attempt_plan_revision(
+                    connection=connection,
+                    execution=execution,
+                    run_dict=run_dict,
+                    plan=plan,
+                    state=state,
+                    context=context,
+                    registry=registry,
+                    provider=provider,
+                    budgets=budgets,
+                    observation=observation,
+                    elapsed=elapsed,
+                    trigger="retryable_tool_result",
+                )
+                revision_handled = True
+                eligible = _eligible_agent_tools(plan, context, registry)
+                observation = _agent_observation(state, context)
+                if not eligible:
+                    return _stop_bounded_agent(
+                        connection, run_dict, plan, context, state,
+                        reason="no_reliable_hit: plan revision left no eligible tool",
+                    )
+                if int(state.get("model_calls") or 0) >= budgets.max_model_calls:
+                    return _stop_bounded_agent(
+                        connection, run_dict, plan, context, state,
+                        reason="max_model_calls budget reached after plan revision",
+                    )
             descriptions = {
                 item["name"]: item["description"]
                 for item in registry.describe()
@@ -1455,7 +1700,6 @@ def run_bounded_agent_loop(
                 {"name": name, "description": descriptions.get(name, "")}
                 for name in eligible
             ]
-            provider = get_model_provider()
             state["model_calls"] = int(state.get("model_calls") or 0) + 1
             try:
                 decision = provider.choose_next_action(
@@ -1505,23 +1749,49 @@ def run_bounded_agent_loop(
                     8,
                 )
 
-            if state.get("needs_replan") or decision.replan:
-                if int(state.get("replans") or 0) >= budgets.max_replans:
+            if decision.replan and not revision_handled:
+                if int(
+                    state.get("plan_revision_count")
+                    or state.get("replans")
+                    or 0
+                ) >= budgets.max_replans:
                     _append_agent_trace(
                         state,
                         observation=observation,
                         decision=decision,
                         result={
                             "status": "blocked",
-                            "summary": "max_replans budget reached",
+                            "summary": "max_plan_revisions budget reached",
                         },
                     )
                     return _stop_bounded_agent(
                         connection, run_dict, plan, context, state,
-                        reason="max_replans budget reached",
+                        reason="max_plan_revisions budget reached",
                     )
-                state["replans"] = int(state.get("replans") or 0) + 1
-                state["needs_replan"] = False
+                _attempt_plan_revision(
+                    connection=connection,
+                    execution=execution,
+                    run_dict=run_dict,
+                    plan=plan,
+                    state=state,
+                    context=context,
+                    registry=registry,
+                    provider=provider,
+                    budgets=budgets,
+                    observation=observation,
+                    elapsed=elapsed,
+                    trigger="model_requested_revision",
+                    preferred_tool=decision.tool,
+                )
+                eligible = _eligible_agent_tools(plan, context, registry)
+                try:
+                    _validate_runtime_decision(decision, set(eligible))
+                except ValueError as error:
+                    state["last_observation"] = {
+                        "status": "blocked",
+                        "summary": f"revised plan rejected selected action: {error}",
+                    }
+                    continue
 
             if decision.action == "fallback":
                 state["fallback_reason"] = (
@@ -1632,10 +1902,12 @@ def run_bounded_agent_loop(
                 state["consecutive_failures"] = int(
                     state.get("consecutive_failures") or 0
                 ) + 1
-                state["needs_replan"] = result.status == "retryable_error"
+                state["needs_plan_revision"] = result.status == "retryable_error"
+                state["needs_replan"] = state["needs_plan_revision"]
             else:
                 state["consecutive_failures"] = 0
                 state["needs_replan"] = False
+                state["needs_plan_revision"] = False
             _append_agent_trace(
                 state,
                 observation=observation,
@@ -1649,7 +1921,7 @@ def run_bounded_agent_loop(
                 "retryable_error": "partial",
                 "fatal_error": "failed",
             }[str(result.status)]
-            insert_tool_event(
+            tool_result_event_id = insert_tool_event(
                 connection,
                 str(run_dict["session_id"]),
                 tool_name,
@@ -1657,6 +1929,7 @@ def run_bounded_agent_loop(
                 result.summary[:500],
                 utc_now(),
             )
+            state["last_tool_result_id"] = tool_result_event_id
             persist_agent_run_progress(
                 connection,
                 run_id,

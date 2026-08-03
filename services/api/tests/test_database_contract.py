@@ -570,7 +570,8 @@ class DatabaseContractTest(unittest.TestCase):
                 (1, "baseline_integrity_contract"),
                 (2, "durable_local_jobs"),
                 (3, "evidence_hybrid_rag_fts5"),
-                (CURRENT_SCHEMA_VERSION, "model_provider_audit_contract"),
+                (4, "model_provider_audit_contract"),
+                (CURRENT_SCHEMA_VERSION, "versioned_agent_plan_revisions"),
             ],
         )
         self.assertEqual(user_version, CURRENT_SCHEMA_VERSION)
@@ -603,6 +604,7 @@ class DatabaseContractTest(unittest.TestCase):
                 (2, "durable_local_jobs"),
                 (3, "evidence_hybrid_rag_fts5"),
                 (4, "model_provider_audit_contract"),
+                (5, "versioned_agent_plan_revisions"),
             ],
         )
 

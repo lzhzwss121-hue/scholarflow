@@ -160,7 +160,7 @@ def insert_model_call_audit(
     project_id: str,
     run_id: str,
     audit: dict[str, Any],
-) -> None:
+) -> str:
     safe_fields = {
         "provider": str(audit.get("provider") or "local"),
         "model": str(audit.get("model") or ""),
@@ -176,6 +176,7 @@ def insert_model_call_audit(
         "requested_model": str(audit.get("requested_model") or ""),
         "external_data_sent": int(bool(audit.get("external_data_sent"))),
     }
+    audit_id = new_id("model_call")
     connection.execute(
         """
         INSERT INTO model_call_audits (
@@ -186,7 +187,7 @@ def insert_model_call_audit(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            new_id("model_call"),
+            audit_id,
             project_id,
             run_id,
             safe_fields["provider"],
@@ -203,6 +204,7 @@ def insert_model_call_audit(
             utc_now(),
         ),
     )
+    return audit_id
 
 
 def insert_direction_review_paper_card(
