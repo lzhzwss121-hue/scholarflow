@@ -48,6 +48,8 @@ faiss/
 vector_store/
 
 # Local research data
+evals/real_papers/resources.local*.json
+!evals/real_papers/resources.local.example.json
 papers/
 pdfs/
 datasets/

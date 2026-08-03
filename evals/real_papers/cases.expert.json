@@ -1,0 +1,8 @@
+{
+  "schema_version": "real_paper_dataset.v2",
+  "dataset_id": "scholarflow-real-papers-expert-v1",
+  "evaluation_tier": "expert_labelled",
+  "description": "Formal expert-labelled cases only. This file is intentionally empty until two distinct human reviewers and an independent adjudicator complete the recorded workflow.",
+  "target_case_count": 75,
+  "cases": []
+}

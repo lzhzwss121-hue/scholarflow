@@ -182,19 +182,29 @@ ScholarFlow 提供两条互不覆盖的查询通道：
 离线报告将以下证据层级完全分栏：
 
 - `constructed_fixture`：固定构造回归数据。
-- `real_paper_unreviewed`：真实论文和可人工定位页码/章节/段落/表格/图，但尚未经过专家裁决。
-- `expert_labelled`：仅接受全部由人类标注并 adjudicated 的数据；模型生成答案不能成为 gold label。
+- `real_paper_unreviewed`：真实论文和可人工定位页码/章节/段落/表格/图，但尚未经过双人独立审核与裁决；默认 evaluator 不加载。
+- `expert_labelled`：只接受两名不同人工审核者独立完成、分歧由独立裁决者解决且通过状态机晋级的数据；模型生成答案不能成为 gold label。
 - `live_external_smoke`：只检查当前 arXiv 等外部连接，必须独立运行和报告。
 
-真实论文 schema、未审核样例和标注规则见 [`evals/real_papers/`](evals/real_papers/README.md)。离线评测会生成机器可读 JSON 与人工可读 Markdown：
+真实论文 schema、未审核样例、固定资源 manifest 和标注规则见 [`evals/real_papers/`](evals/real_papers/README.md)。当前正式专家数据为 **0/50**，4 条已有记录仍是 draft，不能解释为专家准确率。默认 real-paper 运行完全离线：每个 case 都必须提供版本、稳定 ID、本地 PDF、SHA-256 和页数；缺失或不匹配会记录为 `blocked`，不会改用摘要、网络结果或 schema fixture。
+
+标注阶段可以让固定 PDF 经过 ScholarFlow 的 PDF parser、全文资格判定、chunk/FTS ingestion、retrieval 和 RAG answer service，生成真实系统 prediction。该输出用于检查系统链路，不会把 draft 提升为 expert gold：
 
 ```bash
-SCHOLARFLOW_DB_PATH=/private/tmp/scholarflow-rag-eval.sqlite3 \
-SCHOLARFLOW_REAL_EVAL_PREDICTIONS=evals/real_papers/predictions.schema-fixture.json \
-npm run eval:rag
+PYTHONPATH=services/api/src .venv/bin/python \
+  -m scholarflow_api.real_paper_prediction_runner \
+  --cases evals/real_papers/cases.unreviewed.json \
+  --resources evals/real_papers/resources.local.json \
+  --output /private/tmp/scholarflow-real-predictions.json
 ```
 
-其中 prediction fixture 有意保留一个错误的 BERT 表格主张，用于证明 evaluator 会降低 answer precision、记录 unsupported claim 和 contradiction escape；它不是系统真实表现，也不是专家 gold。
+正式 evaluator 默认只加载 `cases.expert.json`。当前运行会保留构造回归结果，并明确报告专家数据 `0/50`、状态 blocked：
+
+```bash
+SCHOLARFLOW_DB_PATH=/private/tmp/scholarflow-rag-eval.sqlite3 npm run eval:rag
+```
+
+标准 real-paper 报告默认读取 `cases.expert.json`，并且只接受 `prediction_source="offline_system_run"`；expert 数据不足 50 条、少于 15 篇论文或少于 5 个领域时会明确 blocked。若要在标注阶段运行 draft prediction，必须显式传入 `cases.unreviewed.json`，但结果不会被默认 evaluator 计为 expert 指标。`predictions.schema-fixture.json` 有意保留一个错误的 BERT 表格主张，只用于 evaluator 单元合同；它不是系统真实表现、不能作为标准报告输入，也不是专家 gold。
 
 Live external smoke 使用独立命令：
 

@@ -17,73 +17,153 @@ from scholarflow_api.real_paper_evaluation import (
 
 
 def dataset_fixture(*, tier: str = "real_paper_unreviewed") -> dict[str, object]:
-    adjudication = "adjudicated" if tier == "expert_labelled" else "unreviewed"
-    annotator = "expert-reviewer-1" if tier == "expert_labelled" else "repository-maintainer-unreviewed"
+    source_hash = "a" * 64
+    locator = {
+        "kind": "table",
+        "value": "Table 2",
+        "page": 4,
+        "section": "Results",
+        "paragraph": "",
+        "table": "Table 2",
+        "figure": "",
+        "equation": "",
+        "supplementary": False,
+    }
+    citation = {
+        "citation_id": "paper-a:results:p.4:table-2",
+        "paper_id": "paper-a",
+        "paper_version": "v2",
+        "source_hash": source_hash,
+        "page": 4,
+        "section": "Results",
+        "locator": locator,
+    }
+    cases = [
+        {
+            "case_id": "case-answerable",
+            "project_id": "project-a",
+            "domain": "multimodal-evaluation",
+            "paper_id": "paper-a",
+            "title": "A Real Paper Fixture",
+            "paper_version": "v2",
+            "source_url": "https://example.org/paper-a/v2",
+            "source_hash": source_hash,
+            "source_page_count": 8,
+            "question": "Does Method X reduce error on Dataset A?",
+            "answerability": "answerable",
+            "gold_claim": "Method X does not reduce error on Dataset A by 10%.",
+            "evidence_type": "table",
+            "evidence_level": "full_text",
+            "evidence_excerpt": "Method X does not reduce error on Dataset A by 10%.",
+            "evidence_locator": locator,
+            "acceptable_citations": [citation],
+            "direct_support_found": True,
+            "contradiction_notes": [
+                "A positive reduction claim reverses the paper's negation.",
+                "10% is not 10 percentage points.",
+                "Dataset B is not Dataset A.",
+            ],
+            "contradiction_claims": [
+                "Method X reduces error on Dataset B by 10 percentage points."
+            ],
+            "version_notes": "Test-only fixed v2 source.",
+            "annotator_a_result": None,
+            "annotator_b_result": None,
+            "disagreement_fields": [],
+            "adjudicator_result": None,
+            "adjudication_date": None,
+            "review_status": "draft",
+            "label_origin": "human_draft",
+            "split": "test",
+            "case_types": [
+                "answerable",
+                "table",
+                "dataset_metric",
+                "numeric_unit_condition",
+            ],
+        },
+        {
+            "case_id": "case-refusal",
+            "project_id": "project-a",
+            "domain": "multimodal-evaluation",
+            "paper_id": "paper-a",
+            "title": "A Real Paper Fixture",
+            "paper_version": "v2",
+            "source_url": "https://example.org/paper-a/v2",
+            "source_hash": source_hash,
+            "source_page_count": 8,
+            "question": "What result is reported for Dataset Z?",
+            "answerability": "refusal",
+            "gold_claim": "",
+            "evidence_type": "main_text",
+            "evidence_level": "full_text",
+            "evidence_excerpt": "",
+            "evidence_locator": {
+                **locator,
+                "kind": "paragraph",
+                "value": "No Dataset Z result is present",
+                "table": "",
+            },
+            "acceptable_citations": [],
+            "direct_support_found": False,
+            "contradiction_notes": ["The paper does not report Dataset Z."],
+            "contradiction_claims": [],
+            "version_notes": "Test-only fixed v2 source.",
+            "annotator_a_result": None,
+            "annotator_b_result": None,
+            "disagreement_fields": [],
+            "adjudicator_result": None,
+            "adjudication_date": None,
+            "review_status": "draft",
+            "label_origin": "human_draft",
+            "split": "test",
+            "case_types": ["refusal", "no_reliable_hit"],
+        },
+    ]
+    if tier == "expert_labelled":
+        for case in cases:
+            answerability = case["answerability"]
+            review_payload = {
+                "completed_at": "2026-08-03T10:00:00Z",
+                "independently_completed": True,
+                "answerability": answerability,
+                "gold_claim": case["gold_claim"],
+                "evidence_type": case["evidence_type"],
+                "evidence_level": case["evidence_level"],
+                "evidence_locator": case["evidence_locator"],
+                "acceptable_citations": case["acceptable_citations"],
+                "notes": ["Test-only reviewer record."],
+            }
+            case["annotator_a_result"] = {
+                **review_payload,
+                "reviewer_id": "expert-reviewer-a-test",
+            }
+            case["annotator_b_result"] = {
+                **review_payload,
+                "reviewer_id": "expert-reviewer-b-test",
+            }
+            case["adjudicator_result"] = {
+                "adjudicator_id": "expert-adjudicator-test",
+                "completed_at": "2026-08-03T12:00:00Z",
+                "answerability": answerability,
+                "gold_claim": case["gold_claim"],
+                "evidence_type": case["evidence_type"],
+                "evidence_level": case["evidence_level"],
+                "evidence_locator": case["evidence_locator"],
+                "acceptable_citations": case["acceptable_citations"],
+                "resolved_disagreement_fields": [],
+                "rationale": "Test-only agreement adjudication.",
+            }
+            case["adjudication_date"] = "2026-08-03"
+            case["review_status"] = "expert_labelled"
+            case["label_origin"] = "human_annotation"
     return {
-        "schema_version": "real_paper_eval.v1",
+        "schema_version": "real_paper_dataset.v2",
         "dataset_id": "real-paper-contract-fixture",
         "evaluation_tier": tier,
         "description": "Non-expert fixture used to validate evaluation code.",
-        "cases": [
-            {
-                "case_id": "case-answerable",
-                "project_id": "project-a",
-                "domain": "multimodal-evaluation",
-                "paper_id": "paper-a",
-                "title": "A Real Paper Fixture",
-                "source": "arxiv",
-                "version": "v2",
-                "question": "Does Method X reduce error on Dataset A?",
-                "answerable": True,
-                "gold_claim": "Method X does not reduce error on Dataset A by 10%.",
-                "evidence_level": "full_text",
-                "page": 4,
-                "section": "Results",
-                "locator": {"kind": "table", "value": "Table 2"},
-                "acceptable_citations": [
-                    {
-                        "citation_id": "paper-a:results:p.4:table-2",
-                        "paper_id": "paper-a",
-                        "page": 4,
-                        "section": "Results",
-                        "locator": {"kind": "table", "value": "Table 2"},
-                    }
-                ],
-                "contradiction_notes": [
-                    "A positive reduction claim reverses the paper's negation.",
-                    "10% is not 10 percentage points.",
-                    "Dataset B is not Dataset A.",
-                ],
-                "contradiction_claims": [
-                    "Method X reduces error on Dataset B by 10 percentage points."
-                ],
-                "annotator": annotator,
-                "label_origin": "human_annotation",
-                "adjudication_status": adjudication,
-            },
-            {
-                "case_id": "case-refusal",
-                "project_id": "project-a",
-                "domain": "multimodal-evaluation",
-                "paper_id": "paper-a",
-                "title": "A Real Paper Fixture",
-                "source": "arxiv",
-                "version": "v2",
-                "question": "What result is reported for Dataset Z?",
-                "answerable": False,
-                "gold_claim": "",
-                "evidence_level": "full_text",
-                "page": 4,
-                "section": "Results",
-                "locator": {"kind": "paragraph", "value": "No Dataset Z result is present"},
-                "acceptable_citations": [],
-                "contradiction_notes": ["The paper does not report Dataset Z."],
-                "contradiction_claims": [],
-                "annotator": annotator,
-                "label_origin": "human_annotation",
-                "adjudication_status": adjudication,
-            },
-        ],
+        "target_case_count": 50,
+        "cases": cases,
     }
 
 
@@ -137,7 +217,14 @@ class RealPaperEvaluationContractTest(unittest.TestCase):
         dataset = RealPaperDataset.model_validate(dataset_fixture())
         predictions = RealPaperPredictionSet.model_validate(correct_predictions())
 
-        report = evaluate_real_paper_predictions(dataset, predictions, recall_k=5)
+        with self.assertRaisesRegex(ValueError, "only expert_labelled"):
+            evaluate_real_paper_predictions(dataset, predictions, recall_k=5)
+        report = evaluate_real_paper_predictions(
+            dataset,
+            predictions,
+            recall_k=5,
+            allow_unreviewed=True,
+        )
 
         self.assertEqual(report["evaluation_tier"], "real_paper_unreviewed")
         self.assertEqual(report["review_status"], "unreviewed")
@@ -190,6 +277,7 @@ class RealPaperEvaluationContractTest(unittest.TestCase):
             RealPaperDataset.model_validate(dataset_fixture()),
             RealPaperPredictionSet.model_validate(payload),
             recall_k=5,
+            allow_unreviewed=True,
         )
         case = next(item for item in report["cases"] if item["case_id"] == "case-answerable")
         errors = " ".join(case["errors"])
@@ -212,7 +300,7 @@ class RealPaperEvaluationContractTest(unittest.TestCase):
 
     def test_expert_dataset_requires_human_adjudication_and_model_gold_is_rejected(self) -> None:
         invalid_expert = dataset_fixture(tier="expert_labelled")
-        invalid_expert["cases"][0]["adjudication_status"] = "unreviewed"
+        invalid_expert["cases"][0]["review_status"] = "draft"
         with self.assertRaises(ValidationError):
             RealPaperDataset.model_validate(invalid_expert)
 
@@ -222,7 +310,7 @@ class RealPaperEvaluationContractTest(unittest.TestCase):
             RealPaperDataset.model_validate(model_gold)
 
         unlocatable_gold = dataset_fixture()
-        unlocatable_gold["cases"][0]["page"] = 99
+        unlocatable_gold["cases"][0]["evidence_locator"]["page"] = 99
         with self.assertRaises(ValidationError):
             RealPaperDataset.model_validate(unlocatable_gold)
 
@@ -230,6 +318,7 @@ class RealPaperEvaluationContractTest(unittest.TestCase):
         report = evaluate_real_paper_predictions(
             RealPaperDataset.model_validate(dataset_fixture()),
             RealPaperPredictionSet.model_validate(correct_predictions()),
+            allow_unreviewed=True,
         )
         markdown = render_real_paper_markdown(report)
         self.assertIn("real_paper_unreviewed", markdown)
@@ -242,6 +331,28 @@ class RealPaperEvaluationContractTest(unittest.TestCase):
             human = paths["markdown"].read_text(encoding="utf-8")
         self.assertEqual(machine["dataset_id"], "real-paper-contract-fixture")
         self.assertIn("人工审核", human)
+
+    def test_blocked_execution_is_not_credited_as_a_correct_refusal(self) -> None:
+        payload = correct_predictions()
+        refusal = payload["cases"][1]
+        refusal.update(
+            {
+                "execution_status": "blocked",
+                "error": "fixed PDF is missing",
+            }
+        )
+        report = evaluate_real_paper_predictions(
+            RealPaperDataset.model_validate(dataset_fixture()),
+            RealPaperPredictionSet.model_validate(payload),
+            allow_unreviewed=True,
+        )
+        self.assertEqual(report["counts"]["blocked_predictions"], 1)
+        self.assertEqual(report["metrics"]["refusal_recall"], 0.0)
+        refusal_case = next(
+            case for case in report["cases"] if case["case_id"] == "case-refusal"
+        )
+        self.assertEqual(refusal_case["execution_status"], "blocked")
+        self.assertIn("prediction_blocked", " ".join(refusal_case["errors"]))
 
 
 if __name__ == "__main__":

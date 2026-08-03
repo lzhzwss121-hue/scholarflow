@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import unittest
+import json
 import os
 import tempfile
+import unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -56,7 +57,8 @@ class RagBenchmarkContractTest(unittest.TestCase):
 
     def test_repository_real_paper_records_are_valid_but_explicitly_unreviewed(self) -> None:
         dataset = load_real_paper_dataset(
-            Path("evals/real_papers/cases.unreviewed.json")
+            Path("evals/real_papers/cases.unreviewed.json"),
+            allow_unreviewed=True,
         )
         self.assertEqual(dataset.evaluation_tier, "real_paper_unreviewed")
         self.assertTrue(all(case.adjudication_status == "unreviewed" for case in dataset.cases))
@@ -73,6 +75,42 @@ class RagBenchmarkContractTest(unittest.TestCase):
                 if case.answerable
             )
         )
+
+    def test_standard_report_rejects_schema_fixture_predictions(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmpdir:
+            predictions_path = Path(tmpdir) / "fixture-predictions.json"
+            predictions_path.write_text(
+                json.dumps(
+                    json.loads(
+                        Path(
+                            "evals/real_papers/predictions.schema-fixture.json"
+                        ).read_text(encoding="utf-8")
+                    )
+                ),
+                encoding="utf-8",
+            )
+            report = build_evaluation_report(
+                {"benchmark_version": "test", "case_count": 0, "metrics": {}},
+                real_dataset_path=Path("evals/real_papers/cases.unreviewed.json"),
+                real_predictions_path=predictions_path,
+            )
+        real_section = report["sections"]["real_paper_unreviewed"]
+        self.assertEqual(real_section["status"], "blocked")
+        self.assertEqual(real_section["prediction_source"], "offline_test_fixture")
+        self.assertIn("非 offline_system_run", real_section["reason"])
+
+    def test_empty_expert_dataset_reports_zero_of_fifty_without_fixture_fallback(self) -> None:
+        report = build_evaluation_report(
+            {"benchmark_version": "test", "case_count": 0, "metrics": {}},
+            real_dataset_path=Path("evals/real_papers/cases.expert.json"),
+            real_predictions_path=None,
+        )
+        expert = report["sections"]["expert_labelled"]
+        self.assertEqual(expert["status"], "blocked")
+        self.assertEqual(expert["completed_expert_count"], 0)
+        self.assertEqual(expert["minimum_target"], 50)
+        self.assertEqual(expert["gap_to_minimum"], 50)
+        self.assertIn("0/50", expert["reason"])
 
     def test_fixed_offline_benchmark_has_required_scope_and_traps(self) -> None:
         cases = benchmark_cases()

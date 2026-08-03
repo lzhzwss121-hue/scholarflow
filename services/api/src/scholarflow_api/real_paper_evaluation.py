@@ -6,26 +6,23 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from scholarflow_api.rag_answer import semantic_conflict_reasons
+from scholarflow_api.real_paper_dataset import (
+    EvidenceLevel,
+    EvidenceLocator,
+    RealPaperDataset,
+    RealPaperEvaluationCase,
+    StrictModel,
+    load_real_paper_dataset as load_audited_real_paper_dataset,
+    real_paper_dataset_json_schema,
+    validate_dataset_for_evaluation,
+)
 
 
-REAL_PAPER_SCHEMA_VERSION = "real_paper_eval.v1"
 PREDICTION_SCHEMA_VERSION = "real_paper_predictions.v1"
 EVALUATION_REPORT_VERSION = "real_paper_report.v1"
-
-EvaluationTier = Literal[
-    "real_paper_unreviewed",
-    "expert_labelled",
-]
-EvidenceLevel = Literal[
-    "metadata_only",
-    "abstract_only",
-    "supplemental_text",
-    "full_text",
-]
-LocatorKind = Literal["paragraph", "table", "figure"]
 
 _EVIDENCE_RANK = {
     "metadata_only": 0,
@@ -34,108 +31,6 @@ _EVIDENCE_RANK = {
     "full_text": 3,
 }
 _TRUSTED_SUPPORT_METHODS = {"exact_quote", "model_checked", "human"}
-
-
-class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-class EvidenceLocator(StrictModel):
-    kind: LocatorKind
-    value: str = Field(min_length=1, max_length=240)
-
-
-class AcceptableCitation(StrictModel):
-    citation_id: str = Field(min_length=1, max_length=500)
-    paper_id: str = Field(min_length=1, max_length=200)
-    page: int = Field(ge=1)
-    section: str = Field(min_length=1, max_length=300)
-    locator: EvidenceLocator
-
-
-class RealPaperEvaluationCase(StrictModel):
-    case_id: str = Field(min_length=1, max_length=200)
-    project_id: str = Field(min_length=1, max_length=200)
-    domain: str = Field(min_length=1, max_length=200)
-    paper_id: str = Field(min_length=1, max_length=200)
-    title: str = Field(min_length=1, max_length=1000)
-    source: str = Field(min_length=1, max_length=200)
-    version: str = Field(min_length=1, max_length=200)
-    question: str = Field(min_length=1, max_length=3000)
-    answerable: bool
-    gold_claim: str = Field(max_length=5000)
-    evidence_level: EvidenceLevel
-    page: int = Field(ge=1)
-    section: str = Field(min_length=1, max_length=300)
-    locator: EvidenceLocator
-    acceptable_citations: list[AcceptableCitation]
-    contradiction_notes: list[str]
-    contradiction_claims: list[str] = Field(default_factory=list)
-    annotator: str = Field(min_length=1, max_length=300)
-    label_origin: Literal["human_annotation", "imported_bibliographic_fixture"]
-    adjudication_status: Literal["unreviewed", "pending", "adjudicated"]
-
-    @model_validator(mode="after")
-    def validate_gold_boundary(self) -> "RealPaperEvaluationCase":
-        if self.answerable and not self.gold_claim.strip():
-            raise ValueError("answerable cases require a human-locatable gold_claim")
-        if self.answerable and not self.acceptable_citations:
-            raise ValueError("answerable cases require acceptable_citations")
-        if self.answerable and not any(
-            citation.page == self.page
-            and citation.section.strip().casefold() == self.section.strip().casefold()
-            and citation.locator.kind == self.locator.kind
-            and citation.locator.value.strip().casefold()
-            == self.locator.value.strip().casefold()
-            for citation in self.acceptable_citations
-        ):
-            raise ValueError(
-                "answerable gold_claim must have an acceptable citation at the annotated locator"
-            )
-        if not self.answerable and self.gold_claim.strip():
-            raise ValueError("refusal cases must not invent a gold_claim")
-        for citation in self.acceptable_citations:
-            if citation.paper_id != self.paper_id:
-                raise ValueError("acceptable citation must belong to the case paper_id")
-        return self
-
-
-class RealPaperDataset(StrictModel):
-    schema_version: Literal["real_paper_eval.v1"]
-    dataset_id: str = Field(min_length=1, max_length=300)
-    evaluation_tier: EvaluationTier
-    description: str = Field(min_length=1, max_length=3000)
-    cases: list[RealPaperEvaluationCase] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def validate_review_tier(self) -> "RealPaperDataset":
-        case_ids = [case.case_id for case in self.cases]
-        if len(case_ids) != len(set(case_ids)):
-            raise ValueError("case_id values must be unique")
-        if self.evaluation_tier == "expert_labelled":
-            invalid = [
-                case.case_id
-                for case in self.cases
-                if case.adjudication_status != "adjudicated"
-                or case.label_origin != "human_annotation"
-            ]
-            if invalid:
-                raise ValueError(
-                    "expert_labelled datasets require adjudicated human annotations: "
-                    + ", ".join(invalid)
-                )
-        else:
-            invalid = [
-                case.case_id
-                for case in self.cases
-                if case.adjudication_status != "unreviewed"
-            ]
-            if invalid:
-                raise ValueError(
-                    "real_paper_unreviewed cases must remain explicitly unreviewed: "
-                    + ", ".join(invalid)
-                )
-        return self
 
 
 class PredictedCitation(StrictModel):
@@ -163,18 +58,52 @@ class PredictedClaim(StrictModel):
     evidence_level: EvidenceLevel
 
 
+class PredictionSourceIdentity(StrictModel):
+    paper_id: str = Field(min_length=1, max_length=200)
+    doi: str = Field(default="", max_length=300)
+    arxiv_id: str = Field(default="", max_length=200)
+    openalex_id: str = Field(default="", max_length=300)
+    version: str = Field(min_length=1, max_length=200)
+    source_url: str = Field(min_length=1, max_length=2000)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    page_count: int = Field(ge=1)
+    resource_identifier: str = Field(min_length=1, max_length=500)
+
+
+class PredictionRuntimeMetadata(StrictModel):
+    runner_version: str = Field(min_length=1, max_length=200)
+    rag_service: str = Field(min_length=1, max_length=300)
+    database_isolation_id: str = Field(min_length=1, max_length=200)
+    ingestion_status: str = Field(min_length=1, max_length=100)
+    retrieval_status: str = Field(default="", max_length=100)
+    answer_status: str = Field(default="", max_length=100)
+    embedding_provider: str = Field(default="", max_length=200)
+    embedding_model: str = Field(default="", max_length=300)
+    generation_provider: str = Field(default="", max_length=200)
+    generation_model: str = Field(default="", max_length=300)
+    parser_version: str = Field(default="", max_length=200)
+    external_data_transfer: bool = False
+
+
 class RealPaperCasePrediction(StrictModel):
     case_id: str = Field(min_length=1, max_length=200)
     project_id: str = Field(min_length=1, max_length=200)
     refused: bool
+    answer: str = Field(default="", max_length=50000)
+    execution_status: Literal["complete", "partial", "blocked", "error"] = "complete"
+    error: str = Field(default="", max_length=5000)
     retrieved_citations: list[PredictedCitation]
     used_citations: list[PredictedCitation]
     claims: list[PredictedClaim]
+    source_identity: PredictionSourceIdentity | None = None
+    runtime_metadata: PredictionRuntimeMetadata | None = None
 
     @model_validator(mode="after")
     def validate_refusal_shape(self) -> "RealPaperCasePrediction":
         if self.refused and self.claims:
             raise ValueError("refused predictions must not contain generated claims")
+        if self.execution_status in {"blocked", "error"} and not self.error.strip():
+            raise ValueError("blocked/error predictions require an explicit error")
         return self
 
 
@@ -194,11 +123,30 @@ class RealPaperPredictionSet(StrictModel):
         case_ids = [case.case_id for case in self.cases]
         if len(case_ids) != len(set(case_ids)):
             raise ValueError("prediction case_id values must be unique")
+        if self.prediction_source == "offline_system_run":
+            invalid = [
+                case.case_id
+                for case in self.cases
+                if case.execution_status in {"complete", "partial"}
+                and (case.source_identity is None or case.runtime_metadata is None)
+            ]
+            if invalid:
+                raise ValueError(
+                    "successful offline_system_run predictions require source identity and "
+                    "runtime metadata: " + ", ".join(invalid)
+                )
         return self
 
 
-def load_real_paper_dataset(path: Path) -> RealPaperDataset:
-    return RealPaperDataset.model_validate_json(path.read_text(encoding="utf-8"))
+def load_real_paper_dataset(
+    path: Path,
+    *,
+    allow_unreviewed: bool = False,
+) -> RealPaperDataset:
+    return load_audited_real_paper_dataset(
+        path,
+        allow_unreviewed=allow_unreviewed,
+    )
 
 
 def load_real_paper_predictions(path: Path) -> RealPaperPredictionSet:
@@ -206,7 +154,11 @@ def load_real_paper_predictions(path: Path) -> RealPaperPredictionSet:
 
 
 def real_paper_json_schema() -> dict[str, Any]:
-    return RealPaperDataset.model_json_schema()
+    return real_paper_dataset_json_schema()
+
+
+def real_paper_prediction_json_schema() -> dict[str, Any]:
+    return RealPaperPredictionSet.model_json_schema()
 
 
 def evaluate_real_paper_predictions(
@@ -214,7 +166,20 @@ def evaluate_real_paper_predictions(
     predictions: RealPaperPredictionSet,
     *,
     recall_k: int = 5,
+    allow_unreviewed: bool = False,
 ) -> dict[str, Any]:
+    if dataset.evaluation_tier != "expert_labelled" and not allow_unreviewed:
+        raise ValueError(
+            "default evaluator accepts only expert_labelled datasets; "
+            "unreviewed evaluation requires an explicit contract-only opt-in"
+        )
+    if dataset.evaluation_tier == "expert_labelled":
+        readiness_errors = validate_dataset_for_evaluation(dataset)
+        if readiness_errors:
+            raise ValueError(
+                "expert dataset is not ready for formal evaluation: "
+                + "; ".join(readiness_errors)
+            )
     if recall_k < 1:
         raise ValueError("recall_k must be at least 1")
     prediction_map = {item.case_id: item for item in predictions.cases}
@@ -225,25 +190,34 @@ def evaluate_real_paper_predictions(
             + ", ".join(unknown_prediction_ids)
         )
 
-    aggregate = _evaluate_cases(dataset.cases, prediction_map, recall_k=recall_k)
+    trusted_system_run = predictions.prediction_source == "offline_system_run"
+    aggregate = _evaluate_cases(
+        dataset.cases,
+        prediction_map,
+        recall_k=recall_k,
+        trusted_system_run=trusted_system_run,
+    )
     groups = {
         "by_domain": _grouped_metrics(
             dataset.cases,
             prediction_map,
             key=lambda case: case.domain,
             recall_k=recall_k,
+            trusted_system_run=trusted_system_run,
         ),
         "by_paper": _grouped_metrics(
             dataset.cases,
             prediction_map,
             key=lambda case: case.paper_id,
             recall_k=recall_k,
+            trusted_system_run=trusted_system_run,
         ),
         "by_evidence_level": _grouped_metrics(
             dataset.cases,
             prediction_map,
             key=lambda case: case.evidence_level,
             recall_k=recall_k,
+            trusted_system_run=trusted_system_run,
         ),
     }
     is_expert = dataset.evaluation_tier == "expert_labelled"
@@ -279,6 +253,7 @@ def _evaluate_cases(
     prediction_map: dict[str, RealPaperCasePrediction],
     *,
     recall_k: int,
+    trusted_system_run: bool,
 ) -> dict[str, Any]:
     counts: Counter[str] = Counter()
     case_results: list[dict[str, Any]] = []
@@ -294,9 +269,17 @@ def _evaluate_cases(
                 case_id=case.case_id,
                 project_id=case.project_id,
                 refused=True,
+                execution_status="blocked",
+                error="No system prediction was supplied.",
                 retrieved_citations=[],
                 used_citations=[],
                 claims=[],
+            )
+        execution_completed = prediction.execution_status in {"complete", "partial"}
+        if not execution_completed:
+            counts[f"{prediction.execution_status}_predictions"] += 1
+            errors.append(
+                f"prediction_{prediction.execution_status}: {prediction.error or 'execution did not complete'}"
             )
 
         retrieved = prediction.retrieved_citations[:recall_k]
@@ -335,16 +318,16 @@ def _evaluate_cases(
         errors.extend(dict.fromkeys(citation_errors))
         counts["page_locator_attempts"] += len(prediction.used_citations)
 
-        predicted_answer = not prediction.refused
+        predicted_answer = execution_completed and not prediction.refused
         if predicted_answer:
             counts["predicted_answers"] += 1
-        else:
+        elif execution_completed:
             counts["predicted_refusals"] += 1
             if not case.answerable:
                 counts["correct_refusals"] += 1
 
         correct_claims = 0
-        for claim in prediction.claims:
+        for claim in prediction.claims if execution_completed else []:
             counts["claims"] += 1
             claim_citations = [
                 used_by_id[citation_id]
@@ -411,16 +394,21 @@ def _evaluate_cases(
             if _evidence_false_positive(
                 predicted_level=claim.evidence_level,
                 evidence_verified=(
-                    citation_binding_ok
-                    and bool(claim_citations)
+                    bool(claim_citations)
                     and all(item.evidence_verified for item in claim_citations)
+                    and (trusted_system_run or citation_binding_ok)
                 ),
                 gold_level=case.evidence_level,
             ):
                 counts["evidence_false_positives"] += 1
                 errors.append("evidence_level_false_positive: predicted evidence exceeds the annotated level")
 
-        answer_correct = case.answerable and predicted_answer and correct_claims > 0
+        answer_correct = (
+            execution_completed
+            and case.answerable
+            and predicted_answer
+            and correct_claims > 0
+        )
         if answer_correct:
             counts["correct_answers"] += 1
         elif predicted_answer and not prediction.claims:
@@ -434,6 +422,7 @@ def _evaluate_cases(
                 "evidence_level": case.evidence_level,
                 "answerable": case.answerable,
                 "predicted_refusal": prediction.refused,
+                "execution_status": prediction.execution_status,
                 "gold_rank": rank,
                 "answer_correct": answer_correct,
                 "errors": list(dict.fromkeys(errors)),
@@ -491,6 +480,7 @@ def _grouped_metrics(
     *,
     key,
     recall_k: int,
+    trusted_system_run: bool,
 ) -> dict[str, Any]:
     groups: dict[str, list[RealPaperEvaluationCase]] = {}
     for case in cases:
@@ -502,6 +492,7 @@ def _grouped_metrics(
                 group_cases,
                 prediction_map,
                 recall_k=recall_k,
+                trusted_system_run=trusted_system_run,
             )["metrics"],
         }
         for group, group_cases in sorted(groups.items())

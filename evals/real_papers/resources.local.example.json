@@ -1,0 +1,20 @@
+{
+  "schema_version": "real_paper_resources.v1",
+  "manifest_id": "replace-with-local-manifest-id",
+  "cache_root": "/private/tmp/scholarflow-real-paper-cache",
+  "resources": [
+    {
+      "paper_id": "replace-with-stable-paper-id",
+      "title": "Replace with exact title",
+      "doi": "",
+      "arxiv_id": "replace-with-arxiv-id-or-use-doi/openalex-id",
+      "openalex_id": "",
+      "version": "replace-with-exact-version",
+      "source_url": "https://arxiv.org/abs/replace-with-exact-version",
+      "local_path": "/private/tmp/scholarflow-real-paper-cache/replace.pdf",
+      "cache_identifier": "",
+      "sha256": "REPLACE_WITH_64_LOWERCASE_HEX_CHARACTERS",
+      "page_count": 1
+    }
+  ]
+}

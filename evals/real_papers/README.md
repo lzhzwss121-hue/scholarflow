@@ -1,40 +1,84 @@
-# ScholarFlow real-paper RAG evaluation
+# ScholarFlow real-paper evaluation data
 
 This directory is separate from the fixed 135-case constructed regression benchmark.
 
+## Current audited status
+
+- `cases.unreviewed.json`: **4 drafts**, covering 3 papers and 3 domains. They have fixed public source versions and locators, but no independent reviewer pair or adjudication.
+- `cases.expert.json`: **0/50 expert-labelled cases**. It is intentionally empty.
+- Formal target: 50–100 cases; current planning target is 75 cases over 15–25 papers and at least 5 domains.
+
+No current file supports claims about expert accuracy, inter-annotator agreement, or scientific truth. The four drafts are not renamed or copied into the expert dataset.
+
+## Files
+
+| File | Role |
+| --- | --- |
+| `cases.schema.json` | Authoritative JSON Schema for dataset v2 |
+| `schema.json` | Compatibility reference to `cases.schema.json` |
+| `annotation-guide.md` | Human annotation, adjudication, coverage and audit procedure |
+| `cases.unreviewed.json` | Human-locatable drafts excluded from default evaluation |
+| `cases.expert.json` | Formal expert-only dataset; currently empty |
+| `resources.local.example.json` | Non-secret local PDF manifest template |
+| `predictions.schema-fixture.json` | Synthetic evaluator contract fixture, never system or expert evidence |
+
+Local PDF manifests matching `resources.local*.json` are ignored, except for the example template. Full PDFs, large excerpts and private reviewer identity mappings must not be committed.
+
 ## Evidence tiers
 
-| Tier | Purpose | May be reported as expert gold? |
+| Tier | Purpose | Formal metric source? |
 | --- | --- | --- |
-| `constructed_fixture` | Deterministic regression contract for retrieval, refusal, contradiction and evidence gates | No |
-| `real_paper_unreviewed` | Real bibliographic records and human-locatable PDF positions awaiting expert review | No |
-| `expert_labelled` | Cases independently checked and adjudicated by named human experts | Only as performance on that labelled set; it still does not prove a scientific conclusion true |
-| `live_external_smoke` | Connectivity and current arXiv/OpenAlex/PDF behavior | No; report separately as `complete`, `partial` or `blocked` |
+| `constructed_fixture` | Deterministic retrieval/refusal regression | No |
+| `real_paper_unreviewed` | Annotation/schema development | No |
+| `expert_labelled` | Two independent human reviews plus adjudication | Yes, only after the 50-case/15-paper/5-domain gate |
+| `live_external_smoke` | Current external connectivity | No; report separately |
 
-`cases.unreviewed.json` contains public-paper examples whose page, section and table/paragraph positions were checked by a repository maintainer. They are deliberately marked `unreviewed`. The file is a schema and evaluation-code fixture, not an expert-labelled benchmark.
+## Dataset commands
 
-`predictions.schema-fixture.json` is a synthetic system-output fixture. It intentionally contains one wrong BERT Table 1 claim so that the evaluator must expose an unsupported claim and contradiction escape. It is not a gold-label source.
+```bash
+npm run eval:rag:dataset -- validate \
+  --cases evals/real_papers/cases.expert.json
 
-## Annotation rules
+npm run eval:rag:dataset -- coverage \
+  --cases evals/real_papers/cases.unreviewed.json
 
-1. Start from the exact paper version recorded in `source` and `version`.
-2. Record one answerable or refusal question without asking a model to create the gold answer.
-3. For every answerable case, copy or conservatively normalize a claim that a human can find at `page`, `section` and the paragraph/table/figure locator.
-4. Add every acceptable citation locator and known contradiction trap.
-5. Set `label_origin` to `human_annotation` or `imported_bibliographic_fixture`. `model_generated` is not valid schema input.
-6. Keep `adjudication_status=unreviewed` until a human reviewer checks the source.
-7. Promote a dataset to `expert_labelled` only after all cases are `adjudicated` human annotations. Resolve disagreements outside the model under test and record the final annotator/adjudicator identity.
+npm run eval:rag:dataset -- disagreements \
+  --cases evals/real_papers/cases.unreviewed.json
 
-## Offline execution
+npm run eval:rag:dataset -- split-check \
+  --cases evals/real_papers/cases.unreviewed.json
+```
 
-The constructed benchmark and real-paper evaluation are emitted in separate report sections:
+`promote` advances exactly one state and requires a separate output file:
+
+```bash
+npm run eval:rag:dataset -- promote \
+  --cases /private/tmp/annotation-round-1.json \
+  --case-id <case-id> \
+  --output /private/tmp/annotation-round-2.json
+```
+
+The validator rejects cross-split papers, missing version/hash, out-of-range locators, wrong-version citations, answerable cases without evidence, refusal cases with direct support, duplicate/near-duplicate questions, false expert status and unresolved disagreements.
+
+## Offline system predictions
+
+Copy `resources.local.example.json` to an ignored local manifest and replace every placeholder with the exact local PDF identity. The cases and resource manifest must agree on paper ID, version, source URL, SHA-256 and page count.
+
+```bash
+PYTHONPATH=services/api/src .venv/bin/python \
+  -m scholarflow_api.real_paper_prediction_runner \
+  --cases evals/real_papers/cases.unreviewed.json \
+  --resources evals/real_papers/resources.local.json \
+  --output /private/tmp/scholarflow-real-predictions.json
+```
+
+This command is useful for pipeline testing on drafts, but the default evaluator will not score those drafts as expert gold. Formal evaluation defaults to `cases.expert.json` and reports `0/50` until real human work is complete:
 
 ```bash
 SCHOLARFLOW_DB_PATH=/private/tmp/scholarflow-rag-eval.sqlite3 \
-SCHOLARFLOW_REAL_EVAL_PREDICTIONS=evals/real_papers/predictions.schema-fixture.json \
-npm run eval:rag
+  npm run eval:rag
 ```
 
-The JSON and Markdown reports are written beside the temporary database under a dedicated report directory. Do not merge `real_paper_unreviewed` metrics into `expert_labelled` metrics.
+When a sufficient expert dataset exists, pass its matching `offline_system_run` predictions. `offline_test_fixture`, missing predictions and blocked executions remain explicitly blocked and are never substituted.
 
-Live external smoke checks use a separate command and report. External failure remains `partial` or `blocked`; it must never fall back to these fixtures while retaining a `live_external_smoke` label.
+See [`annotation-guide.md`](annotation-guide.md) for the state machine, 75-case coverage matrix, reviewer independence rules and release sampling procedure.

@@ -16,6 +16,11 @@ from scholarflow_api.real_paper_evaluation import (
     load_real_paper_dataset,
     load_real_paper_predictions,
 )
+from scholarflow_api.real_paper_dataset import (
+    MINIMUM_EXPERT_CASES,
+    coverage_report as real_paper_coverage_report,
+    validate_dataset_for_evaluation,
+)
 
 
 BENCHMARK_VERSION = "evidence_hybrid_rag.v1"
@@ -458,8 +463,49 @@ def build_evaluation_report(
     }
 
     if real_dataset_path is not None:
-        dataset = load_real_paper_dataset(real_dataset_path)
-        if real_predictions_path is None:
+        dataset = load_real_paper_dataset(
+            real_dataset_path,
+            allow_unreviewed=True,
+        )
+        coverage = real_paper_coverage_report(dataset)
+        if dataset.evaluation_tier != "expert_labelled":
+            real_unreviewed.update(
+                {
+                    "status": "blocked",
+                    "dataset_id": dataset.dataset_id,
+                    "case_count": len(dataset.cases),
+                    "completed_expert_count": coverage["completed_expert_count"],
+                    "minimum_target": MINIMUM_EXPERT_CASES,
+                    "gap_to_minimum": coverage["gap_to_minimum"],
+                    "reason": (
+                        "默认 evaluator 不加载 unreviewed gold；该文件只可用于标注、"
+                        "schema 和显式 contract tooling。"
+                    ),
+                }
+            )
+            if real_predictions_path is not None:
+                predictions = load_real_paper_predictions(real_predictions_path)
+                real_unreviewed["prediction_source"] = predictions.prediction_source
+                if predictions.prediction_source != "offline_system_run":
+                    real_unreviewed["reason"] += (
+                        " 标准报告同时拒绝非 offline_system_run prediction。"
+                    )
+        elif (readiness_errors := validate_dataset_for_evaluation(dataset)):
+            expert_labelled.update(
+                {
+                    "status": "blocked",
+                    "dataset_id": dataset.dataset_id,
+                    "case_count": len(dataset.cases),
+                    "completed_expert_count": coverage["completed_expert_count"],
+                    "minimum_target": MINIMUM_EXPERT_CASES,
+                    "gap_to_minimum": coverage["gap_to_minimum"],
+                    "reason": (
+                        "专家数据集尚未达到正式评测门槛："
+                        + "; ".join(readiness_errors)
+                    ),
+                }
+            )
+        elif real_predictions_path is None:
             target = (
                 expert_labelled
                 if dataset.evaluation_tier == "expert_labelled"
@@ -475,12 +521,31 @@ def build_evaluation_report(
             )
         else:
             predictions = load_real_paper_predictions(real_predictions_path)
-            evaluated = evaluate_real_paper_predictions(dataset, predictions)
-            evaluated["status"] = "complete"
-            if dataset.evaluation_tier == "expert_labelled":
-                expert_labelled = evaluated
+            if predictions.prediction_source != "offline_system_run":
+                target = (
+                    expert_labelled
+                    if dataset.evaluation_tier == "expert_labelled"
+                    else real_unreviewed
+                )
+                target.update(
+                    {
+                        "status": "blocked",
+                        "dataset_id": dataset.dataset_id,
+                        "case_count": len(dataset.cases),
+                        "prediction_source": predictions.prediction_source,
+                        "reason": (
+                            "标准 real-paper 报告只接受 prediction_source="
+                            "offline_system_run；schema fixture 只用于 evaluator 合同测试。"
+                        ),
+                    }
+                )
             else:
-                real_unreviewed = evaluated
+                evaluated = evaluate_real_paper_predictions(dataset, predictions)
+                evaluated["status"] = "complete"
+                if dataset.evaluation_tier == "expert_labelled":
+                    expert_labelled = evaluated
+                else:
+                    real_unreviewed = evaluated
 
     return {
         "report_schema_version": REPORT_SCHEMA_VERSION,
@@ -594,7 +659,7 @@ def main() -> None:
         default=Path(
             os.environ.get(
                 "SCHOLARFLOW_REAL_EVAL_DATASET",
-                repository_root / "evals/real_papers/cases.unreviewed.json",
+                repository_root / "evals/real_papers/cases.expert.json",
             )
         ),
     )
@@ -603,6 +668,28 @@ def main() -> None:
         "--real-predictions",
         type=Path,
         default=Path(prediction_env) if prediction_env else None,
+    )
+    resource_env = os.environ.get("SCHOLARFLOW_REAL_EVAL_RESOURCES", "").strip()
+    default_resource_path = repository_root / "evals/real_papers/resources.local.json"
+    parser.add_argument(
+        "--real-resources",
+        type=Path,
+        default=(
+            Path(resource_env)
+            if resource_env
+            else default_resource_path
+            if default_resource_path.exists()
+            else None
+        ),
+        help=(
+            "Fixed local PDF manifest. When supplied without --real-predictions, "
+            "ScholarFlow generates offline_system_run predictions before evaluation."
+        ),
+    )
+    parser.add_argument(
+        "--real-prediction-output",
+        type=Path,
+        help="Optional /private/tmp path for auto-generated real-paper predictions.",
     )
     parser.add_argument("--report-dir", type=Path)
     args = parser.parse_args()
@@ -615,12 +702,37 @@ def main() -> None:
     with get_connection() as connection:
         seed_benchmark(connection)
         result = run_benchmark(connection)
+    report_dir = args.report_dir or db_path.parent / f"{db_path.stem}-reports"
+    real_predictions_path = args.real_predictions
+    dataset_for_prediction = load_real_paper_dataset(
+        args.real_dataset,
+        allow_unreviewed=True,
+    )
+    if (
+        real_predictions_path is None
+        and args.real_resources is not None
+        and dataset_for_prediction.cases
+    ):
+        from scholarflow_api.real_paper_prediction_runner import (
+            run_real_paper_predictions,
+        )
+
+        generated_output = (
+            args.real_prediction_output
+            or report_dir / "real-paper-offline-system-predictions.json"
+        )
+        run_real_paper_predictions(
+            cases_path=args.real_dataset,
+            resources_path=args.real_resources,
+            output_path=generated_output,
+            work_dir=report_dir / "real-paper-run-work",
+        )
+        real_predictions_path = generated_output
     report = build_evaluation_report(
         result,
         real_dataset_path=args.real_dataset,
-        real_predictions_path=args.real_predictions,
+        real_predictions_path=real_predictions_path,
     )
-    report_dir = args.report_dir or db_path.parent / f"{db_path.stem}-reports"
     report_paths = write_evaluation_report(report, report_dir)
     rendered = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
     if args.output:

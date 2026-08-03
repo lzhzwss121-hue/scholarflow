@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scholarflow.local/schemas/real-paper-dataset-v2.json",
+  "title": "ScholarFlow auditable real-paper dataset",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "dataset_id", "evaluation_tier", "description", "target_case_count", "cases"],
+  "properties": {
+    "schema_version": {"const": "real_paper_dataset.v2"},
+    "dataset_id": {"type": "string", "minLength": 1, "maxLength": 300},
+    "evaluation_tier": {"enum": ["real_paper_unreviewed", "expert_labelled"]},
+    "description": {"type": "string", "minLength": 1, "maxLength": 3000},
+    "target_case_count": {"type": "integer", "minimum": 50, "maximum": 100},
+    "cases": {"type": "array", "items": {"$ref": "#/$defs/case"}}
+  },
+  "$defs": {
+    "locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {"enum": ["metadata", "abstract", "paragraph", "table", "figure", "equation", "chunk"]},
+        "value": {"type": "string", "minLength": 1, "maxLength": 240},
+        "page": {"type": ["integer", "null"], "minimum": 1},
+        "section": {"type": "string", "maxLength": 300, "default": ""},
+        "paragraph": {"type": "string", "maxLength": 120, "default": ""},
+        "table": {"type": "string", "maxLength": 120, "default": ""},
+        "figure": {"type": "string", "maxLength": 120, "default": ""},
+        "equation": {"type": "string", "maxLength": 120, "default": ""},
+        "supplementary": {"type": "boolean", "default": false}
+      }
+    },
+    "citation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["citation_id", "paper_id", "paper_version", "source_hash", "page", "section", "locator"],
+      "properties": {
+        "citation_id": {"type": "string", "minLength": 1, "maxLength": 500},
+        "paper_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "paper_version": {"type": "string", "minLength": 1, "maxLength": 200},
+        "source_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "page": {"type": "integer", "minimum": 1},
+        "section": {"type": "string", "minLength": 1, "maxLength": 300},
+        "locator": {"$ref": "#/$defs/locator"}
+      }
+    },
+    "independentReview": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["reviewer_id", "completed_at", "independently_completed", "answerability", "gold_claim", "evidence_type", "evidence_level", "evidence_locator", "acceptable_citations", "notes"],
+      "properties": {
+        "reviewer_id": {"type": "string", "minLength": 1, "maxLength": 300},
+        "completed_at": {"type": "string", "format": "date-time"},
+        "independently_completed": {"const": true},
+        "answerability": {"enum": ["answerable", "refusal"]},
+        "gold_claim": {"type": "string", "maxLength": 5000},
+        "evidence_type": {"$ref": "#/$defs/evidenceType"},
+        "evidence_level": {"$ref": "#/$defs/evidenceLevel"},
+        "evidence_locator": {"$ref": "#/$defs/locator"},
+        "acceptable_citations": {"type": "array", "items": {"$ref": "#/$defs/citation"}},
+        "notes": {"type": "array", "maxItems": 50, "items": {"type": "string"}}
+      }
+    },
+    "adjudication": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["adjudicator_id", "completed_at", "answerability", "gold_claim", "evidence_type", "evidence_level", "evidence_locator", "acceptable_citations", "resolved_disagreement_fields", "rationale"],
+      "properties": {
+        "adjudicator_id": {"type": "string", "minLength": 1, "maxLength": 300},
+        "completed_at": {"type": "string", "format": "date-time"},
+        "answerability": {"enum": ["answerable", "refusal"]},
+        "gold_claim": {"type": "string", "maxLength": 5000},
+        "evidence_type": {"$ref": "#/$defs/evidenceType"},
+        "evidence_level": {"$ref": "#/$defs/evidenceLevel"},
+        "evidence_locator": {"$ref": "#/$defs/locator"},
+        "acceptable_citations": {"type": "array", "items": {"$ref": "#/$defs/citation"}},
+        "resolved_disagreement_fields": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "rationale": {"type": "string", "minLength": 1, "maxLength": 5000}
+      }
+    },
+    "evidenceType": {"enum": ["metadata", "abstract", "main_text", "table", "figure", "equation", "supplemental_material"]},
+    "evidenceLevel": {"enum": ["metadata_only", "abstract_only", "supplemental_text", "full_text"]},
+    "caseType": {"enum": ["answerable", "refusal", "metadata_insufficient", "abstract_insufficient", "table", "figure_caption", "equation", "experiment_setup", "dataset_metric", "numeric_unit_condition", "correlation_causality", "supplemental_material", "version_conflict", "no_reliable_hit"]},
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["case_id", "project_id", "paper_id", "title", "paper_version", "source_url", "source_hash", "source_page_count", "domain", "question", "answerability", "gold_claim", "evidence_type", "evidence_level", "evidence_excerpt", "evidence_locator", "acceptable_citations", "direct_support_found", "contradiction_notes", "contradiction_claims", "version_notes", "annotator_a_result", "annotator_b_result", "disagreement_fields", "adjudicator_result", "adjudication_date", "review_status", "label_origin", "split", "case_types"],
+      "properties": {
+        "case_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "project_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "paper_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "title": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "paper_version": {"type": "string", "minLength": 1, "maxLength": 200},
+        "source_url": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "source_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source_page_count": {"type": "integer", "minimum": 1},
+        "domain": {"type": "string", "minLength": 1, "maxLength": 200},
+        "question": {"type": "string", "minLength": 1, "maxLength": 3000},
+        "answerability": {"enum": ["answerable", "refusal"]},
+        "gold_claim": {"type": "string", "maxLength": 5000},
+        "evidence_type": {"$ref": "#/$defs/evidenceType"},
+        "evidence_level": {"$ref": "#/$defs/evidenceLevel"},
+        "evidence_excerpt": {"type": "string", "maxLength": 500},
+        "evidence_locator": {"$ref": "#/$defs/locator"},
+        "acceptable_citations": {"type": "array", "items": {"$ref": "#/$defs/citation"}},
+        "direct_support_found": {"type": "boolean"},
+        "contradiction_notes": {"type": "array", "items": {"type": "string"}},
+        "contradiction_claims": {"type": "array", "items": {"type": "string"}},
+        "version_notes": {"type": "string", "maxLength": 3000},
+        "annotator_a_result": {"$ref": "#/$defs/independentReview"},
+        "annotator_b_result": {"$ref": "#/$defs/independentReview"},
+        "disagreement_fields": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "adjudicator_result": {"$ref": "#/$defs/adjudication"},
+        "adjudication_date": {"type": ["string", "null"], "format": "date"},
+        "review_status": {"enum": ["draft", "independently_reviewed", "adjudicated", "expert_labelled"]},
+        "label_origin": {"enum": ["human_draft", "human_annotation", "imported_bibliographic_fixture"]},
+        "split": {"enum": ["train", "dev", "test"]},
+        "case_types": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/caseType"}}
+      }
+    }
+  }
+}
