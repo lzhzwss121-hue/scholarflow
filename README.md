@@ -214,6 +214,31 @@ npm run eval:rag:live -- --report-dir /private/tmp/scholarflow-rag-live-smoke
 
 外部请求失败时报告保持 `partial`/`blocked`，不会自动替换为 fixture 后仍声称 live 成功。
 
+### Bounded Agent 真实 Provider smoke
+
+真实模型控制循环使用独立、默认关闭的 runner。它只把无隐私合成项目和确定性
+fixture 工具结果发送给 DeepSeek 或 OpenRouter，用于验证计划、受限 Action、
+PlanRevision、durable checkpoint 恢复和最终模型表达；它不会访问 arXiv、OpenAlex
+或论文 PDF，报告必须标记为 `live_provider_fixture_tools`，不能称为
+`live_external_research`。
+
+不带确认参数时只生成 dry-run 清单，不构造 Provider 或发送请求：
+
+```bash
+npm run eval:agent:live -- \
+  --provider deepseek \
+  --max-model-calls 12 \
+  --max-tokens 6000 \
+  --timeout 40 \
+  --output /private/tmp/scholarflow-bounded-agent-deepseek.json
+```
+
+只有 API key 已存在于后端环境变量、操作者再次明确授权并增加
+`--confirm-live` 后，runner 才允许真实请求。输出和隔离 SQLite 都写入
+`/private/tmp`；报告不保存请求头或 key，并在结束后扫描报告、数据库和结果
+artifact。模型与 endpoint 采用 fail-closed allowlist，普通单元测试只使用本地
+mock Provider，因此该 smoke 不属于普通 CI。
+
 ## Gap Board 与 Experiment Plan
 
 Gap Board 根据跨论文证据区分：

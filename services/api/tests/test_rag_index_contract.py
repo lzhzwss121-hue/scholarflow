@@ -131,7 +131,7 @@ class RagIndexContractTest(unittest.TestCase):
                         "filtered_count": 0,
                     },
                 )
-                with patch("scholarflow_api.services.workflow_runtime.search_literature", return_value=search_result):
+                with patch("scholarflow_api.services.literature_service.search_literature", return_value=search_result):
                     search_response = main_module.search_project_literature(
                         project.id,
                         LiteratureSearchRequest(query=project.keyword, sources=["arxiv"]),
@@ -171,7 +171,7 @@ class RagIndexContractTest(unittest.TestCase):
                 self.assertEqual({chunk.section for chunk in full_chunks}, {"method", "experiments"})
                 self.assertTrue(all(chunk.embedding_model == "" for chunk in full_chunks))
 
-                with patch("scholarflow_api.services.workflow_runtime.search_literature", return_value=search_result):
+                with patch("scholarflow_api.services.literature_service.search_literature", return_value=search_result):
                     main_module.search_project_literature(
                         project.id,
                         LiteratureSearchRequest(query=project.keyword, sources=["arxiv"]),

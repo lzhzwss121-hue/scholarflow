@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from fastapi import HTTPException
 
@@ -46,14 +47,18 @@ def ensure_real_project_for_agent(project: dict) -> None:
         )
 
 
-def create_agent_plan(payload: AgentPlanRequest) -> AgentPlanResponse:
+def create_agent_plan(
+    payload: AgentPlanRequest,
+    *,
+    provider_override: Any | None = None,
+) -> AgentPlanResponse:
     now = utc_now()
     run_id = new_id("run")
     with get_connection() as connection:
         project = fetch_project_dict(connection, payload.project_id)
         ensure_real_project_for_agent(project)
         session_id = ensure_active_session(connection, project, now)
-        provider = get_model_provider()
+        provider = provider_override or get_model_provider()
         draft = provider.create_plan(payload.task, project)
         plan = draft.to_dict()
         validate_workflow_plan(plan)

@@ -120,6 +120,9 @@ class ModelCallAudit:
     requested_model: str = ""
     external_data_sent: bool = False
     estimated_cost_usd: float | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -259,12 +262,17 @@ class OpenAICompatibleProvider:
         api_key: str,
         timeout_seconds: float,
         extra_headers: dict[str, str] | None = None,
+        max_output_tokens: int | None = None,
+        total_token_budget: int | None = None,
     ) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds
         self.extra_headers = extra_headers or {}
+        self.max_output_tokens = max_output_tokens
+        self.total_token_budget = total_token_budget
+        self.total_tokens_used = 0
 
     def create_plan(self, task: str, project: dict[str, Any]) -> AgentPlanDraft:
         if not self.api_key:
@@ -497,11 +505,22 @@ class OpenAICompatibleProvider:
         started = time.monotonic()
         requested_at = utc_timestamp()
         try:
+            requested_max_tokens = max_tokens
+            if self.max_output_tokens is not None:
+                requested_max_tokens = min(
+                    requested_max_tokens,
+                    max(1, int(self.max_output_tokens)),
+                )
+            if self.total_token_budget is not None:
+                remaining_tokens = int(self.total_token_budget) - self.total_tokens_used
+                if remaining_tokens <= 0:
+                    raise RuntimeError("provider_total_token_budget_reached")
+                requested_max_tokens = min(requested_max_tokens, remaining_tokens)
             response = self._post_chat_completion(
                 {
                     "model": self.model,
                     "temperature": 0.1,
-                    "max_tokens": max_tokens,
+                    "max_tokens": requested_max_tokens,
                     "response_format": {"type": "json_object"},
                     "messages": messages,
                 }
@@ -512,6 +531,14 @@ class OpenAICompatibleProvider:
             model_json = parse_json_object(content)
             actual_model = str(response.get("model") or self.model)
             usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+            prompt_tokens = _nonnegative_usage_int(usage.get("prompt_tokens"))
+            completion_tokens = _nonnegative_usage_int(
+                usage.get("completion_tokens")
+            )
+            total_tokens = _nonnegative_usage_int(usage.get("total_tokens"))
+            if total_tokens == 0:
+                total_tokens = prompt_tokens + completion_tokens
+            self.total_tokens_used += total_tokens
             raw_cost = usage.get("cost") if isinstance(usage, dict) else None
             estimated_cost = (
                 max(0.0, float(raw_cost))
@@ -531,6 +558,9 @@ class OpenAICompatibleProvider:
                 requested_model=self.model,
                 external_data_sent=True,
                 estimated_cost_usd=estimated_cost,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
             )
         except Exception as error:
             setattr(error, "_scholarflow_latency_ms", elapsed_ms(started))
@@ -748,6 +778,12 @@ class DeepSeekProvider(OpenAICompatibleProvider):
             base_url=os.getenv("DEEPSEEK_BASE_URL") or DEFAULT_DEEPSEEK_BASE_URL,
             api_key=os.getenv("DEEPSEEK_API_KEY") or "",
             timeout_seconds=_parse_timeout(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "40")),
+            max_output_tokens=_optional_positive_int_env(
+                "SCHOLARFLOW_MODEL_MAX_OUTPUT_TOKENS"
+            ),
+            total_token_budget=_optional_positive_int_env(
+                "SCHOLARFLOW_MODEL_TOTAL_TOKEN_BUDGET"
+            ),
         )
 
 
@@ -766,6 +802,12 @@ class OpenRouterProvider(OpenAICompatibleProvider):
                 "HTTP-Referer": app_url,
                 "X-Title": app_title,
             },
+            max_output_tokens=_optional_positive_int_env(
+                "SCHOLARFLOW_MODEL_MAX_OUTPUT_TOKENS"
+            ),
+            total_token_budget=_optional_positive_int_env(
+                "SCHOLARFLOW_MODEL_TOTAL_TOKEN_BUDGET"
+            ),
         )
 
 
@@ -1209,6 +1251,26 @@ def _optional_positive_float_env(name: str) -> float | None:
     return value if value > 0 else None
 
 
+def _optional_positive_int_env(name: str) -> int | None:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _nonnegative_usage_int(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def build_fallback_plan(
     task: str,
     project: dict[str, Any],
@@ -1419,6 +1481,8 @@ def validate_claim_review_json(model_json: dict[str, Any]) -> tuple[str, list[st
 
 
 def classify_provider_failure(error: BaseException) -> tuple[str, str]:
+    if str(error) == "provider_total_token_budget_reached":
+        return "token_budget_reached", "blocked"
     if isinstance(error, urllib.error.HTTPError):
         code = int(error.code)
         return f"http_{code}", f"http_{code}"

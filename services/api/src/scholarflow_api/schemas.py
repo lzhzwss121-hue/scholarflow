@@ -976,6 +976,9 @@ class ModelCallAuditRecord(BaseModel):
     requested_model: str = ""
     external_data_sent: bool = False
     estimated_cost_usd: float | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
 
 
 AgentExecutionModeLiteral = Literal[

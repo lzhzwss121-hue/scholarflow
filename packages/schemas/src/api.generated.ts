@@ -374,6 +374,9 @@ export interface components {
         "requested_model"?: string;
         "external_data_sent"?: boolean;
         "estimated_cost_usd"?: number | null;
+        "prompt_tokens"?: number;
+        "completion_tokens"?: number;
+        "total_tokens"?: number;
       };
     "Paper": {
         "id": string;

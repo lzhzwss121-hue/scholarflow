@@ -357,7 +357,7 @@ def _run_case(
         # This public workflow service invokes answer_project_rag, persists its
         # artifact/evaluation, and applies the same deterministic refusal gates
         # used by the API. The runner never synthesizes a final answer itself.
-        from scholarflow_api.services.workflow_runtime import create_project_rag_answer
+        from scholarflow_api.services.rag_service import create_project_rag_answer
 
         response = create_project_rag_answer(
             case.project_id,

@@ -148,6 +148,77 @@ class RefactorContractTest(unittest.TestCase):
             {"scholarflow_api.routers.agents"},
         )
 
+    def test_extracted_domain_routes_and_dependencies_have_single_authority(self) -> None:
+        from scholarflow_api.main import app
+
+        domain_modules = {
+            "/literature/": "scholarflow_api.routers.literature",
+            "/direction-review": "scholarflow_api.routers.direction_reviews",
+            "/rag-": "scholarflow_api.routers.rag",
+            "/chunks": "scholarflow_api.routers.rag",
+            "/research-decisions": "scholarflow_api.routers.research_decisions",
+            "/research-memory/": "scholarflow_api.routers.research_decisions",
+        }
+        for route in app.routes:
+            path = getattr(route, "path", "")
+            expected = next(
+                (module for marker, module in domain_modules.items() if marker in path),
+                None,
+            )
+            if expected is not None:
+                self.assertEqual(route.endpoint.__module__, expected, path)
+
+        package_root = Path(__file__).resolve().parents[1] / "src" / "scholarflow_api"
+        extracted_domains = (
+            "literature",
+            "direction_reviews",
+            "rag",
+            "research_decisions",
+        )
+        for domain in extracted_domains:
+            router_source = (package_root / "routers" / f"{domain}.py").read_text(
+                encoding="utf-8"
+            )
+            self.assertNotIn("partition_router", router_source)
+
+        runtime_source = (
+            package_root / "services" / "workflow_runtime.py"
+        ).read_text(encoding="utf-8")
+        for function_name in (
+            "list_project_papers",
+            "search_project_literature",
+            "execute_project_direction_review",
+            "start_project_direction_review_run",
+            "create_project_rag_answer",
+            "search_project_rag",
+            "create_project_research_decisions",
+            "query_project_research_memory",
+        ):
+            self.assertNotIn(f"def {function_name}(", runtime_source)
+
+        for service_name in (
+            "literature_service",
+            "direction_review_service",
+            "rag_service",
+            "research_decision_service",
+        ):
+            service_source = (
+                package_root / "services" / f"{service_name}.py"
+            ).read_text(encoding="utf-8")
+            self.assertNotIn("workflow_runtime", service_source)
+
+        for repository_name in (
+            "literature_repository",
+            "direction_review_repository",
+            "rag_repository",
+            "research_decision_repository",
+        ):
+            repository_source = (
+                package_root / "repositories" / f"{repository_name}.py"
+            ).read_text(encoding="utf-8")
+            self.assertNotIn("scholarflow_api.services", repository_source)
+            self.assertNotIn("scholarflow_api.routers", repository_source)
+
     def test_generated_types_match_current_openapi(self) -> None:
         from scholarflow_api.openapi_types import render_typescript_api_types
         from scholarflow_api.main import app

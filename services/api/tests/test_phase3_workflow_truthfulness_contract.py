@@ -125,7 +125,7 @@ class Phase3WorkflowTruthfulnessContractTest(unittest.TestCase):
                         observed.append((snapshot.stage, snapshot.progress, snapshot.message))
                     return partial_review(payload.direction)
 
-                with patch("scholarflow_api.services.workflow_runtime.execute_project_direction_review", side_effect=fake_execute):
+                with patch("scholarflow_api.services.direction_review_service.execute_project_direction_review", side_effect=fake_execute):
                     DurableWorker("direction-test-worker").run_once()
 
                 status = main_module.get_project_direction_review_run(project.id, started.run_id)
@@ -202,7 +202,7 @@ class Phase3WorkflowTruthfulnessContractTest(unittest.TestCase):
                     DirectionReviewRequest(direction=project.keyword, round=1),
                 )
                 with patch(
-                    "scholarflow_api.services.workflow_runtime.execute_project_direction_review",
+                    "scholarflow_api.services.direction_review_service.execute_project_direction_review",
                     side_effect=RuntimeError("retrieval worker crashed"),
                 ):
                     worker = DurableWorker(

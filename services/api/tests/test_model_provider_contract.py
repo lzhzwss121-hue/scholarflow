@@ -30,6 +30,12 @@ def completion(content: dict, model: str) -> bytes:
         {
             "model": model,
             "choices": [{"message": {"content": json.dumps(content)}}],
+            "usage": {
+                "prompt_tokens": 11,
+                "completion_tokens": 7,
+                "total_tokens": 18,
+                "cost": 0.001,
+            },
         }
     ).encode("utf-8")
 
@@ -147,6 +153,9 @@ class ModelProviderContractTests(unittest.TestCase):
                 self.assertEqual(draft.provider, f"{provider_name}:{provider_name}-model")
                 self.assertEqual(draft.model_call.response_status, "success")
                 self.assertTrue(draft.model_call.external_data_sent)
+                self.assertEqual(draft.model_call.prompt_tokens, 11)
+                self.assertEqual(draft.model_call.completion_tokens, 7)
+                self.assertEqual(draft.model_call.total_tokens, 18)
                 self.assertEqual(
                     [step.tool for step in draft.steps],
                     list(WORKFLOW_ALLOWED_TOOLS),
@@ -298,18 +307,26 @@ class ModelProviderContractTests(unittest.TestCase):
         self.assertFalse(draft.model_call.external_data_sent)
 
     def test_http_failures_timeout_and_invalid_json_do_not_claim_model_success(self) -> None:
-        for status in (401, 429, 500):
-            with self.subTest(status=status), mock_model_server(
-                status=status,
-                raw_body=b'{"error":"do not persist this body"}',
-            ) as (base_url, _records), patch.dict(
-                os.environ,
-                {
-                    "DEEPSEEK_API_KEY": "secret",
-                    "DEEPSEEK_BASE_URL": base_url,
-                },
-            ):
-                draft = DeepSeekProvider().create_plan("Plan", self.project)
+        for provider_name in ("deepseek", "openrouter"):
+            for status in (401, 429, 500):
+                with self.subTest(provider=provider_name, status=status), mock_model_server(
+                    status=status,
+                    raw_body=b'{"error":"do not persist this body"}',
+                ) as (base_url, _records):
+                    prefix = "DEEPSEEK" if provider_name == "deepseek" else "OPENROUTER"
+                    with patch.dict(
+                        os.environ,
+                        {
+                            f"{prefix}_API_KEY": "secret",
+                            f"{prefix}_BASE_URL": base_url,
+                        },
+                    ):
+                        provider = (
+                            DeepSeekProvider()
+                            if provider_name == "deepseek"
+                            else OpenRouterProvider()
+                        )
+                        draft = provider.create_plan("Plan", self.project)
                 self.assertTrue(draft.provider.startswith("local:"))
                 self.assertEqual(draft.model_call.fallback_reason, f"http_{status}")
                 self.assertNotEqual(draft.model_call.response_status, "success")
@@ -341,6 +358,53 @@ class ModelProviderContractTests(unittest.TestCase):
             invalid = DeepSeekProvider().synthesize_answer("Question", [])
         self.assertEqual(invalid.audit.fallback_reason, "invalid_response")
         self.assertEqual(invalid.audit.provider, "local")
+
+    def test_provider_request_token_cap_and_usage_metadata(self) -> None:
+        with mock_model_server() as (base_url, records), patch.dict(
+            os.environ,
+            {
+                "DEEPSEEK_API_KEY": "secret",
+                "DEEPSEEK_BASE_URL": base_url,
+                "SCHOLARFLOW_MODEL_MAX_OUTPUT_TOKENS": "64",
+                "SCHOLARFLOW_MODEL_TOTAL_TOKEN_BUDGET": "100",
+            },
+        ):
+            draft = DeepSeekProvider().create_plan("Plan", self.project)
+
+        self.assertEqual(records[0]["payload"]["max_tokens"], 64)
+        self.assertEqual(draft.model_call.total_tokens, 18)
+        self.assertEqual(draft.model_call.estimated_cost_usd, 0.001)
+
+    def test_both_external_providers_timeout_and_reject_invalid_json(self) -> None:
+        for provider_name in ("deepseek", "openrouter"):
+            prefix = "DEEPSEEK" if provider_name == "deepseek" else "OPENROUTER"
+            provider_type = DeepSeekProvider if provider_name == "deepseek" else OpenRouterProvider
+            with self.subTest(provider=provider_name, failure="timeout"), mock_model_server(
+                delay_seconds=0.2
+            ) as (base_url, _records), patch.dict(
+                os.environ,
+                {
+                    f"{prefix}_API_KEY": "secret",
+                    f"{prefix}_BASE_URL": base_url,
+                },
+            ):
+                provider = provider_type()
+                provider.timeout_seconds = 0.03
+                timeout_result = provider.create_plan("Plan", self.project)
+            self.assertEqual(timeout_result.model_call.fallback_reason, "timeout")
+
+            with self.subTest(provider=provider_name, failure="invalid_json"), mock_model_server(
+                raw_body=b'{"choices":[{"message":{"content":"not-json"}}]}'
+            ) as (base_url, _records), patch.dict(
+                os.environ,
+                {
+                    f"{prefix}_API_KEY": "secret",
+                    f"{prefix}_BASE_URL": base_url,
+                },
+            ):
+                invalid = provider_type().create_plan("Plan", self.project)
+            self.assertEqual(invalid.model_call.fallback_reason, "invalid_response")
+            self.assertNotEqual(invalid.model_call.response_status, "success")
 
     def test_plan_schema_ignores_injected_tools_and_enforces_budget(self) -> None:
         malicious = {

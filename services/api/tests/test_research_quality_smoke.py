@@ -1149,7 +1149,7 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                     ],
                     errors=["using_cached_results:arxiv:evidence faithfulness: 使用缓存。"],
                 )
-                with patch("scholarflow_api.services.workflow_runtime.search_literature", return_value=fake_result):
+                with patch("scholarflow_api.services.literature_service.search_literature", return_value=fake_result):
                     response = main_module.search_project_literature(
                         project.id,
                         LiteratureSearchRequest(query=project.keyword),
@@ -1215,7 +1215,7 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                     errors=[],
                 )
 
-                with patch("scholarflow_api.services.workflow_runtime.search_literature", side_effect=[first, second]):
+                with patch("scholarflow_api.services.literature_service.search_literature", side_effect=[first, second]):
                     main_module.search_project_literature(
                         project.id,
                         LiteratureSearchRequest(query="first query"),
@@ -1283,7 +1283,7 @@ class ResearchQualitySmokeTest(unittest.TestCase):
                     errors=[],
                 )
 
-                with patch("scholarflow_api.services.workflow_runtime.search_literature", return_value=existing):
+                with patch("scholarflow_api.services.literature_service.search_literature", return_value=existing):
                     main_module.search_project_literature(
                         project.id,
                         LiteratureSearchRequest(query=project.keyword),

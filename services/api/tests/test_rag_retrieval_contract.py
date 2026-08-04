@@ -189,7 +189,7 @@ class RagRetrievalContractTest(unittest.TestCase):
                         "filtered_count": 0,
                     },
                 )
-                with patch("scholarflow_api.services.workflow_runtime.search_literature", return_value=search_result):
+                with patch("scholarflow_api.services.literature_service.search_literature", return_value=search_result):
                     literature_response = main_module.search_project_literature(
                         project.id,
                         LiteratureSearchRequest(query=project.keyword),

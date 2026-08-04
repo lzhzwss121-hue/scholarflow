@@ -243,7 +243,7 @@ class RealPaperPredictionRunnerContractTest(unittest.TestCase):
 
     def test_prediction_schema_and_real_rag_service_output(self) -> None:
         with patch(
-            "scholarflow_api.services.workflow_runtime.answer_project_rag",
+            "scholarflow_api.services.rag_service.answer_project_rag",
             wraps=real_answer_project_rag,
         ) as rag_service:
             predictions = self.run_inputs()
@@ -304,7 +304,7 @@ class RealPaperPredictionRunnerContractTest(unittest.TestCase):
             return real_answer_project_rag(connection, **kwargs)
 
         with patch(
-            "scholarflow_api.services.workflow_runtime.answer_project_rag",
+            "scholarflow_api.services.rag_service.answer_project_rag",
             side_effect=guarded_answer,
         ) as rag_service:
             run_real_paper_predictions(
@@ -338,7 +338,7 @@ class RealPaperPredictionRunnerContractTest(unittest.TestCase):
     def test_hash_and_version_mismatches_are_blocked_before_rag(self) -> None:
         wrong_hash = {**self.resource_a, "sha256": "0" * 64}
         with patch(
-            "scholarflow_api.services.workflow_runtime.create_project_rag_answer"
+            "scholarflow_api.services.rag_service.create_project_rag_answer"
         ) as rag_service:
             hash_result = self.run_inputs(resources=[wrong_hash], suffix="hash")
         rag_service.assert_not_called()
@@ -347,7 +347,7 @@ class RealPaperPredictionRunnerContractTest(unittest.TestCase):
 
         wrong_version = {**self.resource_a, "version": "2601.00001v1"}
         with patch(
-            "scholarflow_api.services.workflow_runtime.create_project_rag_answer"
+            "scholarflow_api.services.rag_service.create_project_rag_answer"
         ) as rag_service:
             version_result = self.run_inputs(resources=[wrong_version], suffix="version")
         rag_service.assert_not_called()

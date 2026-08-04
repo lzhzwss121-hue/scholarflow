@@ -13,7 +13,7 @@ from uuid import uuid4
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / ".data" / "scholarflow.sqlite3"
 SQLITE_BUSY_TIMEOUT_MS = 5000
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 
 class DatabaseInitializationError(RuntimeError):
@@ -123,6 +123,7 @@ def apply_schema_migration(connection: sqlite3.Connection, version: int) -> None
         3: "evidence_hybrid_rag_fts5",
         4: "model_provider_audit_contract",
         5: "versioned_agent_plan_revisions",
+        6: "model_provider_token_usage",
     }
     connection.execute("PRAGMA foreign_keys = OFF")
     try:
@@ -143,6 +144,8 @@ def apply_schema_migration(connection: sqlite3.Connection, version: int) -> None
             initialize_schema_v4(connection)
         elif version == 5:
             initialize_schema_v5(connection)
+        elif version == 6:
+            initialize_schema_v6(connection)
         else:
             raise DatabaseMigrationError(f"Unknown SQLite schema migration: {version}.")
 
@@ -747,6 +750,26 @@ def initialize_schema_v5(connection: sqlite3.Connection) -> None:
     )
 
 
+def initialize_schema_v6(connection: sqlite3.Connection) -> None:
+    connection.execute("BEGIN IMMEDIATE")
+    existing = {
+        str(row["name"])
+        for row in connection.execute(
+            "PRAGMA table_info(model_call_audits)"
+        ).fetchall()
+    }
+    for column_name in (
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+    ):
+        if column_name not in existing:
+            connection.execute(
+                f"ALTER TABLE model_call_audits "
+                f"ADD COLUMN {column_name} INTEGER NOT NULL DEFAULT 0"
+            )
+
+
 FOREIGN_KEY_CONTRACTS: dict[str, frozenset[tuple[str, str, str, str]]] = {
     "projects": frozenset(
         {("active_session_id", "sessions", "id", "SET NULL")}
@@ -1042,6 +1065,9 @@ def validate_schema_contracts(connection: sqlite3.Connection) -> None:
         "requested_provider",
         "requested_model",
         "external_data_sent",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
         "created_at",
     }
     actual_audit_columns = {

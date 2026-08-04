@@ -1551,6 +1551,9 @@ def run_bounded_agent_loop(
     run_id: str,
     execution: Any = None,
     durable_checkpoint: dict[str, Any] | None = None,
+    *,
+    registry_factory: Any = None,
+    provider_factory: Any = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     with get_connection() as connection:
@@ -1572,7 +1575,9 @@ def run_bounded_agent_loop(
         budgets = _agent_budgets(state)
         prior_runtime_seconds = float(state.get("runtime_seconds_used") or 0.0)
         context = _build_agent_context(connection, run_dict, project, plan)
-        registry = build_agent_tool_registry(connection)
+        resolved_registry_factory = registry_factory or build_agent_tool_registry
+        resolved_provider_factory = provider_factory or get_model_provider
+        registry = resolved_registry_factory(connection)
         validate_workflow_plan(plan, registered_tools=registry.names())
         for step in plan.get("steps", []) or []:
             if isinstance(step, dict) and step.get("status") == "running":
@@ -1643,7 +1648,7 @@ def run_bounded_agent_loop(
                 )
 
             observation = _agent_observation(state, context)
-            provider = get_model_provider()
+            provider = resolved_provider_factory()
             revision_handled = False
             if state.get("needs_plan_revision") or state.get("needs_replan"):
                 if int(
@@ -1966,6 +1971,9 @@ def run_agent_loop(
     run_id: str,
     execution: Any = None,
     durable_checkpoint: dict[str, Any] | None = None,
+    *,
+    registry_factory: Any = None,
+    provider_factory: Any = None,
 ) -> dict[str, Any]:
     with get_connection() as connection:
         run_dict = fetch_agent_run_dict(connection, run_id)
@@ -1976,14 +1984,31 @@ def run_agent_loop(
             run_id,
             execution=execution,
             durable_checkpoint=durable_checkpoint,
+            registry_factory=registry_factory,
+            provider_factory=provider_factory,
         )
         if outcome.get("fallback"):
-            return run_deterministic_agent_loop(run_id, execution=execution)
+            if registry_factory is None:
+                return run_deterministic_agent_loop(run_id, execution=execution)
+            return run_deterministic_agent_loop(
+                run_id, execution=execution, registry_factory=registry_factory
+            )
         return outcome
-    return run_deterministic_agent_loop(run_id, execution=execution)
+    if registry_factory is None:
+        return run_deterministic_agent_loop(run_id, execution=execution)
+    return run_deterministic_agent_loop(
+        run_id,
+        execution=execution,
+        registry_factory=registry_factory,
+    )
 
 
-def run_deterministic_agent_loop(run_id: str, execution: Any = None) -> dict:
+def run_deterministic_agent_loop(
+    run_id: str,
+    execution: Any = None,
+    *,
+    registry_factory: Any = None,
+) -> dict:
     with get_connection() as connection:
         run_dict = fetch_agent_run_dict(connection, run_id)
         project = fetch_project_dict(
@@ -2021,7 +2046,8 @@ def run_deterministic_agent_loop(run_id: str, execution: Any = None) -> dict:
             artifacts=restored_artifacts,
             outputs=restored_outputs,
         )
-        registry = build_agent_tool_registry(connection)
+        resolved_registry_factory = registry_factory or build_agent_tool_registry
+        registry = resolved_registry_factory(connection)
         registered_tools = {
             item["name"]
             for item in registry.describe()

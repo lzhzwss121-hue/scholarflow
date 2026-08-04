@@ -20,7 +20,7 @@ def resolve_handler(job_type: str) -> JobHandler:
 
 
 def handle_direction_review(job: DurableJob, execution: Any) -> dict[str, Any] | None:
-    from scholarflow_api.services.workflow_runtime import run_direction_review_job
+    from scholarflow_api.services.direction_review_service import run_direction_review_job
 
     return run_direction_review_job(job, execution)
 
@@ -33,7 +33,7 @@ def handle_agent_run(job: DurableJob, execution: Any) -> dict[str, Any] | None:
 
 def persist_terminal_failure(job: DurableJob, error: object) -> None:
     if job.job_type == "direction_review":
-        from scholarflow_api.services.workflow_runtime import (
+        from scholarflow_api.services.direction_review_service import (
             persist_direction_review_failure,
         )
 
@@ -49,7 +49,7 @@ def persist_terminal_failure(job: DurableJob, error: object) -> None:
 
 def persist_terminal_cancellation(job: DurableJob) -> None:
     if job.job_type == "direction_review":
-        from scholarflow_api.services.workflow_runtime import (
+        from scholarflow_api.services.direction_review_service import (
             persist_direction_review_job_cancellation,
         )
 

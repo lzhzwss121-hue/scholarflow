@@ -175,6 +175,9 @@ def insert_model_call_audit(
         "requested_provider": str(audit.get("requested_provider") or ""),
         "requested_model": str(audit.get("requested_model") or ""),
         "external_data_sent": int(bool(audit.get("external_data_sent"))),
+        "prompt_tokens": max(0, int(audit.get("prompt_tokens") or 0)),
+        "completion_tokens": max(0, int(audit.get("completion_tokens") or 0)),
+        "total_tokens": max(0, int(audit.get("total_tokens") or 0)),
     }
     audit_id = new_id("model_call")
     connection.execute(
@@ -182,9 +185,10 @@ def insert_model_call_audit(
         INSERT INTO model_call_audits (
             id, project_id, run_id, provider, model, purpose, prompt_version,
             request_timestamp, latency_ms, response_status, fallback_reason,
-            requested_provider, requested_model, external_data_sent, created_at
+            requested_provider, requested_model, external_data_sent,
+            prompt_tokens, completion_tokens, total_tokens, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             audit_id,
@@ -201,6 +205,9 @@ def insert_model_call_audit(
             safe_fields["requested_provider"],
             safe_fields["requested_model"],
             safe_fields["external_data_sent"],
+            safe_fields["prompt_tokens"],
+            safe_fields["completion_tokens"],
+            safe_fields["total_tokens"],
             utc_now(),
         ),
     )

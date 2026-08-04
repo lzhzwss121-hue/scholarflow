@@ -25,6 +25,7 @@
     "eval:rag:real-predict": "PYTHONPATH=services/api/src .venv/bin/python -m scholarflow_api.real_paper_prediction_runner",
     "eval:rag:dataset": "PYTHONPATH=services/api/src .venv/bin/python -m scholarflow_api.real_paper_dataset",
     "eval:rag:live": "PYTHONPATH=services/api/src .venv/bin/python -m scholarflow_api.rag_live_smoke",
+    "eval:agent:live": "PYTHONPATH=services/api/src .venv/bin/python -m scholarflow_api.bounded_agent_live_smoke",
     "health:api": "PYTHONPATH=services/api/src python3 -m scholarflow_api.healthcheck",
     "version:cli": "npm --workspace @scholarflow/cli run start -- --version"
   },
