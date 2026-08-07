@@ -32,6 +32,32 @@
         "equation": "",
         "supplementary": false
       },
+      "page": 8,
+      "normalized_section": "6 results 6 1 machine translation",
+      "evidence_excerpt_hash": "",
+      "semantic_locator": {
+        "kind": "table",
+        "value": "Table 2, Transformer (big), EN-DE BLEU column",
+        "page": 8,
+        "section": "6 Results / 6.1 Machine Translation",
+        "paragraph": "",
+        "table": "Table 2",
+        "figure": "",
+        "equation": "",
+        "supplementary": false
+      },
+      "acceptable_source_anchors": [
+        {
+          "paper_id": "arxiv-1706.03762",
+          "paper_version": "1706.03762v7",
+          "source_hash": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697",
+          "page": 8,
+          "normalized_section": "6 results 6 1 machine translation",
+          "chunk_hash": "",
+          "evidence_excerpt_hash": "",
+          "status": "pending"
+        }
+      ],
       "acceptable_citations": [
         {
           "citation_id": "arxiv-1706.03762:1706.03762v7:p.8:table-2-transformer-big-en-de",
@@ -100,6 +126,32 @@
         "equation": "",
         "supplementary": false
       },
+      "page": 1,
+      "normalized_section": "abstract",
+      "evidence_excerpt_hash": "",
+      "semantic_locator": {
+        "kind": "abstract",
+        "value": "Abstract paragraph ending with the zero-shot ImageNet comparison",
+        "page": 1,
+        "section": "Abstract",
+        "paragraph": "final abstract paragraph",
+        "table": "",
+        "figure": "",
+        "equation": "",
+        "supplementary": false
+      },
+      "acceptable_source_anchors": [
+        {
+          "paper_id": "arxiv-2103.00020",
+          "paper_version": "2103.00020v1",
+          "source_hash": "6478b6e571a7d6fcd846d8ef77bfd60c285f1986abb8f475eedc43de403074f5",
+          "page": 1,
+          "normalized_section": "abstract",
+          "chunk_hash": "",
+          "evidence_excerpt_hash": "",
+          "status": "pending"
+        }
+      ],
       "acceptable_citations": [
         {
           "citation_id": "arxiv-2103.00020:2103.00020v1:p.1:abstract-imagenet-resnet50",
@@ -168,6 +220,32 @@
         "equation": "",
         "supplementary": false
       },
+      "page": 6,
+      "normalized_section": "4 4 glue",
+      "evidence_excerpt_hash": "",
+      "semantic_locator": {
+        "kind": "table",
+        "value": "Table 1, BERTLARGE row, Average column",
+        "page": 6,
+        "section": "4.4 GLUE",
+        "paragraph": "",
+        "table": "Table 1",
+        "figure": "",
+        "equation": "",
+        "supplementary": false
+      },
+      "acceptable_source_anchors": [
+        {
+          "paper_id": "arxiv-1810.04805",
+          "paper_version": "1810.04805v2",
+          "source_hash": "5692a5514787a8c6727b4ff3b726a3385798bc68e12138d1d4af83947e2acf6e",
+          "page": 6,
+          "normalized_section": "4 4 glue",
+          "chunk_hash": "",
+          "evidence_excerpt_hash": "",
+          "status": "pending"
+        }
+      ],
       "acceptable_citations": [
         {
           "citation_id": "arxiv-1810.04805:1810.04805v2:p.6:table-1-bertlarge-average",
@@ -235,6 +313,32 @@
         "equation": "",
         "supplementary": false
       },
+      "page": 1,
+      "normalized_section": "abstract",
+      "evidence_excerpt_hash": "",
+      "semantic_locator": {
+        "kind": "abstract",
+        "value": "Abstract claims non-trivial transfer and often competitive performance, not universal causality",
+        "page": 1,
+        "section": "Abstract",
+        "paragraph": "final abstract paragraph",
+        "table": "",
+        "figure": "",
+        "equation": "",
+        "supplementary": false
+      },
+      "acceptable_source_anchors": [
+        {
+          "paper_id": "arxiv-2103.00020",
+          "paper_version": "2103.00020v1",
+          "source_hash": "6478b6e571a7d6fcd846d8ef77bfd60c285f1986abb8f475eedc43de403074f5",
+          "page": 1,
+          "normalized_section": "abstract",
+          "chunk_hash": "",
+          "evidence_excerpt_hash": "",
+          "status": "pending"
+        }
+      ],
       "acceptable_citations": [],
       "direct_support_found": false,
       "contradiction_notes": [

@@ -12,6 +12,7 @@ from scholarflow_api.rag_answer import semantic_conflict_reasons
 from scholarflow_api.real_paper_dataset import (
     EvidenceLevel,
     EvidenceLocator,
+    MachineLocator,
     RealPaperDataset,
     RealPaperEvaluationCase,
     StrictModel,
@@ -39,6 +40,10 @@ class PredictedCitation(StrictModel):
     paper_id: str = Field(min_length=1, max_length=200)
     page: int | None = Field(default=None, ge=1)
     section: str = Field(default="", max_length=300)
+    machine_locator: MachineLocator | None = None
+    semantic_locator: EvidenceLocator | None = None
+    # Deprecated compatibility field for older prediction fixtures.  It is not
+    # treated as a machine anchor and citation_id is not compared with gold.
     locator: EvidenceLocator | None = None
     evidence_level: EvidenceLevel
     evidence_verified: bool
@@ -299,6 +304,15 @@ def _evaluate_cases(
         citation_errors: list[str] = []
         for citation in prediction.used_citations:
             counts["used_citations"] += 1
+            source_identity_correct = _source_identity_is_correct(citation, case)
+            page_correct = _page_is_correct(citation, case)
+            machine_anchor_correct = _machine_anchor_is_correct(citation, case)
+            if source_identity_correct:
+                counts["correct_source_identities"] += 1
+            if page_correct:
+                counts["correct_page_locators"] += 1
+            if machine_anchor_correct:
+                counts["correct_machine_anchors"] += 1
             acceptable = _citation_is_acceptable(citation, case)
             if acceptable:
                 counts["correct_citations"] += 1
@@ -306,17 +320,23 @@ def _evaluate_cases(
                 citation_errors.extend(_citation_errors(citation, case))
             if _citation_is_locatable(citation):
                 counts["locatable_citations"] += 1
-            if _page_is_correct(citation, case):
-                counts["correct_page_locators"] += 1
-            # A missing or wrong-kind locator is still an attempted citation for
-            # the gold locator type. Keeping it in the denominator prevents an
-            # apparently perfect score produced by silently dropping failures.
-            counts[f"{case.locator.kind}_locator_attempts"] += 1
-            if _locator_is_correct(citation, case):
-                counts[f"correct_{case.locator.kind}_locators"] += 1
+            predicted_semantic = citation.semantic_locator
+            if case.semantic_locator is not None and predicted_semantic is not None:
+                counts["semantic_locator_attempts"] += 1
+                counts[f"{case.semantic_locator.kind}_locator_attempts"] += 1
+                if _semantic_locator_is_correct(citation, case):
+                    counts["correct_semantic_locators"] += 1
+                    counts[f"correct_{case.semantic_locator.kind}_locators"] += 1
 
         errors.extend(dict.fromkeys(citation_errors))
         counts["page_locator_attempts"] += len(prediction.used_citations)
+        counts["source_identity_attempts"] += len(prediction.used_citations)
+        counts["machine_anchor_attempts"] += len(prediction.used_citations)
+        if case.answerable and any(
+            _citation_is_acceptable(citation, case)
+            for citation in prediction.used_citations
+        ):
+            counts["citation_recall_hits"] += 1
 
         predicted_answer = execution_completed and not prediction.refused
         if predicted_answer:
@@ -435,7 +455,24 @@ def _evaluate_cases(
     metrics = {
         f"recall_at_{recall_k}": _ratio(counts["recall_hits"], answerable),
         "mrr": _ratio(counts["reciprocal_rank_micros"], answerable * 1_000_000),
+        "source_identity_accuracy": _optional_ratio(
+            counts["correct_source_identities"],
+            counts["source_identity_attempts"],
+        ),
+        "page_locator_accuracy": _optional_ratio(
+            counts["correct_page_locators"],
+            counts["page_locator_attempts"],
+        ),
+        "machine_anchor_accuracy": _optional_ratio(
+            counts["correct_machine_anchors"],
+            counts["machine_anchor_attempts"],
+        ),
+        "semantic_locator_accuracy": _optional_ratio(
+            counts["correct_semantic_locators"],
+            counts["semantic_locator_attempts"],
+        ),
         "citation_precision": _ratio(counts["correct_citations"], counts["used_citations"]),
+        "citation_recall": _ratio(counts["citation_recall_hits"], answerable),
         "citation_locatability": _ratio(counts["locatable_citations"], counts["used_citations"]),
         "answer_precision": _ratio(counts["correct_answers"], predicted_answers),
         "answer_recall": _ratio(counts["correct_answers"], answerable),
@@ -450,10 +487,6 @@ def _evaluate_cases(
             counts["evidence_assertions"],
         ),
         "unsupported_claim_rate": _ratio(counts["unsupported_claims"], counts["claims"]),
-        "page_locator_accuracy": _optional_ratio(
-            counts["correct_page_locators"],
-            counts["page_locator_attempts"],
-        ),
         "paragraph_locator_accuracy": _optional_ratio(
             counts["correct_paragraph_locators"],
             counts["paragraph_locator_attempts"],
@@ -504,18 +537,9 @@ def _citation_is_acceptable(
     case: RealPaperEvaluationCase,
 ) -> bool:
     return (
-        citation.project_id == case.project_id
-        and any(
-            citation.citation_id == acceptable.citation_id
-            and citation.paper_id == acceptable.paper_id
-            and citation.page == acceptable.page
-            and _normalize_text(citation.section) == _normalize_text(acceptable.section)
-            and citation.locator is not None
-            and citation.locator.kind == acceptable.locator.kind
-            and _normalize_text(citation.locator.value)
-            == _normalize_text(acceptable.locator.value)
-            for acceptable in case.acceptable_citations
-        )
+        _source_identity_is_correct(citation, case)
+        and _page_is_correct(citation, case)
+        and _machine_anchor_is_correct(citation, case)
     )
 
 
@@ -524,9 +548,6 @@ def _citation_errors(
     case: RealPaperEvaluationCase,
 ) -> list[str]:
     errors: list[str] = []
-    acceptable_ids = {item.citation_id for item in case.acceptable_citations}
-    if citation.citation_id not in acceptable_ids:
-        errors.append(f"invalid_citation: {citation.citation_id}")
     if citation.project_id != case.project_id:
         errors.append(
             f"cross_project_citation: expected {case.project_id}, got {citation.project_id}"
@@ -535,38 +556,140 @@ def _citation_errors(
         errors.append(
             f"wrong_paper: expected {case.paper_id}, got {citation.paper_id}"
         )
-    if citation.page != case.page:
+    machine = citation.machine_locator
+    if machine is None:
+        errors.append("missing_machine_locator: runtime citation has no source anchor")
+    else:
+        if machine.paper_id != case.paper_id:
+            errors.append(
+                f"wrong_machine_paper: expected {case.paper_id}, got {machine.paper_id}"
+            )
+        if machine.paper_version != case.paper_version:
+            errors.append(
+                "wrong_source_version: expected "
+                f"{case.paper_version}, got {machine.paper_version}"
+            )
+        if machine.source_hash != case.source_hash:
+            errors.append(
+                f"wrong_source_hash: expected {case.source_hash}, got {machine.source_hash}"
+            )
+    if citation.page != case.page or (machine and machine.page != case.page):
         errors.append(f"wrong_page: expected {case.page}, got {citation.page}")
-    if _normalize_text(citation.section) != _normalize_text(case.section):
+    if _normalize_section(citation.section) != case.normalized_section:
         errors.append(
-            f"wrong_section: expected {case.section}, got {citation.section or '(missing)'}"
+            "wrong_section: expected "
+            f"{case.normalized_section}, got {citation.section or '(missing)'}"
         )
-    if not _locator_is_correct(citation, case):
+    if not _machine_anchor_is_correct(citation, case):
+        if any(anchor.status == "verified" for anchor in case.acceptable_source_anchors):
+            errors.append("wrong_machine_anchor: chunk/excerpt hash is not approved")
+        else:
+            errors.append("machine_anchor_pending: no verified source anchor is labelled")
+    if citation.semantic_locator is not None and not _semantic_locator_is_correct(
+        citation,
+        case,
+    ):
+        expected = case.semantic_locator
         errors.append(
-            f"wrong_{case.locator.kind}_locator: expected {case.locator.value}"
+            "wrong_semantic_locator: expected "
+            + (expected.value if expected is not None else "none")
         )
     return errors
 
 
 def _citation_is_locatable(citation: PredictedCitation) -> bool:
+    machine = citation.machine_locator
     return bool(
-        citation.page
-        and citation.section.strip()
-        and citation.locator
-        and citation.locator.value.strip()
+        machine
+        and machine.page
+        and machine.normalized_section.strip()
+        and (machine.chunk_hash or machine.evidence_excerpt_hash)
     )
 
 
 def _page_is_correct(citation: PredictedCitation, case: RealPaperEvaluationCase) -> bool:
-    return citation.page == case.page
-
-
-def _locator_is_correct(citation: PredictedCitation, case: RealPaperEvaluationCase) -> bool:
     return bool(
-        citation.locator
-        and citation.locator.kind == case.locator.kind
-        and _normalize_text(citation.locator.value) == _normalize_text(case.locator.value)
+        citation.page == case.page
+        and citation.machine_locator is not None
+        and citation.machine_locator.page == case.page
     )
+
+
+def _source_identity_is_correct(
+    citation: PredictedCitation,
+    case: RealPaperEvaluationCase,
+) -> bool:
+    machine = citation.machine_locator
+    return bool(
+        citation.project_id == case.project_id
+        and citation.paper_id == case.paper_id
+        and machine
+        and machine.paper_id == case.paper_id
+        and machine.paper_version == case.paper_version
+        and machine.source_hash == case.source_hash
+    )
+
+
+def _machine_anchor_is_correct(
+    citation: PredictedCitation,
+    case: RealPaperEvaluationCase,
+) -> bool:
+    machine = citation.machine_locator
+    if machine is None:
+        return False
+    for anchor in case.acceptable_source_anchors:
+        if anchor.status != "verified":
+            continue
+        identity_matches = (
+            anchor.paper_id == machine.paper_id == case.paper_id
+            and anchor.paper_version == machine.paper_version == case.paper_version
+            and anchor.source_hash == machine.source_hash == case.source_hash
+            and anchor.page == machine.page == case.page
+            and (
+                not anchor.normalized_section
+                or anchor.normalized_section == machine.normalized_section
+            )
+        )
+        chunk_matches = bool(
+            anchor.chunk_hash
+            and machine.chunk_hash
+            and anchor.chunk_hash == machine.chunk_hash
+        )
+        excerpt_matches = bool(
+            anchor.evidence_excerpt_hash
+            and machine.evidence_excerpt_hash
+            and anchor.evidence_excerpt_hash == machine.evidence_excerpt_hash
+        )
+        if identity_matches and (chunk_matches or excerpt_matches):
+            return True
+    return False
+
+
+def _semantic_locator_is_correct(
+    citation: PredictedCitation,
+    case: RealPaperEvaluationCase,
+) -> bool:
+    predicted = citation.semantic_locator
+    expected = case.semantic_locator
+    if predicted is None or expected is None:
+        return False
+    if predicted.kind != expected.kind:
+        return False
+    if _normalize_text(predicted.value) != _normalize_text(expected.value):
+        return False
+    for field in ("paragraph", "table", "figure", "equation"):
+        expected_value = str(getattr(expected, field) or "")
+        if expected_value and _normalize_text(str(getattr(predicted, field) or "")) != _normalize_text(
+            expected_value
+        ):
+            return False
+    if expected.page is not None and predicted.page != expected.page:
+        return False
+    if expected.section and _normalize_section(predicted.section) != _normalize_section(
+        expected.section
+    ):
+        return False
+    return True
 
 
 def _evidence_false_positive(
@@ -582,6 +705,10 @@ def _evidence_false_positive(
 
 def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip().casefold())
+
+
+def _normalize_section(value: str) -> str:
+    return re.sub(r"[^a-z0-9\u3400-\u9fff]+", " ", value.casefold()).strip()
 
 
 def _ratio(numerator: float, denominator: float) -> float:

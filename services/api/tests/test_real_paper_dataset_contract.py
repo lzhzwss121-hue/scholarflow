@@ -91,6 +91,22 @@ def case_payload(*, case_id: str = "case-a", paper_id: str = "paper-a", split: s
         "evidence_level": "full_text",
         "evidence_excerpt": "Method X | Dataset A | 10%",
         "evidence_locator": citation(paper_id=paper_id)["locator"],
+        "page": 4,
+        "normalized_section": "results",
+        "evidence_excerpt_hash": "",
+        "semantic_locator": citation(paper_id=paper_id)["locator"],
+        "acceptable_source_anchors": [
+            {
+                "paper_id": paper_id,
+                "paper_version": "v2",
+                "source_hash": HASH_A,
+                "page": 4,
+                "normalized_section": "results",
+                "chunk_hash": "c" * 64,
+                "evidence_excerpt_hash": "",
+                "status": "verified",
+            }
+        ],
         "acceptable_citations": [citation(paper_id=paper_id)],
         "direct_support_found": True,
         "contradiction_notes": ["10% is not 10 percentage points."],
@@ -112,6 +128,7 @@ def case_payload(*, case_id: str = "case-a", paper_id: str = "paper-a", split: s
         item["evidence_locator"] = citation(paper_id=paper_id)["locator"]
         item["acceptable_citations"] = [citation(paper_id=paper_id)]
         item["acceptable_citations"][0]["source_hash"] = HASH_B
+        item["acceptable_source_anchors"][0]["source_hash"] = HASH_B
     return item
 
 
@@ -136,6 +153,11 @@ class RealPaperDatasetContractTest(unittest.TestCase):
             "paper_version",
             "source_hash",
             "evidence_locator",
+            "page",
+            "normalized_section",
+            "evidence_excerpt_hash",
+            "semantic_locator",
+            "acceptable_source_anchors",
             "annotator_a_result",
             "annotator_b_result",
             "disagreement_fields",
@@ -264,6 +286,7 @@ class RealPaperDatasetContractTest(unittest.TestCase):
                 "evidence_level": "abstract_only",
                 "evidence_excerpt": "",
                 "acceptable_citations": [],
+                "acceptable_source_anchors": [],
                 "direct_support_found": False,
                 "case_types": ["refusal", "abstract_insufficient", "no_reliable_hit"],
             }

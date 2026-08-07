@@ -9,6 +9,11 @@ This directory is separate from the fixed 135-case constructed regression benchm
 - Formal target: 50–100 cases; current planning target is 75 cases over 15–25 papers and at least 5 domains.
 
 No current file supports claims about expert accuracy, inter-annotator agreement, or scientific truth. The four drafts are not renamed or copied into the expert dataset.
+Their `acceptable_source_anchors` remain `pending` until an actual fixed-PDF
+chunk/excerpt hash is reviewed (a refusal case may instead keep the list empty);
+the human-readable
+`acceptable_citations` field is deprecated and does not receive machine-anchor
+credit by itself.
 
 ## Files
 
@@ -80,5 +85,19 @@ SCHOLARFLOW_DB_PATH=/private/tmp/scholarflow-rag-eval.sqlite3 \
 ```
 
 When a sufficient expert dataset exists, pass its matching `offline_system_run` predictions. `offline_test_fixture`, missing predictions and blocked executions remain explicitly blocked and are never substituted.
+
+## Citation locator protocol
+
+Runtime citations keep two independent layers. `machine_locator` binds the
+project paper to a fixed source hash/version, page, normalized section, chunk
+index/hash and normalized evidence-excerpt hash. `semantic_locator` is optional
+and may be emitted only when the parser actually identifies a paragraph, table,
+figure, equation or abstract structure. Plain pypdf text containing words such
+as “Table 2” remains an ordinary chunk and leaves `semantic_locator=null`.
+
+Evaluation does not compare runtime `citation_id` with the deprecated manual ID.
+It reports source identity, page, machine anchor and semantic locator separately,
+plus citation precision/recall. Semantic accuracy is `null` when the system made
+no semantic-locator attempt; pending source anchors cannot earn citation credit.
 
 See [`annotation-guide.md`](annotation-guide.md) for the state machine, 75-case coverage matrix, reviewer independence rules and release sampling procedure.

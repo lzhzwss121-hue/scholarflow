@@ -18,6 +18,7 @@ from scholarflow_api.real_paper_evaluation import (
 
 def dataset_fixture(*, tier: str = "real_paper_unreviewed") -> dict[str, object]:
     source_hash = "a" * 64
+    chunk_hash = "c" * 64
     locator = {
         "kind": "table",
         "value": "Table 2",
@@ -56,6 +57,22 @@ def dataset_fixture(*, tier: str = "real_paper_unreviewed") -> dict[str, object]
             "evidence_level": "full_text",
             "evidence_excerpt": "Method X does not reduce error on Dataset A by 10%.",
             "evidence_locator": locator,
+            "page": 4,
+            "normalized_section": "results",
+            "evidence_excerpt_hash": "",
+            "semantic_locator": locator,
+            "acceptable_source_anchors": [
+                {
+                    "paper_id": "paper-a",
+                    "paper_version": "v2",
+                    "source_hash": source_hash,
+                    "page": 4,
+                    "normalized_section": "results",
+                    "chunk_hash": chunk_hash,
+                    "evidence_excerpt_hash": "",
+                    "status": "verified",
+                }
+            ],
             "acceptable_citations": [citation],
             "direct_support_found": True,
             "contradiction_notes": [
@@ -104,6 +121,16 @@ def dataset_fixture(*, tier: str = "real_paper_unreviewed") -> dict[str, object]
                 "value": "No Dataset Z result is present",
                 "table": "",
             },
+            "page": 4,
+            "normalized_section": "results",
+            "evidence_excerpt_hash": "",
+            "semantic_locator": {
+                **locator,
+                "kind": "paragraph",
+                "value": "No Dataset Z result is present",
+                "table": "",
+            },
+            "acceptable_source_anchors": [],
             "acceptable_citations": [],
             "direct_support_found": False,
             "contradiction_notes": ["The paper does not report Dataset Z."],
@@ -169,11 +196,28 @@ def dataset_fixture(*, tier: str = "real_paper_unreviewed") -> dict[str, object]
 
 def correct_predictions() -> dict[str, object]:
     citation = {
-        "citation_id": "paper-a:results:p.4:table-2",
+        "citation_id": "runtime-generated-id-that-differs-from-gold",
         "project_id": "project-a",
         "paper_id": "paper-a",
         "page": 4,
         "section": "Results",
+        "machine_locator": {
+            "paper_id": "paper-a",
+            "paper_version": "v2",
+            "source_hash": "a" * 64,
+            "page": 4,
+            "normalized_section": "results",
+            "chunk_index": 3,
+            "chunk_hash": "c" * 64,
+            "evidence_excerpt_hash": "d" * 64,
+        },
+        "semantic_locator": {
+            "kind": "table",
+            "value": "Table 2",
+            "page": 4,
+            "section": "Results",
+            "table": "Table 2",
+        },
         "locator": {"kind": "table", "value": "Table 2"},
         "evidence_level": "full_text",
         "evidence_verified": True,
@@ -232,7 +276,11 @@ class RealPaperEvaluationContractTest(unittest.TestCase):
         self.assertIn("不代表真实科研准确率", report["interpretation"])
         self.assertEqual(report["metrics"]["recall_at_5"], 1.0)
         self.assertEqual(report["metrics"]["mrr"], 1.0)
+        self.assertEqual(report["metrics"]["source_identity_accuracy"], 1.0)
+        self.assertEqual(report["metrics"]["machine_anchor_accuracy"], 1.0)
+        self.assertEqual(report["metrics"]["semantic_locator_accuracy"], 1.0)
         self.assertEqual(report["metrics"]["citation_precision"], 1.0)
+        self.assertEqual(report["metrics"]["citation_recall"], 1.0)
         self.assertEqual(report["metrics"]["citation_locatability"], 1.0)
         self.assertEqual(report["metrics"]["answer_precision"], 1.0)
         self.assertEqual(report["metrics"]["refusal_precision"], 1.0)
@@ -257,6 +305,17 @@ class RealPaperEvaluationContractTest(unittest.TestCase):
                 "paper_id": "paper-a",
                 "page": 99,
                 "section": "Results",
+                "machine_locator": {
+                    "paper_id": "paper-a",
+                    "paper_version": "v1",
+                    "source_hash": "b" * 64,
+                    "page": 99,
+                    "normalized_section": "results",
+                    "chunk_index": 9,
+                    "chunk_hash": "e" * 64,
+                    "evidence_excerpt_hash": "f" * 64,
+                },
+                "semantic_locator": {"kind": "paragraph", "value": "Table 2"},
                 "locator": {"kind": "paragraph", "value": "Table 2"},
                 "evidence_level": "full_text",
                 "evidence_verified": True,
@@ -282,8 +341,9 @@ class RealPaperEvaluationContractTest(unittest.TestCase):
         case = next(item for item in report["cases"] if item["case_id"] == "case-answerable")
         errors = " ".join(case["errors"])
 
-        self.assertIn("invalid_citation", errors)
         self.assertIn("cross_project_citation", errors)
+        self.assertIn("wrong_source_hash", errors)
+        self.assertIn("wrong_source_version", errors)
         self.assertIn("wrong_page", errors)
         self.assertIn("否定关系不一致", errors)
         self.assertIn("数字或单位不一致", errors)
@@ -295,8 +355,39 @@ class RealPaperEvaluationContractTest(unittest.TestCase):
             0.0,
         )
         self.assertEqual(report["metrics"]["citation_precision"], 0.0)
+        self.assertEqual(report["metrics"]["source_identity_accuracy"], 0.0)
+        self.assertEqual(report["metrics"]["machine_anchor_accuracy"], 0.0)
         self.assertEqual(report["metrics"]["page_locator_accuracy"], 0.0)
         self.assertEqual(report["metrics"]["table_locator_accuracy"], 0.0)
+
+    def test_missing_semantic_locator_is_unverified_not_incorrect(self) -> None:
+        payload = correct_predictions()
+        citation = payload["cases"][0]["used_citations"][0]
+        citation["semantic_locator"] = None
+        citation["locator"] = None
+        payload["cases"][0]["retrieved_citations"] = [dict(citation)]
+        report = evaluate_real_paper_predictions(
+            RealPaperDataset.model_validate(dataset_fixture()),
+            RealPaperPredictionSet.model_validate(payload),
+            allow_unreviewed=True,
+        )
+        self.assertEqual(report["metrics"]["machine_anchor_accuracy"], 1.0)
+        self.assertEqual(report["metrics"]["citation_precision"], 1.0)
+        self.assertIsNone(report["metrics"]["semantic_locator_accuracy"])
+        self.assertIsNone(report["metrics"]["table_locator_accuracy"])
+
+    def test_evidence_excerpt_hash_can_bind_without_chunk_hash(self) -> None:
+        dataset_payload = dataset_fixture()
+        anchor = dataset_payload["cases"][0]["acceptable_source_anchors"][0]
+        anchor["chunk_hash"] = ""
+        anchor["evidence_excerpt_hash"] = "d" * 64
+        report = evaluate_real_paper_predictions(
+            RealPaperDataset.model_validate(dataset_payload),
+            RealPaperPredictionSet.model_validate(correct_predictions()),
+            allow_unreviewed=True,
+        )
+        self.assertEqual(report["metrics"]["machine_anchor_accuracy"], 1.0)
+        self.assertEqual(report["metrics"]["citation_precision"], 1.0)
 
     def test_expert_dataset_requires_human_adjudication_and_model_gold_is_rejected(self) -> None:
         invalid_expert = dataset_fixture(tier="expert_labelled")

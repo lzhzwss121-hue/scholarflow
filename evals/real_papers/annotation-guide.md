@@ -37,7 +37,7 @@ CLI 每次只能前进一个状态：
 1. 固定论文：记录 DOI/arXiv/OpenAlex ID、精确版本 URL、PDF SHA-256 和总页数。
 2. 先按 `paper_id` 分配 `train/dev/test`；同一论文的所有问题必须保持同一 split。
 3. 编写问题并标记 case type。拒答案例只有在固定版本全文中不存在直接支持时才能标记 `refusal`。
-4. A/B 分别填写完整的 `answerability`、claim、evidence type/level、locator、acceptable citations 和备注。
+4. A/B 分别填写完整的 `answerability`、claim、evidence type/level、locator、acceptable citations 和备注；固定 PDF 运行后再人工核对 `acceptable_source_anchors` 的 chunk/excerpt hash。
 5. 运行一次 `promote` 形成 `independently_reviewed` 并检查自动生成的分歧字段。
 6. 裁决者填写最终结果、理由和 `resolved_disagreement_fields`，再晋级到 `adjudicated`。
 7. 复核顶层 gold、版本和 citation，最后单步晋级到 `expert_labelled`。
@@ -54,11 +54,13 @@ PYTHONPATH=services/api/src .venv/bin/python \
 
 ## 5. Gold 与拒答判断
 
-- `answerable`：固定版本中存在直接、可定位且资格足够的证据；必须有至少一个匹配论文、版本、hash 的 citation。
+- `answerable`：固定版本中存在直接、可定位且资格足够的证据；必须有至少一个匹配论文、版本、hash 的 citation。正式机器定位评测还要求至少一个经人工核对、状态为 `verified` 的 chunk hash 或 evidence excerpt hash。
 - `refusal`：问题要求的结论在固定版本中没有直接可靠证据；`gold_claim` 和 acceptable citation 必须为空，`direct_support_found=false`。
 - `metadata_only` 或 `abstract_only` 不能支持需要实验数值、公式推导、表格、图或执行细节的问题。
 - 相关性不能升级成因果性；条件性或范围限定不得扩展；数值与单位、数据集、指标、比较对象、主论文与补充材料必须分别核对。
 - 预印本/正式版或 arXiv 版本不一致时，citation 必须指向当前案例的 `paper_version + source_hash`，并在 `version_notes` 记录差异。
+- `acceptable_citations` 仅作为人工阅读和旧数据兼容字段；跨运行匹配不得依赖其 `citation_id`。`acceptable_source_anchors` 才是固定版本的机器锚点，未运行或未复核时必须保持 `pending`，不得猜测 chunk hash。
+- `semantic_locator` 只有在解析器真实识别表格、图片、公式、段落或摘要结构后才能用于系统准确率；pypdf 普通文本即使含有 “Table 2” 也不能据此标为结构化表格。
 
 ## 6. 目标覆盖矩阵（75 条）
 

@@ -89,7 +89,13 @@ def case_payload(
         "answerable": True,
         "gold_claim": "GOLD-POISON must never enter the RAG runtime",
         "gold_answer": "GOLD-ANSWER-POISON",
+        "expected_answer": "GOLD-EXPECTED-ANSWER-POISON",
         "acceptable_citations": [{"citation_id": "GOLD-CITATION-POISON"}],
+        "acceptable_source_anchors": [{"chunk_hash": "GOLD-ANCHOR-POISON"}],
+        "semantic_locator": {"kind": "table", "value": "GOLD-LOCATOR-POISON"},
+        "normalized_section": "GOLD-SECTION-POISON",
+        "evidence_excerpt_hash": "GOLD-EXCERPT-HASH-POISON",
+        "page": 99,
         "expected_refusal": False,
         "contradiction_annotations": ["GOLD-CONTRADICTION-POISON"],
         "evaluator_notes": "GOLD-EVALUATOR-NOTE-POISON",
@@ -267,13 +273,18 @@ class RealPaperPredictionRunnerContractTest(unittest.TestCase):
         self.assertTrue(citation.evidence_verified)
         self.assertIsNotNone(citation.page)
         self.assertEqual(citation.section, "results")
-        self.assertEqual(citation.locator.kind, "chunk")
-        self.assertIn("sha256:", citation.locator.value)
+        self.assertIsNotNone(citation.machine_locator)
+        self.assertEqual(citation.machine_locator.paper_version, "2601.00001v2")
+        self.assertEqual(citation.machine_locator.source_hash, self.paper_a_hash)
+        self.assertEqual(len(citation.machine_locator.chunk_hash), 64)
+        self.assertTrue(citation.machine_locator.evidence_excerpt_hash)
+        self.assertIsNone(citation.semantic_locator)
+        self.assertIsNone(citation.locator)
         self.assertEqual(prediction.source_identity.sha256, self.paper_a_hash)
         self.assertEqual(prediction.source_identity.page_count, 2)
         self.assertEqual(
             prediction.runtime_metadata.rag_service,
-            "workflow_runtime.create_project_rag_answer",
+            "rag_service.create_project_rag_answer",
         )
         self.assertFalse(prediction.runtime_metadata.external_data_transfer)
 
@@ -285,8 +296,13 @@ class RealPaperPredictionRunnerContractTest(unittest.TestCase):
             ensure_ascii=False,
             sort_keys=True,
         )
+        runtime_keys = {
+            key
+            for item in runtime_cases.cases
+            for key in item.model_dump().keys()
+        }
         for field in FORBIDDEN_GOLD_FIELDS:
-            self.assertNotIn(field, serialized_runtime)
+            self.assertNotIn(field, runtime_keys)
         self.assertNotIn("GOLD-POISON", serialized_runtime)
 
         def guarded_answer(connection, **kwargs):
@@ -299,8 +315,6 @@ class RealPaperPredictionRunnerContractTest(unittest.TestCase):
             )
             combined = boundary + persisted
             self.assertNotIn("GOLD-", combined)
-            for field in FORBIDDEN_GOLD_FIELDS:
-                self.assertNotIn(field, boundary)
             return real_answer_project_rag(connection, **kwargs)
 
         with patch(

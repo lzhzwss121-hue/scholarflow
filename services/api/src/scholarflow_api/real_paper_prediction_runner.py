@@ -24,11 +24,16 @@ from scholarflow_api.real_paper_evaluation import (
     RealPaperCasePrediction,
     RealPaperPredictionSet,
 )
+from scholarflow_api.real_paper_dataset import (
+    MachineLocator,
+    evidence_excerpt_checksum,
+    normalize_section,
+)
 from scholarflow_api.schemas import RagAnswerRequest
 
 
-RUNNER_VERSION = "real_paper_prediction_runner.v1"
-RAG_SERVICE_NAME = "workflow_runtime.create_project_rag_answer"
+RUNNER_VERSION = "real_paper_prediction_runner.v2"
+RAG_SERVICE_NAME = "rag_service.create_project_rag_answer"
 
 # These labels may be loaded later by the evaluator, but they are deliberately
 # absent from RuntimeEvaluationCase. Keeping an explicit deny-list makes the
@@ -37,13 +42,19 @@ FORBIDDEN_GOLD_FIELDS = frozenset(
     {
         "gold_claim",
         "gold_answer",
+        "expected_answer",
         "acceptable_citations",
+        "acceptable_source_anchors",
         "expected_refusal",
         "answerability",
         "evidence_type",
         "evidence_level",
         "evidence_excerpt",
         "evidence_locator",
+        "semantic_locator",
+        "normalized_section",
+        "evidence_excerpt_hash",
+        "page",
         "direct_support_found",
         "contradiction_annotations",
         "contradiction_notes",
@@ -401,12 +412,12 @@ def _normalize_rag_response(
 ) -> RealPaperCasePrediction:
     retrieval = response.get("retrieval") or {}
     retrieved = [
-        _normalize_citation(item)
+        _normalize_citation(item, source_identity=source_identity)
         for item in retrieval.get("hits") or []
         if isinstance(item, dict)
     ]
     answer_citations = [
-        _normalize_citation(item)
+        _normalize_citation(item, source_identity=source_identity)
         for item in response.get("citations") or []
         if isinstance(item, dict)
     ]
@@ -460,21 +471,40 @@ def _normalize_rag_response(
     )
 
 
-def _normalize_citation(raw: dict[str, Any]) -> PredictedCitation:
+def _normalize_citation(
+    raw: dict[str, Any],
+    *,
+    source_identity: PredictionSourceIdentity,
+) -> PredictedCitation:
     page = raw.get("page_start")
     chunk_index = int(raw.get("chunk_index") or 0)
     chunk_hash = str(raw.get("chunk_hash") or "")
-    locator = EvidenceLocator(
-        kind="chunk",
-        value=f"chunk-{chunk_index};sha256:{chunk_hash}",
+    section = str(raw.get("section") or "")
+    raw_semantic = raw.get("semantic_locator")
+    semantic_locator = (
+        EvidenceLocator.model_validate(raw_semantic)
+        if isinstance(raw_semantic, dict)
+        else None
+    )
+    machine_locator = MachineLocator(
+        paper_id=str(raw.get("paper_id") or ""),
+        paper_version=source_identity.version,
+        source_hash=source_identity.sha256,
+        page=int(page) if page is not None else None,
+        normalized_section=normalize_section(section),
+        chunk_index=chunk_index,
+        chunk_hash=chunk_hash,
+        evidence_excerpt_hash=evidence_excerpt_checksum(str(raw.get("text") or "")),
     )
     return PredictedCitation(
         citation_id=str(raw.get("citation_id") or ""),
         project_id=str(raw.get("project_id") or ""),
         paper_id=str(raw.get("paper_id") or ""),
         page=int(page) if page is not None else None,
-        section=str(raw.get("section") or ""),
-        locator=locator,
+        section=section,
+        machine_locator=machine_locator,
+        semantic_locator=semantic_locator,
+        locator=semantic_locator,
         evidence_level=str(raw.get("evidence_level") or "metadata_only"),
         evidence_verified=bool(raw.get("evidence_verified")),
     )

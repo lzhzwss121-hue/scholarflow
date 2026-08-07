@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -50,6 +51,7 @@ LocatorKind = Literal[
     "equation",
     "chunk",
 ]
+AnchorStatus = Literal["verified", "pending"]
 CaseType = Literal[
     "answerable",
     "refusal",
@@ -89,6 +91,63 @@ class EvidenceLocator(StrictModel):
     figure: str = Field(default="", max_length=120)
     equation: str = Field(default="", max_length=120)
     supplementary: bool = False
+
+
+class MachineLocator(StrictModel):
+    """Parser/index-derived identity for a runtime evidence block.
+
+    Empty chunk/excerpt hashes mean that no machine anchor was available.  A
+    semantic label is deliberately not inferred from the chunk text here.
+    """
+
+    paper_id: str = Field(min_length=1, max_length=200)
+    paper_version: str = Field(min_length=1, max_length=200)
+    source_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    page: int | None = Field(default=None, ge=1)
+    normalized_section: str = Field(default="", max_length=300)
+    chunk_index: int | None = Field(default=None, ge=0)
+    chunk_hash: str = Field(default="", pattern=r"^(?:[0-9a-f]{64})?$")
+    evidence_excerpt_hash: str = Field(
+        default="",
+        pattern=r"^(?:[0-9a-f]{64})?$",
+    )
+
+    @model_validator(mode="after")
+    def normalize_machine_section(self) -> "MachineLocator":
+        self.normalized_section = normalize_section(self.normalized_section)
+        return self
+
+
+class AcceptableSourceAnchor(StrictModel):
+    """Human-approved machine anchor for one fixed paper version.
+
+    Draft cases may carry a pending anchor with no chunk/excerpt hash.  Such an
+    anchor documents the intended source/page but cannot receive machine-anchor
+    credit until an actual fixed-PDF run has been reviewed.
+    """
+
+    paper_id: str = Field(min_length=1, max_length=200)
+    paper_version: str = Field(min_length=1, max_length=200)
+    source_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    page: int = Field(ge=1)
+    normalized_section: str = Field(default="", max_length=300)
+    chunk_hash: str = Field(default="", pattern=r"^(?:[0-9a-f]{64})?$")
+    evidence_excerpt_hash: str = Field(
+        default="",
+        pattern=r"^(?:[0-9a-f]{64})?$",
+    )
+    status: AnchorStatus = "pending"
+
+    @model_validator(mode="after")
+    def validate_anchor_status(self) -> "AcceptableSourceAnchor":
+        self.normalized_section = normalize_section(self.normalized_section)
+        if self.status == "verified" and not (
+            self.chunk_hash or self.evidence_excerpt_hash
+        ):
+            raise ValueError(
+                "verified source anchors require chunk_hash or evidence_excerpt_hash"
+            )
+        return self
 
 class AcceptableCitation(StrictModel):
     citation_id: str = Field(min_length=1, max_length=500)
@@ -171,6 +230,18 @@ class RealPaperEvaluationCase(StrictModel):
     evidence_level: EvidenceLevel
     evidence_excerpt: str = Field(default="", max_length=500)
     evidence_locator: EvidenceLocator
+    page: int | None = Field(default=None, ge=1)
+    normalized_section: str = Field(default="", max_length=300)
+    evidence_excerpt_hash: str = Field(
+        default="",
+        pattern=r"^(?:[0-9a-f]{64})?$",
+    )
+    semantic_locator: EvidenceLocator | None = None
+    acceptable_source_anchors: list[AcceptableSourceAnchor] = Field(
+        default_factory=list
+    )
+    # Deprecated compatibility field.  Runtime evaluation uses
+    # acceptable_source_anchors and never requires citation_id equality.
     acceptable_citations: list[AcceptableCitation]
     direct_support_found: bool
     contradiction_notes: list[str]
@@ -203,16 +274,12 @@ class RealPaperEvaluationCase(StrictModel):
         return self.paper_version
 
     @property
-    def page(self) -> int:
-        return self.evidence_locator.page or 1
-
-    @property
     def section(self) -> str:
-        return self.evidence_locator.section
+        return self.normalized_section
 
     @property
     def locator(self) -> EvidenceLocator:
-        return self.evidence_locator
+        return self.semantic_locator or self.evidence_locator
 
     @property
     def adjudication_status(self) -> str:
@@ -224,6 +291,25 @@ class RealPaperEvaluationCase(StrictModel):
 
     @model_validator(mode="after")
     def validate_audit_contract(self) -> "RealPaperEvaluationCase":
+        locator_page = self.evidence_locator.page or 1
+        if self.page is None:
+            self.page = locator_page
+        elif self.page != locator_page:
+            raise ValueError("case page and evidence_locator page disagree")
+        expected_section = normalize_section(self.evidence_locator.section)
+        if not self.normalized_section:
+            self.normalized_section = expected_section
+        elif normalize_section(self.normalized_section) != expected_section:
+            raise ValueError(
+                "normalized_section must match evidence_locator.section"
+            )
+        else:
+            self.normalized_section = normalize_section(self.normalized_section)
+        if self.semantic_locator is None:
+            self.semantic_locator = self.evidence_locator
+        elif _model_key(self.semantic_locator) != _model_key(self.evidence_locator):
+            raise ValueError("semantic_locator must match evidence_locator")
+
         _validate_answer_and_citations(
             answerability=self.answerability,
             gold_claim=self.gold_claim,
@@ -240,6 +326,7 @@ class RealPaperEvaluationCase(StrictModel):
         if len(self.case_types) != len(set(self.case_types)):
             raise ValueError("case_types must be unique")
         self._validate_citations(self.acceptable_citations, "case")
+        self._validate_source_anchors(self.acceptable_source_anchors, "case")
         self._validate_locator(self.evidence_locator, "case")
 
         reviewers = [
@@ -284,6 +371,28 @@ class RealPaperEvaluationCase(StrictModel):
             if self.adjudicator_result and self.adjudicator_result.adjudicator_id in reviewer_ids:
                 raise ValueError("adjudicator must be independent from annotator A and B")
         return self
+
+    def _validate_source_anchors(
+        self,
+        anchors: list[AcceptableSourceAnchor],
+        context: str,
+    ) -> None:
+        for anchor in anchors:
+            if anchor.paper_id != self.paper_id:
+                raise ValueError(f"{context} source anchor points to the wrong paper_id")
+            if anchor.paper_version != self.paper_version:
+                raise ValueError(
+                    f"{context} source anchor points to the wrong paper version"
+                )
+            if anchor.source_hash != self.source_hash:
+                raise ValueError(
+                    f"{context} source anchor points to the wrong source hash"
+                )
+            if anchor.page > self.source_page_count:
+                raise ValueError(
+                    f"{context} source anchor page exceeds source_page_count "
+                    f"({anchor.page}>{self.source_page_count})"
+                )
 
     def _validate_locator(self, locator: EvidenceLocator, context: str) -> None:
         specific = {
@@ -661,6 +770,19 @@ def _norm(value: str) -> str:
 
 def _norm_question(value: str) -> str:
     return " ".join(re.findall(r"[\w]+", value.casefold(), flags=re.UNICODE))
+
+
+def normalize_section(value: str) -> str:
+    return re.sub(r"[^a-z0-9\u3400-\u9fff]+", " ", value.casefold()).strip()
+
+
+def evidence_excerpt_checksum(value: str) -> str:
+    normalized = re.sub(r"\s+", " ", value).strip()
+    return (
+        hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        if normalized
+        else ""
+    )
 
 
 def _write_dataset(dataset: RealPaperDataset, output: Path) -> None:

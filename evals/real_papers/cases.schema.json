@@ -44,6 +44,21 @@
         "locator": {"$ref": "#/$defs/locator"}
       }
     },
+    "sourceAnchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["paper_id", "paper_version", "source_hash", "page", "normalized_section", "chunk_hash", "evidence_excerpt_hash", "status"],
+      "properties": {
+        "paper_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "paper_version": {"type": "string", "minLength": 1, "maxLength": 200},
+        "source_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "page": {"type": "integer", "minimum": 1},
+        "normalized_section": {"type": "string", "maxLength": 300},
+        "chunk_hash": {"type": "string", "pattern": "^(?:[0-9a-f]{64})?$"},
+        "evidence_excerpt_hash": {"type": "string", "pattern": "^(?:[0-9a-f]{64})?$"},
+        "status": {"enum": ["verified", "pending"]}
+      }
+    },
     "independentReview": {
       "type": ["object", "null"],
       "additionalProperties": false,
@@ -84,7 +99,7 @@
     "case": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["case_id", "project_id", "paper_id", "title", "paper_version", "source_url", "source_hash", "source_page_count", "domain", "question", "answerability", "gold_claim", "evidence_type", "evidence_level", "evidence_excerpt", "evidence_locator", "acceptable_citations", "direct_support_found", "contradiction_notes", "contradiction_claims", "version_notes", "annotator_a_result", "annotator_b_result", "disagreement_fields", "adjudicator_result", "adjudication_date", "review_status", "label_origin", "split", "case_types"],
+      "required": ["case_id", "project_id", "paper_id", "title", "paper_version", "source_url", "source_hash", "source_page_count", "domain", "question", "answerability", "gold_claim", "evidence_type", "evidence_level", "evidence_excerpt", "evidence_locator", "page", "normalized_section", "evidence_excerpt_hash", "semantic_locator", "acceptable_source_anchors", "acceptable_citations", "direct_support_found", "contradiction_notes", "contradiction_claims", "version_notes", "annotator_a_result", "annotator_b_result", "disagreement_fields", "adjudicator_result", "adjudication_date", "review_status", "label_origin", "split", "case_types"],
       "properties": {
         "case_id": {"type": "string", "minLength": 1, "maxLength": 200},
         "project_id": {"type": "string", "minLength": 1, "maxLength": 200},
@@ -102,7 +117,12 @@
         "evidence_level": {"$ref": "#/$defs/evidenceLevel"},
         "evidence_excerpt": {"type": "string", "maxLength": 500},
         "evidence_locator": {"$ref": "#/$defs/locator"},
-        "acceptable_citations": {"type": "array", "items": {"$ref": "#/$defs/citation"}},
+        "page": {"type": "integer", "minimum": 1},
+        "normalized_section": {"type": "string", "maxLength": 300},
+        "evidence_excerpt_hash": {"type": "string", "pattern": "^(?:[0-9a-f]{64})?$"},
+        "semantic_locator": {"anyOf": [{"$ref": "#/$defs/locator"}, {"type": "null"}]},
+        "acceptable_source_anchors": {"type": "array", "items": {"$ref": "#/$defs/sourceAnchor"}},
+        "acceptable_citations": {"type": "array", "deprecated": true, "description": "Compatibility-only legacy field. Evaluator matching uses acceptable_source_anchors and never requires citation_id equality.", "items": {"$ref": "#/$defs/citation"}},
         "direct_support_found": {"type": "boolean"},
         "contradiction_notes": {"type": "array", "items": {"type": "string"}},
         "contradiction_claims": {"type": "array", "items": {"type": "string"}},
