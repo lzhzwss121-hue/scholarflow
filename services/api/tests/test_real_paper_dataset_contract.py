@@ -177,6 +177,7 @@ class RealPaperDatasetContractTest(unittest.TestCase):
             self.assertIn(field, required)
         for optional_field in (
             "development_status",
+            "answer_expectation",
             "expected_answer",
             "answer_comparator",
             "refusal_probe_terms",
@@ -190,6 +191,22 @@ class RealPaperDatasetContractTest(unittest.TestCase):
         ):
             self.assertIn(optional_field, schema["$defs"]["case"]["properties"])
             self.assertNotIn(optional_field, required)
+        expectation = schema["$defs"]["answerExpectation"]
+        self.assertEqual(
+            set(expectation["properties"]["comparator"]["enum"]),
+            {
+                "exact",
+                "normalized_text",
+                "numeric",
+                "numeric_with_unit",
+                "boolean",
+                "categorical",
+                "unordered_set",
+                "required_fact_slots",
+                "refusal",
+            },
+        )
+        self.assertIn("expected_refusal", expectation["required"])
         development = RealPaperDataset.model_validate_json(
             Path("evals/real_papers/cases.development.json").read_text(encoding="utf-8")
         )

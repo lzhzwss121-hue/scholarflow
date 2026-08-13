@@ -67,6 +67,28 @@
         "status": {"enum": ["verified", "pending"]}
       }
     },
+    "answerExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["comparator", "expected_value", "expected_unit", "absolute_tolerance", "relative_tolerance", "accepted_aliases", "required_terms", "forbidden_terms", "expected_refusal"],
+      "properties": {
+        "comparator": {
+          "enum": ["exact", "normalized_text", "numeric", "numeric_with_unit", "boolean", "categorical", "unordered_set", "required_fact_slots", "refusal"]
+        },
+        "expected_value": {
+          "type": ["string", "number", "integer", "boolean", "array", "object", "null"],
+          "items": {"type": "string"},
+          "additionalProperties": {"type": ["string", "number", "integer", "boolean"]}
+        },
+        "expected_unit": {"type": "string", "maxLength": 100},
+        "absolute_tolerance": {"type": "number", "minimum": 0},
+        "relative_tolerance": {"type": "number", "minimum": 0},
+        "accepted_aliases": {"type": "array", "maxItems": 100, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "required_terms": {"type": "array", "maxItems": 100, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "forbidden_terms": {"type": "array", "maxItems": 100, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "expected_refusal": {"type": "boolean"}
+      }
+    },
     "independentReview": {
       "type": ["object", "null"],
       "additionalProperties": false,
@@ -139,8 +161,9 @@
           "enum": ["generated", "validated", "invalid", "disabled", "maintainer_verified"],
           "description": "Development lifecycle. Only validated and maintainer_verified cases contribute to development metrics."
         },
-        "expected_answer": {"type": "string", "maxLength": 5000},
-        "answer_comparator": {"enum": ["exact_text", "normalized_text", "numeric_unit", "refusal"]},
+        "answer_expectation": {"anyOf": [{"$ref": "#/$defs/answerExpectation"}, {"type": "null"}]},
+        "expected_answer": {"type": "string", "maxLength": 5000, "deprecated": true, "description": "Legacy compatibility field. Prefer answer_expectation."},
+        "answer_comparator": {"enum": ["exact_text", "normalized_text", "numeric_unit", "refusal"], "deprecated": true, "description": "Legacy compatibility field. gold_claim-only cases map conservatively to normalized_text."},
         "refusal_probe_terms": {"type": "array", "maxItems": 50, "items": {"type": "string", "minLength": 1}},
         "validation_errors": {"type": "array", "maxItems": 100, "items": {"type": "string", "minLength": 1}},
         "annotator_a_result": {"$ref": "#/$defs/independentReview"},

@@ -281,6 +281,40 @@ def correct_predictions() -> dict[str, object]:
     }
 
 
+def comparator_report(
+    *,
+    expectation: dict[str, object],
+    gold_claim: str,
+    predicted_claim: str,
+    citation_is_correct: bool = True,
+) -> dict[str, object]:
+    dataset_payload = dataset_fixture(tier="development_benchmark")
+    answerable = dataset_payload["cases"][0]
+    answerable.update(
+        {
+            "gold_claim": gold_claim,
+            "expected_answer": gold_claim,
+            "answer_expectation": expectation,
+            "evidence_excerpt": gold_claim,
+            "evidence_excerpt_hash": evidence_excerpt_checksum(gold_claim),
+            "contradiction_claims": [],
+        }
+    )
+    dataset_payload["cases"] = [answerable]
+
+    prediction_payload = correct_predictions()
+    predicted = prediction_payload["cases"][0]
+    predicted["claims"][0]["statement"] = predicted_claim
+    if not citation_is_correct:
+        for key in ("retrieved_citations", "used_citations"):
+            predicted[key][0]["machine_locator"]["source_hash"] = "b" * 64
+    prediction_payload["cases"] = [predicted]
+    return evaluate_real_paper_predictions(
+        RealPaperDataset.model_validate(dataset_payload),
+        RealPaperPredictionSet.model_validate(prediction_payload),
+    )
+
+
 class RealPaperEvaluationContractTest(unittest.TestCase):
     def test_unreviewed_real_paper_fixture_is_never_presented_as_expert_gold(self) -> None:
         dataset = RealPaperDataset.model_validate(dataset_fixture())
@@ -453,6 +487,319 @@ class RealPaperEvaluationContractTest(unittest.TestCase):
         )
         self.assertEqual(report["metrics"]["machine_anchor_accuracy"], 1.0)
         self.assertEqual(report["metrics"]["citation_precision"], 1.0)
+
+    def test_numeric_with_unit_accepts_rephrasing_but_enforces_tolerance(self) -> None:
+        expectation = {
+            "comparator": "numeric_with_unit",
+            "expected_value": 28.4,
+            "expected_unit": "BLEU",
+            "absolute_tolerance": 0.05,
+            "relative_tolerance": 0,
+            "accepted_aliases": [],
+            "required_terms": [],
+            "forbidden_terms": [],
+            "expected_refusal": False,
+        }
+        accepted = comparator_report(
+            expectation=expectation,
+            gold_claim="The system reports a BLEU score of 28.4.",
+            predicted_claim="The reported result is 28.4 BLEU.",
+        )
+        accepted_case = accepted["cases"][0]
+        self.assertTrue(accepted_case["answer_format_valid"])
+        self.assertTrue(accepted_case["answer_value_correct"])
+        self.assertTrue(accepted_case["answer_unit_correct"])
+        self.assertTrue(accepted_case["required_conditions_correct"])
+        self.assertTrue(accepted_case["citation_binding_correct"])
+        self.assertTrue(accepted_case["final_answer_correct"])
+
+        within_tolerance = comparator_report(
+            expectation=expectation,
+            gold_claim="The system reports a BLEU score of 28.4.",
+            predicted_claim="The reported result is 28.44 BLEU.",
+        )
+        self.assertTrue(within_tolerance["cases"][0]["answer_value_correct"])
+        self.assertTrue(within_tolerance["cases"][0]["final_answer_correct"])
+
+        rejected = comparator_report(
+            expectation=expectation,
+            gold_claim="The system reports a BLEU score of 28.4.",
+            predicted_claim="The reported result is 28.5 BLEU.",
+        )
+        rejected_case = rejected["cases"][0]
+        self.assertTrue(rejected_case["answer_format_valid"])
+        self.assertFalse(rejected_case["answer_value_correct"])
+        self.assertFalse(rejected_case["final_answer_correct"])
+
+    def test_numeric_comparators_reject_unit_sign_and_magnitude_errors(self) -> None:
+        cases = (
+            (
+                {
+                    "comparator": "numeric_with_unit",
+                    "expected_value": 10,
+                    "expected_unit": "%",
+                    "absolute_tolerance": 0,
+                    "relative_tolerance": 0,
+                    "accepted_aliases": [],
+                    "required_terms": [],
+                    "forbidden_terms": [],
+                    "expected_refusal": False,
+                },
+                "The gain is 10%.",
+                "The gain is 10 percentage points.",
+                "answer_unit_correct",
+            ),
+            (
+                {
+                    "comparator": "numeric_with_unit",
+                    "expected_value": -2.5,
+                    "expected_unit": "dB",
+                    "absolute_tolerance": 0,
+                    "relative_tolerance": 0,
+                    "accepted_aliases": [],
+                    "required_terms": [],
+                    "forbidden_terms": [],
+                    "expected_refusal": False,
+                },
+                "The change is -2.5 dB.",
+                "The change is 2.5 dB.",
+                "answer_value_correct",
+            ),
+            (
+                {
+                    "comparator": "numeric_with_unit",
+                    "expected_value": 28.4,
+                    "expected_unit": "BLEU",
+                    "absolute_tolerance": 0,
+                    "relative_tolerance": 0,
+                    "accepted_aliases": [],
+                    "required_terms": [],
+                    "forbidden_terms": [],
+                    "expected_refusal": False,
+                },
+                "The score is 28.4 BLEU.",
+                "The score is 28.4 dB.",
+                "answer_unit_correct",
+            ),
+            (
+                {
+                    "comparator": "numeric",
+                    "expected_value": 10,
+                    "expected_unit": "",
+                    "absolute_tolerance": 0,
+                    "relative_tolerance": 0,
+                    "accepted_aliases": [],
+                    "required_terms": [],
+                    "forbidden_terms": [],
+                    "expected_refusal": False,
+                },
+                "The value is 10.",
+                "The value is 0.1.",
+                "answer_value_correct",
+            ),
+        )
+        for expectation, gold, actual, failing_field in cases:
+            with self.subTest(actual=actual):
+                report = comparator_report(
+                    expectation=expectation,
+                    gold_claim=gold,
+                    predicted_claim=actual,
+                )
+                self.assertFalse(report["cases"][0][failing_field])
+                self.assertFalse(report["cases"][0]["final_answer_correct"])
+
+    def test_conditions_and_negation_are_deterministic_gates(self) -> None:
+        missing_condition = comparator_report(
+            expectation={
+                "comparator": "numeric_with_unit",
+                "expected_value": 76.2,
+                "expected_unit": "%",
+                "absolute_tolerance": 0,
+                "relative_tolerance": 0,
+                "accepted_aliases": [],
+                "required_terms": ["zero-shot"],
+                "forbidden_terms": [],
+                "expected_refusal": False,
+            },
+            gold_claim="Zero-shot accuracy is 76.2%.",
+            predicted_claim="Accuracy is 76.2%.",
+        )
+        self.assertFalse(
+            missing_condition["cases"][0]["required_conditions_correct"]
+        )
+
+        negation_reversal = comparator_report(
+            expectation={
+                "comparator": "numeric_with_unit",
+                "expected_value": 10,
+                "expected_unit": "%",
+                "absolute_tolerance": 0,
+                "relative_tolerance": 0,
+                "accepted_aliases": [],
+                "required_terms": [],
+                "forbidden_terms": [],
+                "expected_refusal": False,
+            },
+            gold_claim="Method X does not reduce error by 10%.",
+            predicted_claim="Method X reduces error by 10%.",
+        )
+        self.assertFalse(
+            negation_reversal["cases"][0]["required_conditions_correct"]
+        )
+        self.assertFalse(negation_reversal["cases"][0]["final_answer_correct"])
+
+    def test_categorical_alias_set_boolean_and_fact_slot_comparators(self) -> None:
+        scenarios = (
+            (
+                {
+                    "comparator": "categorical",
+                    "expected_value": "ImageNet",
+                    "expected_unit": "",
+                    "absolute_tolerance": 0,
+                    "relative_tolerance": 0,
+                    "accepted_aliases": ["ILSVRC 2012"],
+                    "required_terms": [],
+                    "forbidden_terms": [],
+                    "expected_refusal": False,
+                },
+                "ImageNet",
+                "ILSVRC 2012",
+            ),
+            (
+                {
+                    "comparator": "boolean",
+                    "expected_value": True,
+                    "expected_unit": "",
+                    "absolute_tolerance": 0,
+                    "relative_tolerance": 0,
+                    "accepted_aliases": ["yes"],
+                    "required_terms": [],
+                    "forbidden_terms": [],
+                    "expected_refusal": False,
+                },
+                "true",
+                "yes",
+            ),
+            (
+                {
+                    "comparator": "unordered_set",
+                    "expected_value": ["accuracy", "F1"],
+                    "expected_unit": "",
+                    "absolute_tolerance": 0,
+                    "relative_tolerance": 0,
+                    "accepted_aliases": [],
+                    "required_terms": [],
+                    "forbidden_terms": [],
+                    "expected_refusal": False,
+                },
+                "accuracy, F1",
+                "F1; accuracy",
+            ),
+            (
+                {
+                    "comparator": "required_fact_slots",
+                    "expected_value": {
+                        "dataset": "ImageNet",
+                        "metric": "accuracy",
+                        "value": 76.2,
+                        "condition": "zero-shot",
+                    },
+                    "expected_unit": "%",
+                    "absolute_tolerance": 0,
+                    "relative_tolerance": 0,
+                    "accepted_aliases": [],
+                    "required_terms": [],
+                    "forbidden_terms": [],
+                    "expected_refusal": False,
+                },
+                "ImageNet zero-shot accuracy is 76.2%.",
+                "At 76.2%, zero-shot accuracy is reported on ImageNet.",
+            ),
+        )
+        for expectation, gold, actual in scenarios:
+            with self.subTest(comparator=expectation["comparator"]):
+                report = comparator_report(
+                    expectation=expectation,
+                    gold_claim=gold,
+                    predicted_claim=actual,
+                )
+                self.assertTrue(report["cases"][0]["answer_value_correct"])
+                self.assertTrue(report["cases"][0]["final_answer_correct"])
+
+    def test_refusal_requires_no_answer_and_no_supported_claim(self) -> None:
+        report = evaluate_real_paper_predictions(
+            RealPaperDataset.model_validate(
+                dataset_fixture(tier="development_benchmark")
+            ),
+            RealPaperPredictionSet.model_validate(correct_predictions()),
+        )
+        refusal = next(
+            item for item in report["cases"] if item["case_id"] == "case-refusal"
+        )
+        self.assertTrue(refusal["answer_format_valid"])
+        self.assertTrue(refusal["answer_value_correct"])
+        self.assertTrue(refusal["required_conditions_correct"])
+        self.assertTrue(refusal["final_answer_correct"])
+
+        payload = correct_predictions()
+        pseudo_refusal = payload["cases"][1]
+        pseudo_refusal.update(
+            {
+                "refused": False,
+                "answer_kind": "no_answer",
+                "claims": [
+                    {
+                        "statement": "Dataset Z reports 90% accuracy.",
+                        "status": "supported",
+                        "method": "exact_quote",
+                        "citation_ids": [],
+                        "evidence_level": "full_text",
+                    }
+                ],
+            }
+        )
+        rejected = evaluate_real_paper_predictions(
+            RealPaperDataset.model_validate(
+                dataset_fixture(tier="development_benchmark")
+            ),
+            RealPaperPredictionSet.model_validate(payload),
+        )
+        rejected_refusal = next(
+            item for item in rejected["cases"] if item["case_id"] == "case-refusal"
+        )
+        self.assertFalse(rejected_refusal["required_conditions_correct"])
+        self.assertFalse(rejected_refusal["final_answer_correct"])
+
+    def test_answer_dimensions_do_not_bypass_citation_binding(self) -> None:
+        report = comparator_report(
+            expectation={
+                "comparator": "normalized_text",
+                "expected_value": "Method X reports 10% on Dataset A.",
+                "expected_unit": "",
+                "absolute_tolerance": 0,
+                "relative_tolerance": 0,
+                "accepted_aliases": [],
+                "required_terms": [],
+                "forbidden_terms": [],
+                "expected_refusal": False,
+            },
+            gold_claim="Method X reports 10% on Dataset A.",
+            predicted_claim="Method X reports 10% on Dataset A.",
+            citation_is_correct=False,
+        )
+        case = report["cases"][0]
+        self.assertTrue(case["answer_value_correct"])
+        self.assertFalse(case["citation_binding_correct"])
+        self.assertFalse(case["final_answer_correct"])
+
+    def test_legacy_gold_claim_defaults_to_normalized_text(self) -> None:
+        payload = dataset_fixture()
+        answerable = payload["cases"][0]
+        answerable.pop("expected_answer", None)
+        answerable.pop("answer_comparator", None)
+        case = RealPaperDataset.model_validate(payload).cases[0]
+        self.assertEqual(case.answer_expectation.comparator, "normalized_text")
+        self.assertEqual(case.answer_expectation.expected_value, case.gold_claim)
 
     def test_expert_dataset_requires_human_adjudication_and_model_gold_is_rejected(self) -> None:
         invalid_expert = dataset_fixture(tier="expert_labelled")

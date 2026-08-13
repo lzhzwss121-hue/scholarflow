@@ -16,7 +16,8 @@ from scholarflow_api.real_paper_dataset import (
     RealPaperDataset,
     RealPaperEvaluationCase,
     StrictModel,
-    answer_matches_expected,
+    AnswerComparisonResult,
+    compare_answer_expectation,
     evaluation_cases,
     load_real_paper_dataset as load_audited_real_paper_dataset,
     real_paper_dataset_json_schema,
@@ -96,6 +97,7 @@ class RealPaperCasePrediction(StrictModel):
     case_id: str = Field(min_length=1, max_length=200)
     project_id: str = Field(min_length=1, max_length=200)
     refused: bool
+    answer_kind: Literal["answer", "no_answer"] | None = None
     answer: str = Field(default="", max_length=50000)
     execution_status: Literal["complete", "partial", "blocked", "error"] = "complete"
     error: str = Field(default="", max_length=5000)
@@ -360,15 +362,15 @@ def _evaluate_cases(
         ):
             counts["citation_recall_hits"] += 1
 
-        predicted_answer = execution_completed and not prediction.refused
+        prediction_is_refusal = prediction.refused or prediction.answer_kind == "no_answer"
+        predicted_answer = execution_completed and not prediction_is_refusal
         if predicted_answer:
             counts["predicted_answers"] += 1
         elif execution_completed:
             counts["predicted_refusals"] += 1
-            if not case.answerable:
-                counts["correct_refusals"] += 1
 
         correct_claims = 0
+        claim_evaluations: list[tuple[AnswerComparisonResult, bool]] = []
         for claim in prediction.claims if execution_completed else []:
             counts["claims"] += 1
             claim_citations = [
@@ -386,11 +388,40 @@ def _evaluate_cases(
                     "invalid_citation: claim references unavailable IDs "
                     + ", ".join(missing_ids)
                 )
+            answer_evaluation = compare_answer_expectation(
+                case.answer_expectation,
+                claim.statement,
+                expected_reference=case.gold_claim,
+                refused=False,
+                answer_kind="answer",
+                has_supported_claim=claim.status == "supported",
+            )
             conflict_reasons = (
                 semantic_conflict_reasons(claim.statement, case.gold_claim)
                 if case.gold_claim
                 else []
             )
+            if answer_evaluation.correct_without_citation:
+                ignored_prefixes: list[str] = []
+                if case.answer_expectation.comparator in {
+                    "numeric",
+                    "numeric_with_unit",
+                    "required_fact_slots",
+                }:
+                    ignored_prefixes.append("数字或单位不一致")
+                if case.answer_expectation.accepted_aliases:
+                    ignored_prefixes.extend(
+                        [
+                            "数据集、指标、模型或比较对象不一致",
+                            "数字或单位不一致",
+                        ]
+                    )
+                conflict_reasons = [
+                    reason
+                    for reason in conflict_reasons
+                    if not ignored_prefixes
+                    or not reason.startswith(tuple(ignored_prefixes))
+                ]
             known_contradiction = any(
                 _normalize_text(claim.statement) == _normalize_text(item)
                 for item in case.contradiction_claims
@@ -407,15 +438,8 @@ def _evaluate_cases(
                 _citation_is_acceptable(citation, case)
                 for citation in claim_citations
             )
-            claim_matches_gold = (
-                answer_matches_expected(case, claim.statement)
-                if case.development_status in {"validated", "maintainer_verified"}
-                else (
-                    case.answerable
-                    and _normalize_text(claim.statement)
-                    == _normalize_text(case.gold_claim)
-                )
-            )
+            claim_evaluations.append((answer_evaluation, citation_binding_ok))
+            claim_matches_gold = answer_evaluation.correct_without_citation
             support_method_ok = claim.method in _TRUSTED_SUPPORT_METHODS
             claim_correct = (
                 claim.status == "supported"
@@ -435,7 +459,8 @@ def _evaluate_cases(
                         "unsupported_claim: lexical/rule status was presented as direct support"
                     )
                 elif not claim_matches_gold:
-                    errors.append("unsupported_claim: statement does not match the annotated gold claim")
+                    errors.append("unsupported_claim: statement fails the deterministic answer expectation")
+                    errors.extend(answer_evaluation.reasons)
 
             counts["evidence_assertions"] += 1
             if _evidence_false_positive(
@@ -450,16 +475,77 @@ def _evaluate_cases(
                 counts["evidence_false_positives"] += 1
                 errors.append("evidence_level_false_positive: predicted evidence exceeds the annotated level")
 
-        answer_correct = (
-            execution_completed
-            and case.answerable
-            and predicted_answer
-            and correct_claims > 0
-        )
-        if answer_correct:
+        if case.answerable:
+            fallback_evaluation = compare_answer_expectation(
+                case.answer_expectation,
+                prediction.answer,
+                expected_reference=case.gold_claim,
+                refused=prediction_is_refusal,
+                answer_kind=prediction.answer_kind or "",
+                has_supported_claim=any(
+                    claim.status == "supported" for claim in prediction.claims
+                ),
+            )
+            if claim_evaluations:
+                answer_evaluation, citation_binding_correct = max(
+                    claim_evaluations,
+                    key=lambda item: (
+                        int(item[0].correct_without_citation),
+                        int(item[0].answer_value_correct),
+                        int(item[0].answer_unit_correct),
+                        int(item[0].required_conditions_correct),
+                        int(item[1]),
+                    ),
+                )
+            else:
+                answer_evaluation = fallback_evaluation
+                citation_binding_correct = False
+            counts["citation_binding_attempts"] += 1
+            if citation_binding_correct:
+                counts["correct_citation_bindings"] += 1
+            final_answer_correct = (
+                execution_completed
+                and predicted_answer
+                and correct_claims > 0
+                and citation_binding_correct
+            )
+        else:
+            answer_evaluation = compare_answer_expectation(
+                case.answer_expectation,
+                prediction.answer,
+                expected_reference=case.gold_claim,
+                refused=prediction.refused,
+                answer_kind=prediction.answer_kind or "",
+                has_supported_claim=any(
+                    claim.status == "supported" for claim in prediction.claims
+                ),
+            )
+            citation_binding_correct = None
+            final_answer_correct = (
+                execution_completed and answer_evaluation.correct_without_citation
+            )
+            if final_answer_correct:
+                counts["correct_refusals"] += 1
+
+        counts["answer_dimension_attempts"] += 1
+        if answer_evaluation.answer_format_valid:
+            counts["valid_answer_formats"] += 1
+        if answer_evaluation.answer_value_correct:
+            counts["correct_answer_values"] += 1
+        if answer_evaluation.answer_unit_correct:
+            counts["correct_answer_units"] += 1
+        if answer_evaluation.required_conditions_correct:
+            counts["correct_required_conditions"] += 1
+        if final_answer_correct:
+            counts["correct_final_answers"] += 1
+
+        answer_correct = final_answer_correct
+        if final_answer_correct and case.answerable:
             counts["correct_answers"] += 1
         elif predicted_answer and not prediction.claims:
             errors.append("unsupported_answer: non-refusal output has no evaluable claims")
+        if not answer_evaluation.correct_without_citation:
+            errors.extend(answer_evaluation.reasons)
 
         case_results.append(
             {
@@ -471,6 +557,13 @@ def _evaluate_cases(
                 "predicted_refusal": prediction.refused,
                 "execution_status": prediction.execution_status,
                 "gold_rank": rank,
+                "answer_comparator": answer_evaluation.comparator,
+                "answer_format_valid": answer_evaluation.answer_format_valid,
+                "answer_value_correct": answer_evaluation.answer_value_correct,
+                "answer_unit_correct": answer_evaluation.answer_unit_correct,
+                "required_conditions_correct": answer_evaluation.required_conditions_correct,
+                "citation_binding_correct": citation_binding_correct,
+                "final_answer_correct": final_answer_correct,
                 "answer_correct": answer_correct,
                 "errors": list(dict.fromkeys(errors)),
             }
@@ -501,6 +594,30 @@ def _evaluate_cases(
         "citation_precision": _ratio(counts["correct_citations"], counts["used_citations"]),
         "citation_recall": _ratio(counts["citation_recall_hits"], answerable),
         "citation_locatability": _ratio(counts["locatable_citations"], counts["used_citations"]),
+        "answer_format_valid": _ratio(
+            counts["valid_answer_formats"],
+            counts["answer_dimension_attempts"],
+        ),
+        "answer_value_correct": _ratio(
+            counts["correct_answer_values"],
+            counts["answer_dimension_attempts"],
+        ),
+        "answer_unit_correct": _ratio(
+            counts["correct_answer_units"],
+            counts["answer_dimension_attempts"],
+        ),
+        "required_conditions_correct": _ratio(
+            counts["correct_required_conditions"],
+            counts["answer_dimension_attempts"],
+        ),
+        "citation_binding_correct": _optional_ratio(
+            counts["correct_citation_bindings"],
+            counts["citation_binding_attempts"],
+        ),
+        "final_answer_correct": _ratio(
+            counts["correct_final_answers"],
+            counts["answer_dimension_attempts"],
+        ),
         "answer_precision": _ratio(counts["correct_answers"], predicted_answers),
         "answer_recall": _ratio(counts["correct_answers"], answerable),
         "refusal_precision": _ratio(counts["correct_refusals"], predicted_refusals),

@@ -39,6 +39,17 @@ AnswerComparator = Literal[
     "numeric_unit",
     "refusal",
 ]
+ExpectationComparator = Literal[
+    "exact",
+    "normalized_text",
+    "numeric",
+    "numeric_with_unit",
+    "boolean",
+    "categorical",
+    "unordered_set",
+    "required_fact_slots",
+    "refusal",
+]
 ReviewStatus = Literal[
     "draft",
     "independently_reviewed",
@@ -99,6 +110,83 @@ _STATUS_ORDER: tuple[ReviewStatus, ...] = (
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class AnswerExpectation(StrictModel):
+    """Deterministic answer contract; it is gold data and never runner input."""
+
+    comparator: ExpectationComparator
+    expected_value: (
+        str
+        | int
+        | float
+        | bool
+        | list[str]
+        | dict[str, str | int | float | bool]
+        | None
+    ) = None
+    expected_unit: str = Field(default="", max_length=100)
+    absolute_tolerance: float = Field(default=0.0, ge=0)
+    relative_tolerance: float = Field(default=0.0, ge=0)
+    accepted_aliases: list[str] = Field(default_factory=list, max_length=100)
+    required_terms: list[str] = Field(default_factory=list, max_length=100)
+    forbidden_terms: list[str] = Field(default_factory=list, max_length=100)
+    expected_refusal: bool = False
+
+    @model_validator(mode="after")
+    def validate_comparator_shape(self) -> "AnswerExpectation":
+        for field_name in ("accepted_aliases", "required_terms", "forbidden_terms"):
+            values = getattr(self, field_name)
+            normalized = [_norm(value) for value in values]
+            if any(not value for value in normalized):
+                raise ValueError(f"{field_name} cannot contain blank values")
+            if len(normalized) != len(set(normalized)):
+                raise ValueError(f"{field_name} must be unique after normalization")
+
+        if self.comparator == "refusal":
+            if not self.expected_refusal:
+                raise ValueError("refusal comparator requires expected_refusal=true")
+            if self.expected_value not in (None, ""):
+                raise ValueError("refusal comparator cannot define expected_value")
+            return self
+        if self.expected_refusal:
+            raise ValueError("expected_refusal=true requires the refusal comparator")
+        if self.comparator in {"exact", "normalized_text", "categorical"}:
+            if not isinstance(self.expected_value, str) or not self.expected_value.strip():
+                raise ValueError(f"{self.comparator} requires a non-empty string expected_value")
+        elif self.comparator in {"numeric", "numeric_with_unit"}:
+            if not _expected_numbers(self.expected_value):
+                raise ValueError(f"{self.comparator} requires a numeric expected_value")
+            if self.comparator == "numeric_with_unit" and not self.expected_unit.strip():
+                raise ValueError("numeric_with_unit requires expected_unit")
+        elif self.comparator == "boolean":
+            if not isinstance(self.expected_value, (bool, str)):
+                raise ValueError("boolean requires a bool or explicit string expected_value")
+        elif self.comparator == "unordered_set":
+            if not isinstance(self.expected_value, list) or not self.expected_value:
+                raise ValueError("unordered_set requires a non-empty string list")
+        elif self.comparator == "required_fact_slots":
+            if not isinstance(self.expected_value, dict) or not self.expected_value:
+                raise ValueError("required_fact_slots requires a non-empty object")
+        return self
+
+
+class AnswerComparisonResult(StrictModel):
+    comparator: ExpectationComparator
+    answer_format_valid: bool
+    answer_value_correct: bool
+    answer_unit_correct: bool
+    required_conditions_correct: bool
+    reasons: list[str] = Field(default_factory=list)
+
+    @property
+    def correct_without_citation(self) -> bool:
+        return (
+            self.answer_format_valid
+            and self.answer_value_correct
+            and self.answer_unit_correct
+            and self.required_conditions_correct
+        )
 
 
 class EvidenceLocator(StrictModel):
@@ -245,6 +333,9 @@ class RealPaperEvaluationCase(StrictModel):
     domain: str = Field(min_length=1, max_length=200)
     question: str = Field(min_length=1, max_length=3000)
     development_status: DevelopmentStatus = "generated"
+    answer_expectation: AnswerExpectation | None = None
+    # Deprecated compatibility fields. New datasets should use
+    # answer_expectation; old gold_claim-only cases map to normalized_text.
     expected_answer: str = Field(default="", max_length=5000)
     answer_comparator: AnswerComparator = "normalized_text"
     refusal_probe_terms: list[str] = Field(default_factory=list, max_length=50)
@@ -336,6 +427,9 @@ class RealPaperEvaluationCase(StrictModel):
         elif _model_key(self.semantic_locator) != _model_key(self.evidence_locator):
             raise ValueError("semantic_locator must match evidence_locator")
 
+        if self.answer_expectation is None:
+            self.answer_expectation = _legacy_answer_expectation(self)
+
         self._validate_development_contract()
 
         _validate_answer_and_citations(
@@ -407,9 +501,9 @@ class RealPaperEvaluationCase(StrictModel):
             if self.validation_errors:
                 raise ValueError("validated development cases cannot retain validation_errors")
             if self.answerable:
-                if not self.expected_answer.strip():
-                    raise ValueError("validated answerable cases require expected_answer")
-                if self.answer_comparator == "refusal":
+                if self.answer_expectation is None:
+                    raise ValueError("validated answerable cases require answer_expectation")
+                if self.answer_expectation.comparator == "refusal":
                     raise ValueError("answerable cases cannot use the refusal comparator")
                 if not self.evidence_excerpt.strip():
                     raise ValueError("validated answerable cases require evidence_excerpt")
@@ -428,9 +522,9 @@ class RealPaperEvaluationCase(StrictModel):
                         "validated answerable cases require a verified machine anchor"
                     )
             else:
-                if self.expected_answer.strip():
-                    raise ValueError("validated refusal cases require an empty expected_answer")
-                if self.answer_comparator != "refusal":
+                if self.answer_expectation is None:
+                    raise ValueError("validated refusal cases require answer_expectation")
+                if self.answer_expectation.comparator != "refusal":
                     raise ValueError("validated refusal cases require the refusal comparator")
                 if not self.refusal_probe_terms:
                     raise ValueError(
@@ -438,7 +532,7 @@ class RealPaperEvaluationCase(StrictModel):
                     )
             if not expected_answer_matches_gold(self):
                 raise ValueError(
-                    "expected_answer does not match gold_claim under answer_comparator"
+                    "answer_expectation does not match gold_claim under its comparator"
                 )
 
     def _validate_source_anchors(
@@ -810,52 +904,374 @@ def validate_dataset_for_evaluation(dataset: RealPaperDataset) -> list[str]:
 
 
 def expected_answer_matches_gold(case: RealPaperEvaluationCase) -> bool:
-    if case.answer_comparator == "refusal":
-        return not case.answerable and not case.expected_answer.strip() and not case.gold_claim.strip()
-    if not case.answerable:
-        return False
-    if case.answer_comparator == "exact_text":
-        return case.expected_answer.strip() == case.gold_claim.strip()
-    if case.answer_comparator == "normalized_text":
-        return _norm(case.expected_answer) == _norm(case.gold_claim)
-    expected_numbers = re.findall(r"[-+]?\d+(?:\.\d+)?", case.expected_answer)
-    gold_numbers = re.findall(r"[-+]?\d+(?:\.\d+)?", case.gold_claim)
-    expected_units = _answer_units(case.expected_answer)
-    gold_units = _answer_units(case.gold_claim)
-    return bool(expected_numbers) and expected_numbers == gold_numbers and expected_units == gold_units
+    expectation = case.answer_expectation or _legacy_answer_expectation(case)
+    comparison = compare_answer_expectation(
+        expectation,
+        case.gold_claim,
+        expected_reference=case.gold_claim,
+        refused=not case.answerable,
+        answer_kind="no_answer" if not case.answerable else "answer",
+        has_supported_claim=False,
+    )
+    return comparison.correct_without_citation
 
 
 def answer_matches_expected(
     case: RealPaperEvaluationCase,
     actual_answer: str,
 ) -> bool:
-    """Apply the declared deterministic development-answer comparator."""
+    """Compatibility boolean over the structured deterministic comparison."""
 
-    if case.answer_comparator == "refusal":
-        return not case.answerable and not actual_answer.strip()
-    if not case.answerable:
-        return False
-    if case.answer_comparator == "exact_text":
-        return actual_answer.strip() == case.expected_answer.strip()
-    if case.answer_comparator == "normalized_text":
-        return _norm(actual_answer) == _norm(case.expected_answer)
-    actual_numbers = re.findall(r"[-+]?\d+(?:\.\d+)?", actual_answer)
-    expected_numbers = re.findall(r"[-+]?\d+(?:\.\d+)?", case.expected_answer)
-    return (
-        bool(actual_numbers)
-        and actual_numbers == expected_numbers
-        and _answer_units(actual_answer) == _answer_units(case.expected_answer)
+    expectation = case.answer_expectation or _legacy_answer_expectation(case)
+    return compare_answer_expectation(
+        expectation,
+        actual_answer,
+        expected_reference=case.gold_claim,
+        refused=False,
+        answer_kind="answer",
+        has_supported_claim=False,
+    ).correct_without_citation
+
+
+def compare_answer_expectation(
+    expectation: AnswerExpectation,
+    actual_answer: str,
+    *,
+    expected_reference: str = "",
+    refused: bool = False,
+    answer_kind: str = "",
+    has_supported_claim: bool = False,
+) -> AnswerComparisonResult:
+    """Score answer content without using citations or probabilistic judges."""
+
+    comparator = expectation.comparator
+    actual = actual_answer.strip()
+    reasons: list[str] = []
+    refusal_signal = refused or answer_kind == "no_answer"
+
+    if comparator == "refusal":
+        format_valid = refusal_signal
+        conditions_correct = refusal_signal and not has_supported_claim
+        if not refusal_signal:
+            reasons.append("expected_refusal: prediction did not refuse")
+        if has_supported_claim:
+            reasons.append("invalid_refusal: refusal also contains a supported claim")
+        return AnswerComparisonResult(
+            comparator=comparator,
+            answer_format_valid=format_valid,
+            answer_value_correct=refusal_signal,
+            answer_unit_correct=True,
+            required_conditions_correct=conditions_correct,
+            reasons=reasons,
+        )
+
+    format_valid = bool(actual) and not refusal_signal
+    value_correct = False
+    unit_correct = True
+    slot_conditions_correct = True
+
+    if not format_valid:
+        reasons.append("answer_format_invalid: expected a non-refusal answer")
+    elif comparator == "exact":
+        candidates = [str(expectation.expected_value), *expectation.accepted_aliases]
+        value_correct = any(actual == candidate.strip() for candidate in candidates)
+    elif comparator in {"normalized_text", "categorical"}:
+        candidates = [str(expectation.expected_value), *expectation.accepted_aliases]
+        value_correct = _norm(actual) in {_norm(candidate) for candidate in candidates}
+    elif comparator == "boolean":
+        expected_boolean = _coerce_boolean(expectation.expected_value)
+        actual_boolean = (
+            expected_boolean
+            if _norm(actual) in {_norm(alias) for alias in expectation.accepted_aliases}
+            else _coerce_boolean(actual)
+        )
+        format_valid = actual_boolean is not None
+        value_correct = format_valid and actual_boolean == expected_boolean
+    elif comparator == "unordered_set":
+        actual_values = _parse_unordered_values(actual)
+        expected_values = {
+            _norm(value) for value in (expectation.expected_value or []) if _norm(value)
+        }
+        format_valid = bool(actual_values)
+        value_correct = actual_values == expected_values
+    elif comparator in {"numeric", "numeric_with_unit"}:
+        actual_numbers = _extract_numbers(actual)
+        expected_numbers = _expected_numbers(expectation.expected_value)
+        format_valid = bool(actual_numbers)
+        value_correct = _numbers_match(
+            expected_numbers,
+            actual_numbers,
+            absolute_tolerance=expectation.absolute_tolerance,
+            relative_tolerance=expectation.relative_tolerance,
+        )
+        if comparator == "numeric_with_unit":
+            expected_unit = _canonical_unit(expectation.expected_unit)
+            actual_units = set(_answer_units(actual))
+            unit_correct = bool(expected_unit) and expected_unit in actual_units
+            format_valid = format_valid and bool(actual_units)
+    elif comparator == "required_fact_slots":
+        slots = expectation.expected_value if isinstance(expectation.expected_value, dict) else {}
+        value_correct, slot_conditions_correct, slot_reasons = _match_fact_slots(
+            slots,
+            actual,
+            expectation,
+        )
+        reasons.extend(slot_reasons)
+        if expectation.expected_unit:
+            expected_unit = _canonical_unit(expectation.expected_unit)
+            unit_correct = expected_unit in set(_answer_units(actual))
+        else:
+            unit_correct = True
+    else:  # pragma: no cover - Literal + Pydantic make this defensive only.
+        format_valid = False
+        reasons.append(f"unsupported_comparator: {comparator}")
+
+    if not value_correct:
+        reasons.append("answer_value_mismatch")
+    if not unit_correct:
+        reasons.append("answer_unit_mismatch")
+
+    required_conditions_correct = _conditions_match(expectation, actual)
+    if comparator == "required_fact_slots":
+        required_conditions_correct = required_conditions_correct and slot_conditions_correct
+    reference = expected_reference.strip()
+    if reference and _has_negation(reference) != _has_negation(actual):
+        required_conditions_correct = False
+        reasons.append("negation_mismatch")
+    if not required_conditions_correct and not any(
+        reason.startswith(("missing_required_term", "forbidden_term", "negation_mismatch", "missing_fact_condition"))
+        for reason in reasons
+    ):
+        reasons.append("required_conditions_mismatch")
+
+    return AnswerComparisonResult(
+        comparator=comparator,
+        answer_format_valid=format_valid,
+        answer_value_correct=value_correct,
+        answer_unit_correct=unit_correct,
+        required_conditions_correct=required_conditions_correct,
+        reasons=list(dict.fromkeys(reasons)),
     )
 
 
 def _answer_units(value: str) -> tuple[str, ...]:
-    normalized = _norm(value).replace("percentage points", "percentage_points")
-    return tuple(
-        re.findall(
-            r"%(?!\w)|(?<!\w)(?:percent|percentage_points|bleu|accuracy|f1|rouge|seconds?|ms|gb|mb)(?!\w)",
-            normalized,
-        )
+    normalized = _norm(value)
+    patterns = (
+        (r"(?<!\w)(?:percentage points?|percent points?|百分点|个百分点|pp)(?!\w)", "percentage_point"),
+        (r"%|(?<!\w)(?:percent|percentage)(?!\s+points?)(?!\w)|百分比", "percent"),
+        (r"(?<!\w)bleu(?:\s+score)?(?!\w)", "bleu"),
+        (r"(?<!\w)db(?!\w)|分贝", "db"),
+        (r"(?<!\w)f1(?:\s+score)?(?!\w)", "f1"),
+        (r"(?<!\w)rouge(?:-[l12])?(?!\w)", "rouge"),
+        (r"(?<!\w)accuracy(?!\w)|准确率", "accuracy"),
+        (r"(?<!\w)(?:seconds?|secs?)(?!\w)|秒", "second"),
+        (r"(?<!\w)ms(?!\w)|毫秒", "millisecond"),
+        (r"(?<!\w)gb(?!\w)", "gb"),
+        (r"(?<!\w)mb(?!\w)", "mb"),
     )
+    matches: list[tuple[int, str]] = []
+    for pattern, canonical in patterns:
+        matches.extend((match.start(), canonical) for match in re.finditer(pattern, normalized))
+    return tuple(unit for _, unit in sorted(matches))
+
+
+def _canonical_unit(value: str) -> str:
+    units = _answer_units(value)
+    if units:
+        return units[0]
+    return _norm(value).replace(" ", "_")
+
+
+def _extract_numbers(value: str) -> list[float]:
+    return [float(item) for item in re.findall(r"[-+]?\d+(?:\.\d+)?", value)]
+
+
+def _expected_numbers(value: object) -> list[float]:
+    if isinstance(value, bool) or value is None:
+        return []
+    if isinstance(value, (int, float)):
+        return [float(value)]
+    if isinstance(value, str):
+        return _extract_numbers(value)
+    return []
+
+
+def _numbers_match(
+    expected: list[float],
+    actual: list[float],
+    *,
+    absolute_tolerance: float,
+    relative_tolerance: float,
+) -> bool:
+    if not expected or not actual:
+        return False
+    return all(
+        any(
+            abs(actual_value - expected_value)
+            <= max(
+                absolute_tolerance,
+                relative_tolerance * abs(expected_value),
+            )
+            for actual_value in actual
+        )
+        for expected_value in expected
+    )
+
+
+def _legacy_answer_expectation(case: RealPaperEvaluationCase) -> AnswerExpectation:
+    if not case.answerable or case.answer_comparator == "refusal":
+        return AnswerExpectation(
+            comparator="refusal",
+            expected_value=None,
+            expected_refusal=True,
+        )
+    source = case.expected_answer.strip() or case.gold_claim.strip()
+    if case.answer_comparator == "exact_text":
+        comparator: ExpectationComparator = "exact"
+    elif case.answer_comparator == "numeric_unit":
+        comparator = "numeric_with_unit"
+    else:
+        comparator = "normalized_text"
+    source_units = _answer_units(source)
+    expected_unit = (
+        next(
+            (
+                unit
+                for unit in (
+                    "percentage_point",
+                    "percent",
+                    "bleu",
+                    "db",
+                    "f1",
+                    "rouge",
+                    "second",
+                    "millisecond",
+                    "gb",
+                    "mb",
+                    "accuracy",
+                )
+                if unit in source_units
+            ),
+            "",
+        )
+        if comparator == "numeric_with_unit"
+        else ""
+    )
+    if comparator == "numeric_with_unit" and not expected_unit:
+        # Old malformed numeric_unit records remain readable, but cannot be
+        # promoted to a validated dataset by deterministic validation.
+        comparator = "normalized_text"
+    return AnswerExpectation(
+        comparator=comparator,
+        expected_value=source,
+        expected_unit=expected_unit,
+        expected_refusal=False,
+    )
+
+
+def _coerce_boolean(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    normalized = _norm(str(value))
+    true_values = {"true", "yes", "是", "正确", "supported"}
+    false_values = {"false", "no", "否", "错误", "unsupported"}
+    if normalized in true_values:
+        return True
+    if normalized in false_values:
+        return False
+    return None
+
+
+def _parse_unordered_values(value: str) -> set[str]:
+    stripped = value.strip()
+    if stripped.startswith("["):
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list) and all(isinstance(item, str) for item in parsed):
+            return {_norm(item) for item in parsed if _norm(item)}
+    return {
+        _norm(item)
+        for item in re.split(r"[,;、，；\n]+", stripped)
+        if _norm(item)
+    }
+
+
+def _match_fact_slots(
+    slots: dict[str, str | int | float | bool],
+    actual: str,
+    expectation: AnswerExpectation,
+) -> tuple[bool, bool, list[str]]:
+    value_correct = True
+    conditions_correct = True
+    reasons: list[str] = []
+    condition_names = {"condition", "conditions", "qualifier", "constraint"}
+    for name, expected in slots.items():
+        if isinstance(expected, bool):
+            matched = _coerce_boolean(actual) == expected
+        elif isinstance(expected, (int, float)):
+            matched = _numbers_match(
+                [float(expected)],
+                _extract_numbers(actual),
+                absolute_tolerance=expectation.absolute_tolerance,
+                relative_tolerance=expectation.relative_tolerance,
+            )
+        else:
+            matched = _contains_term(actual, str(expected))
+        if name.casefold() in condition_names:
+            conditions_correct = conditions_correct and matched
+            if not matched:
+                reasons.append(f"missing_fact_condition: {name}")
+        else:
+            value_correct = value_correct and matched
+            if not matched:
+                reasons.append(f"missing_fact_slot: {name}")
+    return value_correct, conditions_correct, reasons
+
+
+def _conditions_match(expectation: AnswerExpectation, actual: str) -> bool:
+    matched = True
+    for term in expectation.required_terms:
+        if not _contains_term(actual, term):
+            matched = False
+    for term in expectation.forbidden_terms:
+        if _contains_term(actual, term):
+            matched = False
+    return matched
+
+
+def _contains_term(value: str, term: str) -> bool:
+    normalized_value = _norm(value)
+    normalized_term = _norm(term)
+    if not normalized_term:
+        return False
+    if re.fullmatch(r"[a-z0-9_+.-]+", normalized_term):
+        return bool(
+            re.search(
+                rf"(?<![a-z0-9_]){re.escape(normalized_term)}(?![a-z0-9_])",
+                normalized_value,
+            )
+        )
+    return normalized_term in normalized_value
+
+
+def _has_negation(value: str) -> bool:
+    normalized = _norm(value)
+    patterns = (
+        r"(?<!\w)not(?!\w)",
+        r"(?<!\w)no(?!\w)",
+        r"(?<!\w)without(?!\w)",
+        r"(?<!\w)fail(?:s|ed|ing)?(?!\w)",
+        r"(?<!\w)cannot(?!\w)",
+        r"(?<!\w)can't(?!\w)",
+        r"不",
+        r"未",
+        r"没有",
+        r"无法",
+        r"并非",
+    )
+    return any(re.search(pattern, normalized) for pattern in patterns)
 
 
 def _validate_answer_and_citations(
@@ -1179,7 +1595,7 @@ def _development_label_errors(
 ) -> list[str]:
     errors: list[str] = []
     if not expected_answer_matches_gold(case):
-        errors.append("expected_answer does not match gold_claim under answer_comparator")
+        errors.append("answer_expectation does not match gold_claim under its comparator")
     normalized_page = _norm(page_text)
     if case.answerable:
         if not case.evidence_excerpt.strip():

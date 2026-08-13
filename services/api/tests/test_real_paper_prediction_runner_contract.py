@@ -90,6 +90,10 @@ def case_payload(
         "gold_claim": "GOLD-POISON must never enter the RAG runtime",
         "gold_answer": "GOLD-ANSWER-POISON",
         "expected_answer": "GOLD-EXPECTED-ANSWER-POISON",
+        "answer_expectation": {
+            "comparator": "normalized_text",
+            "expected_value": "GOLD-EXPECTATION-POISON",
+        },
         "acceptable_citations": [{"citation_id": "GOLD-CITATION-POISON"}],
         "acceptable_source_anchors": [{"chunk_hash": "GOLD-ANCHOR-POISON"}],
         "semantic_locator": {"kind": "table", "value": "GOLD-LOCATOR-POISON"},
@@ -304,6 +308,7 @@ class RealPaperPredictionRunnerContractTest(unittest.TestCase):
         for field in FORBIDDEN_GOLD_FIELDS:
             self.assertNotIn(field, runtime_keys)
         self.assertNotIn("GOLD-POISON", serialized_runtime)
+        self.assertNotIn("GOLD-EXPECTATION-POISON", serialized_runtime)
 
         def guarded_answer(connection, **kwargs):
             boundary = json.dumps(kwargs, ensure_ascii=False, default=str)

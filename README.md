@@ -209,6 +209,8 @@ SCHOLARFLOW_DB_PATH=/private/tmp/scholarflow-rag-eval.sqlite3 \
 
 若显式提供 prediction，开发 evaluator 只接受 `prediction_source="offline_system_run"`，并只评分 `validated`/`maintainer_verified` 案例；`generated`、`invalid`、`disabled` 均排除。`cases.unreviewed.json` 仅保留旧入口兼容，默认命令不再使用它。`predictions.schema-fixture.json` 只用于 evaluator 单元合同，不是系统表现、开发 gold 或专家 gold。
 
+Real-paper 答案通过 `answer_expectation` 选择确定性比较器（精确/规范化文本、数值、数值与单位、布尔、类别、无序集合、必要事实槽或拒答），并分别报告格式、值、单位、条件、引用绑定和最终正确性。最终答案正确必须同时通过内容与引用绑定。旧案例只有 `gold_claim` 时仍可读取，但只保守映射为 `normalized_text`，对合理改写的比较精度有限；该兼容模式不得被解释为语义裁判。
+
 Live external smoke 使用独立命令：
 
 ```bash

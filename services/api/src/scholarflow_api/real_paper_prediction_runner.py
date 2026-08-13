@@ -43,6 +43,7 @@ FORBIDDEN_GOLD_FIELDS = frozenset(
         "gold_claim",
         "gold_answer",
         "expected_answer",
+        "answer_expectation",
         "acceptable_citations",
         "acceptable_source_anchors",
         "expected_refusal",

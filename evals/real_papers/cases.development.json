@@ -17,6 +17,17 @@
       "domain": "machine-translation",
       "question": "What BLEU score does Transformer (big) report for WMT 2014 English-to-German?",
       "development_status": "generated",
+      "answer_expectation": {
+        "comparator": "numeric_with_unit",
+        "expected_value": 28.4,
+        "expected_unit": "BLEU",
+        "absolute_tolerance": 0.0,
+        "relative_tolerance": 0.0,
+        "accepted_aliases": [],
+        "required_terms": ["Transformer (big)", "WMT 2014", "English-to-German"],
+        "forbidden_terms": ["41.8"],
+        "expected_refusal": false
+      },
       "expected_answer": "Transformer (big) achieves 28.4 BLEU on WMT 2014 English-to-German.",
       "answer_comparator": "numeric_unit",
       "refusal_probe_terms": [],
@@ -116,6 +127,23 @@
       "domain": "vision-language",
       "question": "What does the CLIP abstract claim about zero-shot ImageNet and ResNet-50?",
       "development_status": "generated",
+      "answer_expectation": {
+        "comparator": "required_fact_slots",
+        "expected_value": {
+          "model": "CLIP",
+          "comparison": "ResNet-50",
+          "dataset": "ImageNet",
+          "metric": "accuracy",
+          "condition": "zero-shot"
+        },
+        "expected_unit": "",
+        "absolute_tolerance": 0.0,
+        "relative_tolerance": 0.0,
+        "accepted_aliases": [],
+        "required_terms": ["without using"],
+        "forbidden_terms": ["exceeds"],
+        "expected_refusal": false
+      },
       "expected_answer": "CLIP matches the accuracy of the original ResNet-50 on ImageNet zero-shot without using any of the 1.28 million training examples it was trained on.",
       "answer_comparator": "normalized_text",
       "refusal_probe_terms": [],
@@ -215,6 +243,17 @@
       "domain": "natural-language-processing",
       "question": "What average is reported for BERTLARGE in Table 1 when WNLI is excluded?",
       "development_status": "generated",
+      "answer_expectation": {
+        "comparator": "numeric",
+        "expected_value": 82.1,
+        "expected_unit": "",
+        "absolute_tolerance": 0.0,
+        "relative_tolerance": 0.0,
+        "accepted_aliases": [],
+        "required_terms": ["BERTLARGE", "WNLI", "excluded"],
+        "forbidden_terms": ["80.5"],
+        "expected_refusal": false
+      },
       "expected_answer": "Table 1 reports a BERTLARGE average of 82.1 when WNLI is excluded.",
       "answer_comparator": "numeric_unit",
       "refusal_probe_terms": [],
@@ -313,6 +352,17 @@
       "domain": "vision-language",
       "question": "Does the paper prove that natural-language supervision causes higher accuracy on every downstream dataset?",
       "development_status": "generated",
+      "answer_expectation": {
+        "comparator": "refusal",
+        "expected_value": null,
+        "expected_unit": "",
+        "absolute_tolerance": 0.0,
+        "relative_tolerance": 0.0,
+        "accepted_aliases": [],
+        "required_terms": [],
+        "forbidden_terms": [],
+        "expected_refusal": true
+      },
       "expected_answer": "",
       "answer_comparator": "refusal",
       "refusal_probe_terms": [

@@ -103,4 +103,10 @@ Runtime `machine_locator` binds paper, source hash/version, page, normalized sec
 
 Evaluation reports source identity, page, machine anchor and semantic locator separately. Runtime `citation_id` is not treated as a stable cross-version gold identifier. Semantic accuracy is `null` when the system made no semantic-locator attempt.
 
+## Deterministic answer expectations
+
+New cases should define `answer_expectation` with one of `exact`, `normalized_text`, `numeric`, `numeric_with_unit`, `boolean`, `categorical`, `unordered_set`, `required_fact_slots`, or `refusal`. Numeric comparators preserve sign and magnitude; unit-aware comparison distinguishes percent from percentage points and reports value and unit independently. Required/forbidden terms and negation consistency are deterministic condition gates. A content match never bypasses citation binding when computing `final_answer_correct`.
+
+Legacy `expected_answer`/`answer_comparator` records remain readable. A case with only `gold_claim` maps to `normalized_text`; this compatibility behavior is less expressive and may reject otherwise reasonable paraphrases, so it should not be used for new validated cases.
+
 See [`annotation-guide.md`](annotation-guide.md) only if the optional expert-review workflow is needed.
