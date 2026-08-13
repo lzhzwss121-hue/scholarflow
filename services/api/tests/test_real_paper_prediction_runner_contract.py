@@ -329,6 +329,28 @@ class RealPaperPredictionRunnerContractTest(unittest.TestCase):
             )
         rag_service.assert_called_once()
 
+    def test_development_runner_includes_only_validated_cases(self) -> None:
+        validated = {**self.case_a, "development_status": "validated"}
+        generated = {**self.case_b, "development_status": "generated"}
+        cases_path, _, _ = self.write_inputs(
+            cases=[validated, generated],
+            suffix="development-filter",
+        )
+        payload = json.loads(cases_path.read_text(encoding="utf-8"))
+        payload.update(
+            {
+                "schema_version": "real_paper_dataset.v3",
+                "evaluation_tier": "development_benchmark",
+            }
+        )
+        cases_path.write_text(json.dumps(payload), encoding="utf-8")
+        runtime = load_runtime_cases(cases_path)
+        self.assertEqual([case.case_id for case in runtime.cases], ["case-a"])
+        self.assertNotIn(
+            "development_status",
+            runtime.cases[0].model_dump(),
+        )
+
     def test_cases_use_isolated_databases_and_preserve_project_binding(self) -> None:
         predictions = self.run_inputs(
             cases=[self.case_a, self.case_b],

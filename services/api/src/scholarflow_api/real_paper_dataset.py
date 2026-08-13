@@ -14,11 +14,31 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-REAL_PAPER_DATASET_SCHEMA_VERSION = "real_paper_dataset.v2"
+REAL_PAPER_DATASET_SCHEMA_VERSION = "real_paper_dataset.v3"
 MINIMUM_EXPERT_CASES = 50
+MINIMUM_DEVELOPMENT_CASES = 50
 MAXIMUM_TARGET_CASES = 100
 
-EvaluationTier = Literal["real_paper_unreviewed", "expert_labelled"]
+EvaluationTier = Literal[
+    "constructed_fixture",
+    "development_benchmark",
+    "expert_labelled",
+    "live_external_smoke",
+    "real_paper_unreviewed",  # legacy compatibility only
+]
+DevelopmentStatus = Literal[
+    "generated",
+    "validated",
+    "invalid",
+    "disabled",
+    "maintainer_verified",
+]
+AnswerComparator = Literal[
+    "exact_text",
+    "normalized_text",
+    "numeric_unit",
+    "refusal",
+]
 ReviewStatus = Literal[
     "draft",
     "independently_reviewed",
@@ -224,6 +244,11 @@ class RealPaperEvaluationCase(StrictModel):
     source_page_count: int = Field(ge=1)
     domain: str = Field(min_length=1, max_length=200)
     question: str = Field(min_length=1, max_length=3000)
+    development_status: DevelopmentStatus = "generated"
+    expected_answer: str = Field(default="", max_length=5000)
+    answer_comparator: AnswerComparator = "normalized_text"
+    refusal_probe_terms: list[str] = Field(default_factory=list, max_length=50)
+    validation_errors: list[str] = Field(default_factory=list, max_length=100)
     answerability: Answerability
     gold_claim: str = Field(max_length=5000)
     evidence_type: EvidenceType
@@ -252,12 +277,13 @@ class RealPaperEvaluationCase(StrictModel):
     disagreement_fields: list[str] = Field(default_factory=list)
     adjudicator_result: AdjudicatorResult | None = None
     adjudication_date: date | None = None
-    review_status: ReviewStatus
+    review_status: ReviewStatus = "draft"
     label_origin: Literal[
+        "generated",
         "human_draft",
         "human_annotation",
         "imported_bibliographic_fixture",
-    ]
+    ] = "generated"
     split: Split
     case_types: list[CaseType] = Field(min_length=1)
 
@@ -309,6 +335,8 @@ class RealPaperEvaluationCase(StrictModel):
             self.semantic_locator = self.evidence_locator
         elif _model_key(self.semantic_locator) != _model_key(self.evidence_locator):
             raise ValueError("semantic_locator must match evidence_locator")
+
+        self._validate_development_contract()
 
         _validate_answer_and_citations(
             answerability=self.answerability,
@@ -371,6 +399,47 @@ class RealPaperEvaluationCase(StrictModel):
             if self.adjudicator_result and self.adjudicator_result.adjudicator_id in reviewer_ids:
                 raise ValueError("adjudicator must be independent from annotator A and B")
         return self
+
+    def _validate_development_contract(self) -> None:
+        if self.development_status == "invalid" and not self.validation_errors:
+            raise ValueError("invalid development cases require validation_errors")
+        if self.development_status in {"validated", "maintainer_verified"}:
+            if self.validation_errors:
+                raise ValueError("validated development cases cannot retain validation_errors")
+            if self.answerable:
+                if not self.expected_answer.strip():
+                    raise ValueError("validated answerable cases require expected_answer")
+                if self.answer_comparator == "refusal":
+                    raise ValueError("answerable cases cannot use the refusal comparator")
+                if not self.evidence_excerpt.strip():
+                    raise ValueError("validated answerable cases require evidence_excerpt")
+                if self.evidence_excerpt_hash != evidence_excerpt_checksum(
+                    self.evidence_excerpt
+                ):
+                    raise ValueError(
+                        "validated answerable cases require a matching evidence_excerpt_hash"
+                    )
+                if not any(
+                    anchor.status == "verified"
+                    and (anchor.chunk_hash or anchor.evidence_excerpt_hash)
+                    for anchor in self.acceptable_source_anchors
+                ):
+                    raise ValueError(
+                        "validated answerable cases require a verified machine anchor"
+                    )
+            else:
+                if self.expected_answer.strip():
+                    raise ValueError("validated refusal cases require an empty expected_answer")
+                if self.answer_comparator != "refusal":
+                    raise ValueError("validated refusal cases require the refusal comparator")
+                if not self.refusal_probe_terms:
+                    raise ValueError(
+                        "validated refusal cases require deterministic refusal_probe_terms"
+                    )
+            if not expected_answer_matches_gold(self):
+                raise ValueError(
+                    "expected_answer does not match gold_claim under answer_comparator"
+                )
 
     def _validate_source_anchors(
         self,
@@ -469,7 +538,7 @@ class RealPaperEvaluationCase(StrictModel):
 
 
 class RealPaperDataset(StrictModel):
-    schema_version: Literal["real_paper_dataset.v2"]
+    schema_version: Literal["real_paper_dataset.v2", "real_paper_dataset.v3"]
     dataset_id: str = Field(min_length=1, max_length=300)
     evaluation_tier: EvaluationTier
     description: str = Field(min_length=1, max_length=3000)
@@ -523,12 +592,27 @@ def load_real_paper_dataset(
     allow_unreviewed: bool = False,
 ) -> RealPaperDataset:
     dataset = RealPaperDataset.model_validate_json(path.read_text(encoding="utf-8"))
-    if not allow_unreviewed and dataset.evaluation_tier != "expert_labelled":
+    if not allow_unreviewed and dataset.evaluation_tier not in {
+        "development_benchmark",
+        "expert_labelled",
+    }:
         raise ValueError(
-            "default real-paper evaluation accepts only expert_labelled datasets; "
-            "pass allow_unreviewed=True only for annotation/contract tooling"
+            "default real-paper evaluation accepts development_benchmark or "
+            "expert_labelled datasets; pass allow_unreviewed=True only for legacy tooling"
         )
     return dataset
+
+
+def evaluation_cases(dataset: RealPaperDataset) -> list[RealPaperEvaluationCase]:
+    if dataset.evaluation_tier == "development_benchmark":
+        return [
+            case
+            for case in dataset.cases
+            if case.development_status in {"validated", "maintainer_verified"}
+        ]
+    if dataset.evaluation_tier == "expert_labelled":
+        return list(dataset.cases)
+    return []
 
 
 def real_paper_dataset_json_schema() -> dict[str, Any]:
@@ -627,7 +711,7 @@ def promote_dataset_case(
     tier: EvaluationTier = (
         "expert_labelled"
         if cases and all(case.review_status == "expert_labelled" for case in cases)
-        else "real_paper_unreviewed"
+        else dataset.evaluation_tier
     )
     return RealPaperDataset.model_validate(
         {**dataset.model_dump(), "evaluation_tier": tier, "cases": cases}
@@ -636,8 +720,12 @@ def promote_dataset_case(
 
 def coverage_report(dataset: RealPaperDataset) -> dict[str, Any]:
     statuses = Counter(case.review_status for case in dataset.cases)
+    development_statuses = Counter(case.development_status for case in dataset.cases)
     answerability = Counter(case.answerability for case in dataset.cases)
     expert_count = statuses.get("expert_labelled", 0)
+    validated_count = development_statuses.get(
+        "validated", 0
+    ) + development_statuses.get("maintainer_verified", 0)
     count = len(dataset.cases)
     return {
         "dataset_id": dataset.dataset_id,
@@ -651,10 +739,14 @@ def coverage_report(dataset: RealPaperDataset) -> dict[str, Any]:
         if count
         else 0.0,
         "completed_expert_count": expert_count,
-        "minimum_target": MINIMUM_EXPERT_CASES,
+        "validated_count": validated_count,
+        "minimum_target": MINIMUM_DEVELOPMENT_CASES,
         "configured_target": dataset.target_case_count,
-        "gap_to_minimum": max(0, MINIMUM_EXPERT_CASES - expert_count),
-        "gap_to_configured_target": max(0, dataset.target_case_count - expert_count),
+        "gap_to_minimum": max(0, MINIMUM_DEVELOPMENT_CASES - validated_count),
+        "gap_to_configured_target": max(0, dataset.target_case_count - validated_count),
+        "expert_minimum_target": MINIMUM_EXPERT_CASES,
+        "expert_gap_to_minimum": max(0, MINIMUM_EXPERT_CASES - expert_count),
+        "by_development_status": dict(sorted(development_statuses.items())),
         "by_review_status": dict(sorted(statuses.items())),
         "by_domain": dict(sorted(Counter(case.domain for case in dataset.cases).items())),
         "by_split": dict(sorted(Counter(case.split for case in dataset.cases).items())),
@@ -696,8 +788,13 @@ def unresolved_disagreements(dataset: RealPaperDataset) -> list[dict[str, Any]]:
 def validate_dataset_for_evaluation(dataset: RealPaperDataset) -> list[str]:
     coverage = coverage_report(dataset)
     errors: list[str] = []
+    if dataset.evaluation_tier == "development_benchmark":
+        if coverage["validated_count"] == 0:
+            errors.append("development benchmark has no validated cases")
+        return errors
     if dataset.evaluation_tier != "expert_labelled":
-        errors.append("dataset tier is not expert_labelled")
+        errors.append("dataset tier is neither development_benchmark nor expert_labelled")
+        return errors
     if coverage["completed_expert_count"] < MINIMUM_EXPERT_CASES:
         errors.append(
             f"{coverage['completed_expert_count']}/{MINIMUM_EXPERT_CASES} cases are "
@@ -710,6 +807,55 @@ def validate_dataset_for_evaluation(dataset: RealPaperDataset) -> list[str]:
     if unresolved_disagreements(dataset):
         errors.append("dataset contains unresolved disagreements")
     return errors
+
+
+def expected_answer_matches_gold(case: RealPaperEvaluationCase) -> bool:
+    if case.answer_comparator == "refusal":
+        return not case.answerable and not case.expected_answer.strip() and not case.gold_claim.strip()
+    if not case.answerable:
+        return False
+    if case.answer_comparator == "exact_text":
+        return case.expected_answer.strip() == case.gold_claim.strip()
+    if case.answer_comparator == "normalized_text":
+        return _norm(case.expected_answer) == _norm(case.gold_claim)
+    expected_numbers = re.findall(r"[-+]?\d+(?:\.\d+)?", case.expected_answer)
+    gold_numbers = re.findall(r"[-+]?\d+(?:\.\d+)?", case.gold_claim)
+    expected_units = _answer_units(case.expected_answer)
+    gold_units = _answer_units(case.gold_claim)
+    return bool(expected_numbers) and expected_numbers == gold_numbers and expected_units == gold_units
+
+
+def answer_matches_expected(
+    case: RealPaperEvaluationCase,
+    actual_answer: str,
+) -> bool:
+    """Apply the declared deterministic development-answer comparator."""
+
+    if case.answer_comparator == "refusal":
+        return not case.answerable and not actual_answer.strip()
+    if not case.answerable:
+        return False
+    if case.answer_comparator == "exact_text":
+        return actual_answer.strip() == case.expected_answer.strip()
+    if case.answer_comparator == "normalized_text":
+        return _norm(actual_answer) == _norm(case.expected_answer)
+    actual_numbers = re.findall(r"[-+]?\d+(?:\.\d+)?", actual_answer)
+    expected_numbers = re.findall(r"[-+]?\d+(?:\.\d+)?", case.expected_answer)
+    return (
+        bool(actual_numbers)
+        and actual_numbers == expected_numbers
+        and _answer_units(actual_answer) == _answer_units(case.expected_answer)
+    )
+
+
+def _answer_units(value: str) -> tuple[str, ...]:
+    normalized = _norm(value).replace("percentage points", "percentage_points")
+    return tuple(
+        re.findall(
+            r"%(?!\w)|(?<!\w)(?:percent|percentage_points|bleu|accuracy|f1|rouge|seconds?|ms|gb|mb)(?!\w)",
+            normalized,
+        )
+    )
 
 
 def _validate_answer_and_citations(
@@ -785,7 +931,274 @@ def evidence_excerpt_checksum(value: str) -> str:
     )
 
 
-def _write_dataset(dataset: RealPaperDataset, output: Path) -> None:
+def validate_development_sources(
+    dataset: RealPaperDataset,
+    resources_path: Path | None,
+) -> tuple[RealPaperDataset, dict[str, Any]]:
+    """Validate development labels against fixed local PDFs.
+
+    This is deliberately offline and deterministic.  It can promote generated
+    cases to validated, but it never changes expert-review fields.
+    """
+
+    if dataset.evaluation_tier != "development_benchmark":
+        return dataset, {
+            "status": "not_applicable",
+            "validated_count": 0,
+            "case_results": [],
+        }
+    if resources_path is None or not resources_path.is_file():
+        return dataset, {
+            "status": "blocked_missing_resources",
+            "validated_count": len(evaluation_cases(dataset)),
+            "case_results": [
+                {
+                    "case_id": case.case_id,
+                    "status": case.development_status,
+                    "errors": ["fixed local resource manifest is missing"],
+                }
+                for case in dataset.cases
+                if case.development_status != "disabled"
+            ],
+        }
+
+    manifest, resources = _load_validation_resource_manifest(resources_path)
+    cache_root = str(manifest.get("cache_root") or "")
+    updated_cases: list[RealPaperEvaluationCase] = []
+    case_results: list[dict[str, Any]] = []
+    for case in dataset.cases:
+        if case.development_status == "disabled":
+            updated_cases.append(case)
+            case_results.append(
+                {"case_id": case.case_id, "status": "disabled", "errors": []}
+            )
+            continue
+        errors: list[str] = []
+        resource = resources.get(case.paper_id)
+        resource_file_present = False
+        page_text = ""
+        document_text = ""
+        if resource is None:
+            errors.append("fixed local PDF resource is missing")
+        else:
+            errors.extend(_resource_identity_errors(case, resource))
+            pdf_path = _resolve_validation_resource_path(
+                resource,
+                resources_path,
+                cache_root,
+            )
+            if not pdf_path.is_file():
+                errors.append("fixed local PDF file is missing")
+            else:
+                resource_file_present = True
+                payload = pdf_path.read_bytes()
+                actual_hash = hashlib.sha256(payload).hexdigest()
+                if actual_hash != case.source_hash:
+                    errors.append("source_hash does not match fixed local PDF")
+                try:
+                    from pypdf import PdfReader
+
+                    reader = PdfReader(pdf_path, strict=False)
+                    extracted_pages = [page.extract_text() or "" for page in reader.pages]
+                    document_text = "\n".join(extracted_pages)
+                    if len(reader.pages) != case.source_page_count:
+                        errors.append("source_page_count does not match fixed local PDF")
+                    elif case.page is None or case.page > len(reader.pages):
+                        errors.append("evidence page does not exist in fixed local PDF")
+                    else:
+                        page_text = extracted_pages[case.page - 1]
+                except Exception as error:
+                    errors.append(f"fixed local PDF cannot be parsed: {type(error).__name__}")
+
+        errors.extend(_development_label_errors(case, page_text, document_text))
+        if errors:
+            next_status: DevelopmentStatus = (
+                "invalid" if resource_file_present else "generated"
+            )
+            payload = {
+                **case.model_dump(mode="json"),
+                "development_status": next_status,
+                "validation_errors": list(dict.fromkeys(errors)),
+            }
+        else:
+            excerpt_hash = evidence_excerpt_checksum(case.evidence_excerpt)
+            anchors = [anchor.model_dump(mode="json") for anchor in case.acceptable_source_anchors]
+            if case.answerable:
+                matching = next(
+                    (
+                        anchor
+                        for anchor in anchors
+                        if anchor["paper_id"] == case.paper_id
+                        and anchor["paper_version"] == case.paper_version
+                        and anchor["source_hash"] == case.source_hash
+                        and anchor["page"] == case.page
+                    ),
+                    None,
+                )
+                if matching is None:
+                    matching = {
+                        "paper_id": case.paper_id,
+                        "paper_version": case.paper_version,
+                        "source_hash": case.source_hash,
+                        "page": case.page,
+                        "normalized_section": case.normalized_section,
+                        "chunk_hash": "",
+                        "evidence_excerpt_hash": excerpt_hash,
+                        "status": "verified",
+                    }
+                    anchors.append(matching)
+                else:
+                    matching["evidence_excerpt_hash"] = excerpt_hash
+                    matching["status"] = "verified"
+            payload = {
+                **case.model_dump(mode="json"),
+                "development_status": (
+                    "maintainer_verified"
+                    if case.development_status == "maintainer_verified"
+                    else "validated"
+                ),
+                "evidence_excerpt_hash": excerpt_hash,
+                "acceptable_source_anchors": anchors,
+                "validation_errors": [],
+            }
+        updated = RealPaperEvaluationCase.model_validate(payload)
+        updated_cases.append(updated)
+        case_results.append(
+            {
+                "case_id": case.case_id,
+                "status": updated.development_status,
+                "errors": updated.validation_errors,
+            }
+        )
+
+    updated_dataset = RealPaperDataset.model_validate(
+        {
+            **dataset.model_dump(mode="json"),
+            "schema_version": REAL_PAPER_DATASET_SCHEMA_VERSION,
+            "cases": [case.model_dump(mode="json") for case in updated_cases],
+        }
+    )
+    validated_count = len(evaluation_cases(updated_dataset))
+    resource_blocked = validated_count == 0 and any(
+        any(
+            marker in error
+            for marker in (
+                "fixed local PDF resource is missing",
+                "fixed local PDF file is missing",
+            )
+        )
+        for result in case_results
+        for error in result["errors"]
+    )
+    return updated_dataset, {
+        "status": (
+            "complete"
+            if validated_count
+            else "blocked_missing_resources"
+            if resource_blocked
+            else "no_validated_cases"
+        ),
+        "validated_count": validated_count,
+        "target_case_count": updated_dataset.target_case_count,
+        "case_results": case_results,
+    }
+
+
+def _load_validation_resource_manifest(
+    resources_path: Path,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    manifest = json.loads(resources_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict):
+        raise ValueError("real-paper resource manifest must be an object")
+    if manifest.get("schema_version") != "real_paper_resources.v1":
+        raise ValueError("unsupported real-paper resource manifest schema_version")
+    rows = manifest.get("resources")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("real-paper resource manifest requires resources")
+    resources: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("each real-paper resource must be an object")
+        paper_id = str(row.get("paper_id") or "").strip()
+        if not paper_id:
+            raise ValueError("real-paper resource requires paper_id")
+        if paper_id in resources:
+            raise ValueError(f"duplicate real-paper resource paper_id: {paper_id}")
+        if not any(
+            str(row.get(field) or "").strip()
+            for field in ("doi", "arxiv_id", "openalex_id")
+        ):
+            raise ValueError(
+                f"real-paper resource requires DOI, arXiv ID, or OpenAlex ID: {paper_id}"
+            )
+        resources[paper_id] = row
+    return manifest, resources
+
+
+def _resource_identity_errors(
+    case: RealPaperEvaluationCase,
+    resource: dict[str, Any],
+) -> list[str]:
+    expected = {
+        "paper_id": case.paper_id,
+        "title": case.title,
+        "version": case.paper_version,
+        "source_url": case.source_url,
+        "sha256": case.source_hash,
+        "page_count": case.source_page_count,
+    }
+    return [
+        f"resource {field} does not match case"
+        for field, value in expected.items()
+        if str(resource.get(field) or "").strip() != str(value).strip()
+    ]
+
+
+def _resolve_validation_resource_path(
+    resource: dict[str, Any],
+    manifest_path: Path,
+    cache_root: str,
+) -> Path:
+    local_path = str(resource.get("local_path") or "").strip()
+    if local_path:
+        candidate = Path(local_path).expanduser()
+        return candidate.resolve() if candidate.is_absolute() else (manifest_path.parent / candidate).resolve()
+    identifier = str(resource.get("cache_identifier") or "").strip()
+    root = Path(cache_root).expanduser()
+    resolved_root = root.resolve() if root.is_absolute() else (manifest_path.parent / root).resolve()
+    candidate = (resolved_root / identifier).resolve()
+    if candidate != resolved_root and resolved_root not in candidate.parents:
+        return Path("/__invalid_resource_escape__")
+    return candidate
+
+
+def _development_label_errors(
+    case: RealPaperEvaluationCase,
+    page_text: str,
+    document_text: str,
+) -> list[str]:
+    errors: list[str] = []
+    if not expected_answer_matches_gold(case):
+        errors.append("expected_answer does not match gold_claim under answer_comparator")
+    normalized_page = _norm(page_text)
+    if case.answerable:
+        if not case.evidence_excerpt.strip():
+            errors.append("answerable case has no evidence_excerpt")
+        elif _norm(case.evidence_excerpt) not in normalized_page:
+            errors.append("evidence_excerpt is absent from the declared PDF page")
+    else:
+        if case.direct_support_found or case.acceptable_citations or case.acceptable_source_anchors:
+            errors.append("refusal case contains annotated direct support evidence")
+        if not case.refusal_probe_terms:
+            errors.append("refusal case has no deterministic refusal_probe_terms")
+        normalized_document = _norm(document_text)
+        for term in case.refusal_probe_terms:
+            if _norm(term) and _norm(term) in normalized_document:
+                errors.append(f"refusal probe found direct support text: {term}")
+    return errors
+
+
+def write_real_paper_dataset(dataset: RealPaperDataset, output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
         json.dumps(
@@ -811,6 +1224,9 @@ def main(argv: list[str] | None = None) -> None:
     for name in ("validate", "coverage", "disagreements", "split-check"):
         command = subparsers.add_parser(name)
         command.add_argument("--cases", type=Path, required=True)
+        if name == "validate":
+            command.add_argument("--resources", type=Path)
+            command.add_argument("--output", type=Path)
     promote = subparsers.add_parser("promote")
     promote.add_argument("--cases", type=Path, required=True)
     promote.add_argument("--case-id", required=True)
@@ -820,14 +1236,25 @@ def main(argv: list[str] | None = None) -> None:
     try:
         dataset = load_real_paper_dataset(args.cases, allow_unreviewed=True)
         if args.command == "validate":
-            coverage = coverage_report(dataset)
-            readiness_errors = validate_dataset_for_evaluation(dataset)
+            validated_dataset, source_validation = validate_development_sources(
+                dataset,
+                args.resources,
+            )
+            coverage = coverage_report(validated_dataset)
+            readiness_errors = validate_dataset_for_evaluation(validated_dataset)
+            if args.output:
+                output = args.output.resolve()
+                if Path("/private/tmp") not in output.parents:
+                    raise ValueError("development validation output must be under /private/tmp")
+                write_real_paper_dataset(validated_dataset, output)
             _print_json(
                 {
                     "structurally_valid": True,
                     "evaluation_ready": not readiness_errors,
                     "coverage": coverage,
+                    "source_validation": source_validation,
                     "evaluation_readiness_errors": readiness_errors,
+                    "output": str(args.output.resolve()) if args.output else "",
                 }
             )
         elif args.command == "coverage":
@@ -848,7 +1275,7 @@ def main(argv: list[str] | None = None) -> None:
             if output == args.cases.resolve():
                 raise ValueError("promote requires a separate --output audit artifact")
             promoted = promote_dataset_case(dataset, args.case_id)
-            _write_dataset(promoted, output)
+            write_real_paper_dataset(promoted, output)
             promoted_case = next(
                 case for case in promoted.cases if case.case_id == args.case_id
             )

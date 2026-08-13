@@ -16,6 +16,8 @@ from scholarflow_api.real_paper_dataset import (
     RealPaperDataset,
     RealPaperEvaluationCase,
     StrictModel,
+    answer_matches_expected,
+    evaluation_cases,
     load_real_paper_dataset as load_audited_real_paper_dataset,
     real_paper_dataset_json_schema,
     validate_dataset_for_evaluation,
@@ -173,10 +175,10 @@ def evaluate_real_paper_predictions(
     recall_k: int = 5,
     allow_unreviewed: bool = False,
 ) -> dict[str, Any]:
-    if dataset.evaluation_tier != "expert_labelled" and not allow_unreviewed:
+    if dataset.evaluation_tier not in {"development_benchmark", "expert_labelled"} and not allow_unreviewed:
         raise ValueError(
-            "default evaluator accepts only expert_labelled datasets; "
-            "unreviewed evaluation requires an explicit contract-only opt-in"
+            "default evaluator accepts development_benchmark or expert_labelled datasets; "
+            "legacy unreviewed evaluation requires an explicit contract-only opt-in"
         )
     if dataset.evaluation_tier == "expert_labelled":
         readiness_errors = validate_dataset_for_evaluation(dataset)
@@ -187,8 +189,16 @@ def evaluate_real_paper_predictions(
             )
     if recall_k < 1:
         raise ValueError("recall_k must be at least 1")
+    selected_cases = (
+        evaluation_cases(dataset)
+        if dataset.evaluation_tier in {"development_benchmark", "expert_labelled"}
+        else list(dataset.cases)
+    )
+    if dataset.evaluation_tier == "development_benchmark" and not selected_cases:
+        raise ValueError("development benchmark has no validated cases")
     prediction_map = {item.case_id: item for item in predictions.cases}
-    unknown_prediction_ids = sorted(set(prediction_map) - {case.case_id for case in dataset.cases})
+    known_case_ids = {case.case_id for case in dataset.cases}
+    unknown_prediction_ids = sorted(set(prediction_map) - known_case_ids)
     if unknown_prediction_ids:
         raise ValueError(
             "predictions contain unknown case_id values: "
@@ -197,28 +207,28 @@ def evaluate_real_paper_predictions(
 
     trusted_system_run = predictions.prediction_source == "offline_system_run"
     aggregate = _evaluate_cases(
-        dataset.cases,
+        selected_cases,
         prediction_map,
         recall_k=recall_k,
         trusted_system_run=trusted_system_run,
     )
     groups = {
         "by_domain": _grouped_metrics(
-            dataset.cases,
+            selected_cases,
             prediction_map,
             key=lambda case: case.domain,
             recall_k=recall_k,
             trusted_system_run=trusted_system_run,
         ),
         "by_paper": _grouped_metrics(
-            dataset.cases,
+            selected_cases,
             prediction_map,
             key=lambda case: case.paper_id,
             recall_k=recall_k,
             trusted_system_run=trusted_system_run,
         ),
         "by_evidence_level": _grouped_metrics(
-            dataset.cases,
+            selected_cases,
             prediction_map,
             key=lambda case: case.evidence_level,
             recall_k=recall_k,
@@ -230,9 +240,13 @@ def evaluate_real_paper_predictions(
         "这些指标来自已经人工裁决的 expert_labelled 数据，但仍只衡量给定问题与定位证据上的系统表现，"
         "不自动证明论文结论或科研事实真实。"
         if is_expert
-        else
-        "这些指标来自 real_paper_unreviewed 数据，只用于验证评测代码和组织人工审核；"
-        "未经专家裁决，不代表真实科研准确率，也不得与 expert_labelled 指标合并。"
+        else (
+            "这些指标来自经过固定来源、版本、页码、证据片段和机器锚点确定性校验的开发案例；"
+            "用于衡量系统回归表现，不代表真实科研准确率。"
+            if dataset.evaluation_tier == "development_benchmark"
+            else
+            "这些指标来自 legacy unreviewed 数据，只用于兼容性测试；不代表真实科研准确率。"
+        )
     )
     return {
         "report_schema_version": EVALUATION_REPORT_VERSION,
@@ -241,11 +255,19 @@ def evaluate_real_paper_predictions(
         "prediction_source": predictions.prediction_source,
         "system_version": predictions.system_version,
         "evaluation_tier": dataset.evaluation_tier,
-        "review_status": "adjudicated" if is_expert else "unreviewed",
-        "human_review_required": not is_expert,
+        "review_status": (
+            "adjudicated"
+            if is_expert
+            else "development_validated"
+            if dataset.evaluation_tier == "development_benchmark"
+            else "unreviewed"
+        ),
+        "human_review_required": dataset.evaluation_tier == "real_paper_unreviewed",
+        "expert_review_available": is_expert,
         "interpretation": interpretation,
         "recall_k": recall_k,
-        "case_count": len(dataset.cases),
+        "case_count": len(selected_cases),
+        "excluded_case_count": len(dataset.cases) - len(selected_cases),
         "metrics": aggregate["metrics"],
         "counts": aggregate["counts"],
         "groups": groups,
@@ -386,8 +408,13 @@ def _evaluate_cases(
                 for citation in claim_citations
             )
             claim_matches_gold = (
-                case.answerable
-                and _normalize_text(claim.statement) == _normalize_text(case.gold_claim)
+                answer_matches_expected(case, claim.statement)
+                if case.development_status in {"validated", "maintainer_verified"}
+                else (
+                    case.answerable
+                    and _normalize_text(claim.statement)
+                    == _normalize_text(case.gold_claim)
+                )
             )
             support_method_ok = claim.method in _TRUSTED_SUPPORT_METHODS
             claim_correct = (
@@ -742,12 +769,14 @@ def render_real_paper_markdown(report: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "## 人工审核",
+            "## Evaluation boundary",
             "",
             (
-                "该数据已经按 schema 标记为 adjudicated，但指标仍不等于论文结论真实。"
+                "可选专家数据已通过项目定义的人工审核流程，但指标仍不等于论文结论真实。"
                 if report.get("evaluation_tier") == "expert_labelled"
-                else "所有 case 仍是 unreviewed；需要领域专家逐条核对 claim、页码、章节、表格/图和拒答标签。"
+                else "开发案例通过固定来源的确定性校验；指标只用于开发回归，不代表真实科研准确率。"
+                if report.get("evaluation_tier") == "development_benchmark"
+                else "Legacy 数据只用于兼容性检查，尚未通过开发来源校验。"
             ),
             "",
             "## Case diagnostics",

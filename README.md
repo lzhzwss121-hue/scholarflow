@@ -182,29 +182,32 @@ ScholarFlow 提供两条互不覆盖的查询通道：
 离线报告将以下证据层级完全分栏：
 
 - `constructed_fixture`：固定构造回归数据。
-- `real_paper_unreviewed`：真实论文和可人工定位页码/章节/段落/表格/图，但尚未经过双人独立审核与裁决；默认 evaluator 不加载。
-- `expert_labelled`：只接受两名不同人工审核者独立完成、分歧由独立裁决者解决且通过状态机晋级的数据；模型生成答案不能成为 gold label。
+- `development_benchmark`：可自动生成候选，但只有固定来源、版本、SHA-256、页码、短证据片段、比较器和拒答条件通过确定性校验的 `validated` 案例才进入开发指标。它不要求专家字段，也不代表真实科研准确率。
+- `expert_labelled_optional`：可选的双人审核与裁决扩展；为空或未配置时显示 `not_configured`，不阻塞默认开发评测。
 - `live_external_smoke`：只检查当前 arXiv 等外部连接，必须独立运行和报告。
 
-真实论文 schema、未审核样例、固定资源 manifest 和标注规则见 [`evals/real_papers/`](evals/real_papers/README.md)。当前正式专家数据为 **0/50**，4 条已有记录仍是 draft，不能解释为专家准确率。默认 real-paper 运行完全离线：每个 case 都必须提供版本、稳定 ID、本地 PDF、SHA-256 和页数；缺失或不匹配会记录为 `blocked`，不会改用摘要、网络结果或 schema fixture。
+真实论文 schema、开发案例、固定资源 manifest 和可选高级审核规则见 [`evals/real_papers/`](evals/real_papers/README.md)。当前开发数据为 **validated 0/50**：4 条候选仍是 `generated`，因为仓库不提交 PDF，尚未用本地固定资源验证。默认 real-paper 运行完全离线；缺失资源时报告 `blocked_missing_resources`，不会改用摘要、网络结果或 schema fixture。
 
-标注阶段可以让固定 PDF 经过 ScholarFlow 的 PDF parser、全文资格判定、chunk/FTS ingestion、retrieval 和 RAG answer service，生成真实系统 prediction。该输出用于检查系统链路，不会把 draft 提升为 expert gold：
+先用本地 manifest 确定性校验候选。输出必须写入 `/private/tmp`，不会覆盖仓库数据：
 
 ```bash
-PYTHONPATH=services/api/src .venv/bin/python \
-  -m scholarflow_api.real_paper_prediction_runner \
-  --cases evals/real_papers/cases.unreviewed.json \
+npm run eval:rag:dataset -- validate \
+  --cases evals/real_papers/cases.development.json \
   --resources evals/real_papers/resources.local.json \
-  --output /private/tmp/scholarflow-real-predictions.json
+  --output /private/tmp/scholarflow-cases.validated.json
 ```
 
-正式 evaluator 默认只加载 `cases.expert.json`。当前运行会保留构造回归结果，并明确报告专家数据 `0/50`、状态 blocked：
+也可以由默认评测命令串联“确定性校验 → PDF ingestion → RAG prediction → evaluator”。它分别输出构造、开发、可选专家与 live 状态：
 
 ```bash
-SCHOLARFLOW_DB_PATH=/private/tmp/scholarflow-rag-eval.sqlite3 npm run eval:rag
+SCHOLARFLOW_DB_PATH=/private/tmp/scholarflow-rag-eval.sqlite3 \
+  npm run eval:rag -- \
+  --real-dataset evals/real_papers/cases.development.json \
+  --real-resources evals/real_papers/resources.local.json \
+  --report-dir /private/tmp/scholarflow-rag-eval-report
 ```
 
-标准 real-paper 报告默认读取 `cases.expert.json`，并且只接受 `prediction_source="offline_system_run"`；expert 数据不足 50 条、少于 15 篇论文或少于 5 个领域时会明确 blocked。若要在标注阶段运行 draft prediction，必须显式传入 `cases.unreviewed.json`，但结果不会被默认 evaluator 计为 expert 指标。`predictions.schema-fixture.json` 有意保留一个错误的 BERT 表格主张，只用于 evaluator 单元合同；它不是系统真实表现、不能作为标准报告输入，也不是专家 gold。
+若显式提供 prediction，开发 evaluator 只接受 `prediction_source="offline_system_run"`，并只评分 `validated`/`maintainer_verified` 案例；`generated`、`invalid`、`disabled` 均排除。`cases.unreviewed.json` 仅保留旧入口兼容，默认命令不再使用它。`predictions.schema-fixture.json` 只用于 evaluator 单元合同，不是系统表现、开发 gold 或专家 gold。
 
 Live external smoke 使用独立命令：
 

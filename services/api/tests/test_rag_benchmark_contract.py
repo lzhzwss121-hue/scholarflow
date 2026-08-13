@@ -29,7 +29,7 @@ class RagBenchmarkContractTest(unittest.TestCase):
         }
         report = build_evaluation_report(
             constructed,
-            real_dataset_path=Path("evals/real_papers/cases.unreviewed.json"),
+            real_dataset_path=Path("evals/real_papers/cases.development.json"),
             real_predictions_path=None,
         )
 
@@ -37,21 +37,27 @@ class RagBenchmarkContractTest(unittest.TestCase):
             set(report["sections"]),
             {
                 "constructed_fixture",
-                "real_paper_unreviewed",
-                "expert_labelled",
+                "development_benchmark",
+                "expert_labelled_optional",
                 "live_external_smoke",
             },
         )
         self.assertEqual(report["sections"]["constructed_fixture"]["status"], "complete")
-        self.assertEqual(report["sections"]["real_paper_unreviewed"]["status"], "blocked")
-        self.assertEqual(report["sections"]["expert_labelled"]["status"], "blocked")
+        self.assertEqual(
+            report["sections"]["development_benchmark"]["status"],
+            "blocked_missing_resources",
+        )
+        self.assertEqual(
+            report["sections"]["expert_labelled_optional"]["status"],
+            "not_configured",
+        )
         self.assertEqual(report["sections"]["live_external_smoke"]["status"], "not_run")
         self.assertFalse(report["sections"]["live_external_smoke"]["fixture_fallback_used"])
         self.assertIn("不得描述为真实论文", CONSTRUCTED_FIXTURE_DISCLAIMER)
         markdown = render_evaluation_markdown(report)
         self.assertIn("constructed_fixture", markdown)
-        self.assertIn("real_paper_unreviewed", markdown)
-        self.assertIn("expert_labelled", markdown)
+        self.assertIn("development_benchmark", markdown)
+        self.assertIn("expert_labelled_optional", markdown)
         self.assertIn("live_external_smoke", markdown)
         self.assertIn("不代表真实科研准确率", markdown)
 
@@ -76,6 +82,16 @@ class RagBenchmarkContractTest(unittest.TestCase):
             )
         )
 
+    def test_legacy_unreviewed_dataset_has_explicit_compatibility_status(self) -> None:
+        report = build_evaluation_report(
+            {"benchmark_version": "test", "case_count": 135, "metrics": {}},
+            real_dataset_path=Path("evals/real_papers/cases.unreviewed.json"),
+            real_predictions_path=None,
+        )
+        development = report["sections"]["development_benchmark"]
+        self.assertEqual(development["status"], "legacy_compatibility")
+        self.assertIn("cases.development.json", development["reason"])
+
     def test_standard_report_rejects_schema_fixture_predictions(self) -> None:
         with tempfile.TemporaryDirectory(dir="/private/tmp") as tmpdir:
             predictions_path = Path(tmpdir) / "fixture-predictions.json"
@@ -91,26 +107,79 @@ class RagBenchmarkContractTest(unittest.TestCase):
             )
             report = build_evaluation_report(
                 {"benchmark_version": "test", "case_count": 0, "metrics": {}},
-                real_dataset_path=Path("evals/real_papers/cases.unreviewed.json"),
+                real_dataset_path=Path("evals/real_papers/cases.development.json"),
                 real_predictions_path=predictions_path,
+                real_resources_available=True,
             )
-        real_section = report["sections"]["real_paper_unreviewed"]
-        self.assertEqual(real_section["status"], "blocked")
+        real_section = report["sections"]["development_benchmark"]
+        self.assertEqual(real_section["status"], "blocked_invalid_predictions")
         self.assertEqual(real_section["prediction_source"], "offline_test_fixture")
-        self.assertIn("非 offline_system_run", real_section["reason"])
+        self.assertIn("offline_system_run", real_section["reason"])
 
-    def test_empty_expert_dataset_reports_zero_of_fifty_without_fixture_fallback(self) -> None:
+    def test_empty_expert_dataset_is_optional_and_does_not_block_constructed_results(self) -> None:
         report = build_evaluation_report(
             {"benchmark_version": "test", "case_count": 0, "metrics": {}},
-            real_dataset_path=Path("evals/real_papers/cases.expert.json"),
+            real_dataset_path=Path("evals/real_papers/cases.development.json"),
             real_predictions_path=None,
+            expert_dataset_path=Path("evals/real_papers/cases.expert.json"),
         )
-        expert = report["sections"]["expert_labelled"]
-        self.assertEqual(expert["status"], "blocked")
-        self.assertEqual(expert["completed_expert_count"], 0)
-        self.assertEqual(expert["minimum_target"], 50)
-        self.assertEqual(expert["gap_to_minimum"], 50)
-        self.assertIn("0/50", expert["reason"])
+        expert = report["sections"]["expert_labelled_optional"]
+        self.assertEqual(expert["status"], "not_configured")
+        self.assertEqual(report["sections"]["constructed_fixture"]["status"], "complete")
+        self.assertNotIn("0/50", expert["reason"])
+
+    def test_validated_development_predictions_produce_complete_metrics(self) -> None:
+        from services.api.tests.test_real_paper_evaluation_contract import (
+            correct_predictions,
+            dataset_fixture,
+        )
+
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmpdir:
+            root = Path(tmpdir)
+            dataset_path = root / "development.json"
+            prediction_path = root / "predictions.json"
+            dataset_path.write_text(
+                json.dumps(dataset_fixture(tier="development_benchmark")),
+                encoding="utf-8",
+            )
+            predictions = correct_predictions()
+            predictions["prediction_source"] = "offline_system_run"
+            for prediction in predictions["cases"]:
+                prediction["source_identity"] = {
+                    "paper_id": "paper-a",
+                    "doi": "10.0000/test",
+                    "arxiv_id": "",
+                    "openalex_id": "",
+                    "version": "v2",
+                    "source_url": "https://example.org/paper-a/v2",
+                    "sha256": "a" * 64,
+                    "page_count": 8,
+                    "resource_identifier": "fixture/paper-a/v2",
+                }
+                prediction["runtime_metadata"] = {
+                    "runner_version": "test-runner",
+                    "rag_service": "rag_service.create_project_rag_answer",
+                    "database_isolation_id": prediction["case_id"],
+                    "ingestion_status": "complete",
+                    "retrieval_status": "complete",
+                    "answer_status": "complete",
+                    "external_data_transfer": False,
+                }
+            prediction_path.write_text(json.dumps(predictions), encoding="utf-8")
+            report = build_evaluation_report(
+                {"benchmark_version": "test", "case_count": 135, "metrics": {}},
+                real_dataset_path=dataset_path,
+                real_predictions_path=prediction_path,
+                real_resources_available=True,
+            )
+        development = report["sections"]["development_benchmark"]
+        self.assertEqual(development["status"], "complete")
+        self.assertEqual(development["case_count"], 2)
+        self.assertEqual(development["metrics"]["citation_precision"], 1.0)
+        self.assertIn("不代表真实科研准确率", development["interpretation"])
+        wording = development["interpretation"].casefold()
+        for forbidden in ("expert accuracy", "human accuracy", "adjudicated accuracy"):
+            self.assertNotIn(forbidden, wording)
 
     def test_fixed_offline_benchmark_has_required_scope_and_traps(self) -> None:
         cases = benchmark_cases()

@@ -1,8 +1,10 @@
-# ScholarFlow real-paper 双人标注与裁决指南
+# ScholarFlow real-paper 可选高级审核指南
+
+本指南只适用于可选的 `expert_labelled` 扩展，不是默认 `development_benchmark` 的运行前提。开发案例使用 `generated -> validated/invalid/disabled` 状态，并通过固定本地 PDF 的确定性检查；它不要求两名专家、第三方裁决、专家身份记录或一致性指标。
 
 ## 1. 不可越过的边界
 
-正式 gold 只能来自人工阅读固定论文版本后的独立判断。生成模型可以帮助整理候选问题，但不得生成或决定 `gold_claim`、`answerability`、citation、页码、版本冲突结论或裁决结果。任何 AI 辅助草稿必须保持 `review_status=draft`，且不能写入审核者或裁决者身份。
+当项目选择发布可选专家 gold 时，正式 expert gold 只能来自人工阅读固定论文版本后的独立判断。生成模型可以帮助整理候选问题，但不得生成或决定专家 `gold_claim`、`answerability`、citation、页码、版本冲突结论或裁决结果。任何 AI 辅助草稿必须保持 `review_status=draft`，且不能写入审核者或裁决者身份。此限制不妨碍生成 `development_status=generated` 的开发候选；候选仍须通过确定性校验才能成为 `validated`。
 
 仓库不保存完整 PDF 或大段正文。每条案例只保存稳定论文标识、固定版本 URL、PDF SHA-256、总页数、最多 500 字符的短证据片段和可人工定位的页码/章节/表格/图片/公式位置。本地 PDF 映射只写入被忽略的 `resources.local.json`。
 
@@ -115,4 +117,4 @@ PYTHONPATH=services/api/src .venv/bin/python \
   --cases evals/real_papers/cases.expert.json
 ```
 
-只有 expert 数量至少 50、论文至少 15、领域至少 5、无未裁决分歧且全部案例为 `expert_labelled` 时，默认 evaluator 才接受该数据集。
+只有 expert 数量至少 50、论文至少 15、领域至少 5、无未裁决分歧且全部案例为 `expert_labelled` 时，可选专家 evaluator 才接受该数据集。该门槛不影响默认 development benchmark、135-case constructed fixture 或 live smoke 的独立状态。

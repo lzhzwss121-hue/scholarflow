@@ -14,6 +14,7 @@ from scholarflow_api.real_paper_evaluation import (
     render_real_paper_markdown,
     write_real_paper_report,
 )
+from scholarflow_api.real_paper_dataset import evidence_excerpt_checksum
 
 
 def dataset_fixture(*, tier: str = "real_paper_unreviewed") -> dict[str, object]:
@@ -147,6 +148,30 @@ def dataset_fixture(*, tier: str = "real_paper_unreviewed") -> dict[str, object]
             "case_types": ["refusal", "no_reliable_hit"],
         },
     ]
+    if tier == "development_benchmark":
+        answerable = cases[0]
+        answerable.update(
+            {
+                "development_status": "validated",
+                "expected_answer": answerable["gold_claim"],
+                "answer_comparator": "normalized_text",
+                "refusal_probe_terms": [],
+                "validation_errors": [],
+                "evidence_excerpt_hash": evidence_excerpt_checksum(
+                    str(answerable["evidence_excerpt"])
+                ),
+            }
+        )
+        refusal = cases[1]
+        refusal.update(
+            {
+                "development_status": "validated",
+                "expected_answer": "",
+                "answer_comparator": "refusal",
+                "refusal_probe_terms": ["Dataset Z result"],
+                "validation_errors": [],
+            }
+        )
     if tier == "expert_labelled":
         for case in cases:
             answerability = case["answerability"]
@@ -261,7 +286,7 @@ class RealPaperEvaluationContractTest(unittest.TestCase):
         dataset = RealPaperDataset.model_validate(dataset_fixture())
         predictions = RealPaperPredictionSet.model_validate(correct_predictions())
 
-        with self.assertRaisesRegex(ValueError, "only expert_labelled"):
+        with self.assertRaisesRegex(ValueError, "development_benchmark or expert_labelled"):
             evaluate_real_paper_predictions(dataset, predictions, recall_k=5)
         report = evaluate_real_paper_predictions(
             dataset,
@@ -294,6 +319,46 @@ class RealPaperEvaluationContractTest(unittest.TestCase):
         self.assertIn("multimodal-evaluation", report["groups"]["by_domain"])
         self.assertIn("paper-a", report["groups"]["by_paper"])
         self.assertIn("full_text", report["groups"]["by_evidence_level"])
+
+    def test_validated_development_benchmark_runs_without_expert_review_fields(self) -> None:
+        payload = dataset_fixture(tier="development_benchmark")
+        for case in payload["cases"]:
+            for field in (
+                "annotator_a_result",
+                "annotator_b_result",
+                "disagreement_fields",
+                "adjudicator_result",
+                "adjudication_date",
+                "review_status",
+                "label_origin",
+            ):
+                case.pop(field)
+        report = evaluate_real_paper_predictions(
+            RealPaperDataset.model_validate(payload),
+            RealPaperPredictionSet.model_validate(correct_predictions()),
+        )
+        self.assertEqual(report["evaluation_tier"], "development_benchmark")
+        self.assertEqual(report["review_status"], "development_validated")
+        self.assertFalse(report["human_review_required"])
+        self.assertEqual(report["case_count"], 2)
+        self.assertEqual(report["metrics"]["citation_precision"], 1.0)
+        self.assertIn("不代表真实科研准确率", report["interpretation"])
+
+    def test_generated_development_case_is_excluded_from_metrics(self) -> None:
+        payload = dataset_fixture(tier="development_benchmark")
+        payload["cases"][0].update(
+            {
+                "development_status": "generated",
+                "expected_answer": "",
+                "evidence_excerpt_hash": "",
+            }
+        )
+        report = evaluate_real_paper_predictions(
+            RealPaperDataset.model_validate(payload),
+            RealPaperPredictionSet.model_validate(correct_predictions()),
+        )
+        self.assertEqual(report["case_count"], 1)
+        self.assertEqual(report["excluded_case_count"], 1)
 
     def test_adversarial_predictions_expose_binding_locator_and_semantic_failures(self) -> None:
         payload = correct_predictions()
@@ -421,7 +486,7 @@ class RealPaperEvaluationContractTest(unittest.TestCase):
             machine = json.loads(paths["json"].read_text(encoding="utf-8"))
             human = paths["markdown"].read_text(encoding="utf-8")
         self.assertEqual(machine["dataset_id"], "real-paper-contract-fixture")
-        self.assertIn("人工审核", human)
+        self.assertIn("Legacy 数据只用于兼容性检查", human)
 
     def test_blocked_execution_is_not_credited_as_a_correct_refusal(self) -> None:
         payload = correct_predictions()

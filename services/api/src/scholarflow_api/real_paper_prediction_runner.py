@@ -68,6 +68,10 @@ FORBIDDEN_GOLD_FIELDS = frozenset(
         "adjudication_date",
         "review_status",
         "label_origin",
+        "development_status",
+        "answer_comparator",
+        "refusal_probe_terms",
+        "validation_errors",
     }
 )
 RUNTIME_CASE_FIELDS = (
@@ -108,9 +112,13 @@ class RuntimeEvaluationCase(StrictModel):
 
 
 class RuntimeEvaluationDataset(StrictModel):
-    schema_version: Literal["real_paper_dataset.v2"]
+    schema_version: Literal["real_paper_dataset.v2", "real_paper_dataset.v3"]
     dataset_id: str = Field(min_length=1, max_length=300)
-    evaluation_tier: Literal["real_paper_unreviewed", "expert_labelled"]
+    evaluation_tier: Literal[
+        "development_benchmark",
+        "expert_labelled",
+        "real_paper_unreviewed",
+    ]
     cases: list[RuntimeEvaluationCase] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -177,7 +185,15 @@ def load_runtime_cases(path: Path) -> RuntimeEvaluationDataset:
     for raw_case in raw_cases:
         if not isinstance(raw_case, dict):
             raise ValueError("each real-paper case must be an object")
+        if raw.get("evaluation_tier") == "development_benchmark" and raw_case.get(
+            "development_status", "generated"
+        ) not in {"validated", "maintainer_verified"}:
+            continue
         projected_cases.append({field: raw_case.get(field) for field in RUNTIME_CASE_FIELDS})
+    if raw.get("evaluation_tier") == "development_benchmark" and not projected_cases:
+        raise ValueError(
+            "development benchmark has no validated or maintainer_verified cases"
+        )
     projected = {
         "schema_version": raw.get("schema_version"),
         "dataset_id": raw.get("dataset_id"),

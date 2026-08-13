@@ -17,15 +17,16 @@ from scholarflow_api.real_paper_evaluation import (
     load_real_paper_predictions,
 )
 from scholarflow_api.real_paper_dataset import (
-    MINIMUM_EXPERT_CASES,
     coverage_report as real_paper_coverage_report,
-    validate_dataset_for_evaluation,
+    evaluation_cases as real_paper_evaluation_cases,
+    validate_development_sources,
+    write_real_paper_dataset,
 )
 
 
 BENCHMARK_VERSION = "evidence_hybrid_rag.v1"
 PROJECT_ID = "rag-offline-eval"
-REPORT_SCHEMA_VERSION = "scholarflow_rag_evaluation.v2"
+REPORT_SCHEMA_VERSION = "scholarflow_rag_evaluation.v3"
 CONSTRUCTED_FIXTURE_DISCLAIMER = (
     "固定 135-case 构造数据只用于回归检索、引用、拒答、矛盾和证据等级代码；"
     "其指标不得描述为真实论文、真实科研结论或专家标注准确率。"
@@ -444,108 +445,130 @@ def build_evaluation_report(
     *,
     real_dataset_path: Path | None,
     real_predictions_path: Path | None,
+    real_resources_available: bool = False,
+    expert_dataset_path: Path | None = None,
+    development_validation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    real_unreviewed: dict[str, Any] = {
-        "evaluation_tier": "real_paper_unreviewed",
-        "status": "blocked",
+    development: dict[str, Any] = {
+        "evaluation_tier": "development_benchmark",
+        "status": "not_configured",
         "metrics": None,
-        "reason": "没有提供真实论文 dataset。",
-        "interpretation": (
-            "未经专家裁决的数据不代表真实科研准确率，也不得与构造 benchmark 合并。"
-        ),
+        "reason": "没有配置 development benchmark dataset。",
+        "interpretation": "开发指标只用于系统回归，不代表真实科研准确率。",
     }
-    expert_labelled: dict[str, Any] = {
+    expert_optional: dict[str, Any] = {
         "evaluation_tier": "expert_labelled",
-        "status": "blocked",
+        "status": "not_configured",
         "metrics": None,
-        "reason": "当前仓库没有经过领域专家独立裁决的完整数据集。",
-        "interpretation": "不得从 real_paper_unreviewed 或模型输出自动生成专家 gold。",
+        "reason": "可选 expert dataset 未配置或为空；不影响开发评测。",
+        "interpretation": "专家审核是可选扩展，不是 development benchmark 的前置条件。",
     }
 
-    if real_dataset_path is not None:
+    if real_dataset_path is not None and real_dataset_path.is_file():
         dataset = load_real_paper_dataset(
             real_dataset_path,
             allow_unreviewed=True,
         )
         coverage = real_paper_coverage_report(dataset)
-        if dataset.evaluation_tier != "expert_labelled":
-            real_unreviewed.update(
+        if dataset.evaluation_tier == "real_paper_unreviewed":
+            development.update(
                 {
-                    "status": "blocked",
+                    "status": "legacy_compatibility",
                     "dataset_id": dataset.dataset_id,
                     "case_count": len(dataset.cases),
-                    "completed_expert_count": coverage["completed_expert_count"],
-                    "minimum_target": MINIMUM_EXPERT_CASES,
+                    "validated_count": 0,
+                    "minimum_target": coverage["minimum_target"],
                     "gap_to_minimum": coverage["gap_to_minimum"],
                     "reason": (
-                        "默认 evaluator 不加载 unreviewed gold；该文件只可用于标注、"
-                        "schema 和显式 contract tooling。"
+                        "cases.unreviewed.json 是兼容入口；请使用 "
+                        "cases.development.json 和 development_status。"
                     ),
                 }
             )
-            if real_predictions_path is not None:
-                predictions = load_real_paper_predictions(real_predictions_path)
-                real_unreviewed["prediction_source"] = predictions.prediction_source
-                if predictions.prediction_source != "offline_system_run":
-                    real_unreviewed["reason"] += (
-                        " 标准报告同时拒绝非 offline_system_run prediction。"
-                    )
-        elif (readiness_errors := validate_dataset_for_evaluation(dataset)):
-            expert_labelled.update(
+        elif dataset.evaluation_tier != "development_benchmark":
+            development.update(
                 {
-                    "status": "blocked",
+                    "status": "wrong_dataset_tier",
                     "dataset_id": dataset.dataset_id,
-                    "case_count": len(dataset.cases),
-                    "completed_expert_count": coverage["completed_expert_count"],
-                    "minimum_target": MINIMUM_EXPERT_CASES,
-                    "gap_to_minimum": coverage["gap_to_minimum"],
-                    "reason": (
-                        "专家数据集尚未达到正式评测门槛："
-                        + "; ".join(readiness_errors)
-                    ),
-                }
-            )
-        elif real_predictions_path is None:
-            target = (
-                expert_labelled
-                if dataset.evaluation_tier == "expert_labelled"
-                else real_unreviewed
-            )
-            target.update(
-                {
-                    "status": "blocked",
-                    "dataset_id": dataset.dataset_id,
-                    "case_count": len(dataset.cases),
-                    "reason": "真实论文 schema 已验证，但没有提供离线系统 predictions。",
+                    "reason": "--real-dataset 必须使用 development_benchmark tier。",
                 }
             )
         else:
-            predictions = load_real_paper_predictions(real_predictions_path)
-            if predictions.prediction_source != "offline_system_run":
-                target = (
-                    expert_labelled
-                    if dataset.evaluation_tier == "expert_labelled"
-                    else real_unreviewed
-                )
-                target.update(
+            development.update(
+                {
+                    "dataset_id": dataset.dataset_id,
+                    "case_count": len(dataset.cases),
+                    "validated_count": coverage["validated_count"],
+                    "minimum_target": coverage["minimum_target"],
+                    "gap_to_minimum": coverage["gap_to_minimum"],
+                    "excluded_status_counts": {
+                        key: value
+                        for key, value in coverage["by_development_status"].items()
+                        if key not in {"validated", "maintainer_verified"}
+                    },
+                }
+            )
+            if development_validation is not None:
+                development["source_validation"] = development_validation
+            if not real_resources_available:
+                development.update(
                     {
-                        "status": "blocked",
-                        "dataset_id": dataset.dataset_id,
-                        "case_count": len(dataset.cases),
-                        "prediction_source": predictions.prediction_source,
+                        "status": "blocked_missing_resources",
                         "reason": (
-                            "标准 real-paper 报告只接受 prediction_source="
-                            "offline_system_run；schema fixture 只用于 evaluator 合同测试。"
+                            "缺少固定本地 PDF 资源；development benchmark 不会回退到 fixture。"
                         ),
                     }
                 )
-            else:
-                evaluated = evaluate_real_paper_predictions(dataset, predictions)
-                evaluated["status"] = "complete"
-                if dataset.evaluation_tier == "expert_labelled":
-                    expert_labelled = evaluated
+            elif real_predictions_path is None:
+                validation_status = str(
+                    (development_validation or {}).get("status") or ""
+                )
+                if validation_status == "blocked_missing_resources":
+                    status = "blocked_missing_resources"
+                    reason = "缺少固定本地 PDF 资源；development benchmark 不会回退到 fixture。"
+                elif coverage["validated_count"] == 0:
+                    status = "blocked_no_validated_cases"
+                    reason = "固定来源校验后没有 validated development cases。"
                 else:
-                    real_unreviewed = evaluated
+                    status = "blocked_missing_predictions"
+                    reason = "尚未生成 offline_system_run predictions。"
+                development.update({"status": status, "reason": reason})
+            else:
+                predictions = load_real_paper_predictions(real_predictions_path)
+                if predictions.prediction_source != "offline_system_run":
+                    development.update(
+                        {
+                            "status": "blocked_invalid_predictions",
+                            "prediction_source": predictions.prediction_source,
+                            "reason": "开发评测只接受 offline_system_run predictions。",
+                        }
+                    )
+                elif coverage["validated_count"] == 0:
+                    development.update(
+                        {
+                            "status": "blocked_no_validated_cases",
+                            "prediction_source": predictions.prediction_source,
+                            "reason": "没有 validated development cases 可计入指标。",
+                        }
+                    )
+                else:
+                    development = evaluate_real_paper_predictions(dataset, predictions)
+                    development["status"] = "complete"
+
+    if expert_dataset_path is not None and expert_dataset_path.is_file():
+        expert_dataset = load_real_paper_dataset(
+            expert_dataset_path,
+            allow_unreviewed=True,
+        )
+        if expert_dataset.evaluation_tier == "expert_labelled" and expert_dataset.cases:
+            expert_optional.update(
+                {
+                    "status": "configured_no_predictions",
+                    "dataset_id": expert_dataset.dataset_id,
+                    "case_count": len(expert_dataset.cases),
+                    "reason": "可选 expert dataset 已配置；本命令未提供独立 expert predictions。",
+                }
+            )
 
     return {
         "report_schema_version": REPORT_SCHEMA_VERSION,
@@ -558,8 +581,8 @@ def build_evaluation_report(
                 "metrics": constructed_result["metrics"],
                 "result": constructed_result,
             },
-            "real_paper_unreviewed": real_unreviewed,
-            "expert_labelled": expert_labelled,
+            "development_benchmark": development,
+            "expert_labelled_optional": expert_optional,
             "live_external_smoke": {
                 "evaluation_tier": "live_external_smoke",
                 "status": "not_run",
@@ -597,8 +620,8 @@ def render_evaluation_markdown(report: dict[str, Any]) -> str:
         lines.append(f"| `{key}` | {value} |")
 
     for section_name in (
-        "real_paper_unreviewed",
-        "expert_labelled",
+        "development_benchmark",
+        "expert_labelled_optional",
         "live_external_smoke",
     ):
         section = sections[section_name]
@@ -617,11 +640,11 @@ def render_evaluation_markdown(report: dict[str, Any]) -> str:
             lines.extend(["", "| Metric | Value |", "| --- | ---: |"])
             for key, value in metrics.items():
                 lines.append(f"| `{key}` | {value} |")
-        if section_name == "real_paper_unreviewed" and section.get("status") == "complete":
+        if section_name == "development_benchmark" and section.get("status") == "complete":
             lines.extend(
                 [
                     "",
-                    "> 这些真实论文记录仍是 unreviewed，只验证评测框架；不代表真实科研准确率。",
+                    "> 开发指标来自确定性校验案例，只用于系统回归；不代表科研事实准确率。",
                 ]
             )
         if section_name == "live_external_smoke":
@@ -659,11 +682,17 @@ def main() -> None:
         default=Path(
             os.environ.get(
                 "SCHOLARFLOW_REAL_EVAL_DATASET",
-                repository_root / "evals/real_papers/cases.expert.json",
+                repository_root / "evals/real_papers/cases.development.json",
             )
         ),
     )
     prediction_env = os.environ.get("SCHOLARFLOW_REAL_EVAL_PREDICTIONS", "").strip()
+    parser.add_argument(
+        "--expert-dataset",
+        type=Path,
+        default=repository_root / "evals/real_papers/cases.expert.json",
+        help="Optional expert-labelled dataset; empty or absent never blocks development evaluation.",
+    )
     parser.add_argument(
         "--real-predictions",
         type=Path,
@@ -708,10 +737,24 @@ def main() -> None:
         args.real_dataset,
         allow_unreviewed=True,
     )
+    evaluation_dataset_path = args.real_dataset
+    development_validation: dict[str, Any] | None = None
+    if (
+        dataset_for_prediction.evaluation_tier == "development_benchmark"
+        and args.real_resources is not None
+        and args.real_resources.is_file()
+    ):
+        dataset_for_prediction, development_validation = validate_development_sources(
+            dataset_for_prediction,
+            args.real_resources,
+        )
+        evaluation_dataset_path = report_dir / "validated-development-dataset.json"
+        write_real_paper_dataset(dataset_for_prediction, evaluation_dataset_path)
     if (
         real_predictions_path is None
         and args.real_resources is not None
-        and dataset_for_prediction.cases
+        and args.real_resources.is_file()
+        and real_paper_evaluation_cases(dataset_for_prediction)
     ):
         from scholarflow_api.real_paper_prediction_runner import (
             run_real_paper_predictions,
@@ -722,7 +765,7 @@ def main() -> None:
             or report_dir / "real-paper-offline-system-predictions.json"
         )
         run_real_paper_predictions(
-            cases_path=args.real_dataset,
+            cases_path=evaluation_dataset_path,
             resources_path=args.real_resources,
             output_path=generated_output,
             work_dir=report_dir / "real-paper-run-work",
@@ -730,8 +773,13 @@ def main() -> None:
         real_predictions_path = generated_output
     report = build_evaluation_report(
         result,
-        real_dataset_path=args.real_dataset,
+        real_dataset_path=evaluation_dataset_path,
         real_predictions_path=real_predictions_path,
+        real_resources_available=bool(
+            args.real_resources is not None and args.real_resources.is_file()
+        ),
+        expert_dataset_path=args.expert_dataset,
+        development_validation=development_validation,
     )
     report_paths = write_evaluation_report(report, report_dir)
     rendered = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
